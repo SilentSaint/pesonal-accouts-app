@@ -1,66 +1,75 @@
-# Ticket 1 Verification & Testing Guide
+# Ticket 1 Full-Stack Verification & Testing Guide
 
-## Core Financial Account & Transaction Ingestion Foundation
+## Core Financial Accounts & Transaction Ingestion (Backend, Flutter UI & Terraform)
 
-This guide provides step-by-step instructions to set up, build, and verify the implementation of **Ticket 1** (Core Financial Account & Transaction Ingestion Foundation).
-
----
-
-## 1. Environment & Prerequisites
-
-- **Java JDK**: Version 21 (OpenJDK 21)
-- **Gradle Wrapper**: `./gradlew` provided in `/backend`
+This guide provides step-by-step instructions to set up, build, and verify the full-stack implementation of **Ticket 1** across all three layers: Backend Domain Logic, Terraform Infrastructure, and Flutter Frontend UI.
 
 ---
 
-## 2. Setup & Build Instructions
+## 1. Backend Layer Verification (`/backend`)
 
-Navigate to the backend project directory:
+Navigate to the backend directory:
 
 ```bash
 cd backend
 ```
 
-Build the pure domain and application module:
-
-```bash
-./gradlew build
-```
-
----
-
-## 3. Running Test Verification
-
-Execute all test suites for the domain core, application use cases, and DynamoDB single-table adapters:
+Execute the Java 21 Quarkus backend test suite:
 
 ```bash
 ./gradlew test
 ```
 
-### Verified Test Cases
+### Verified Seams & Test Suites
 
-1. **`IngestTransactionUseCaseTest`**
-   - Verifies manual transaction ingestion and automatic account balance adjustment (`currentBalance = currentBalance - amount`).
-   - Verifies SMS transaction ingestion and automatic matching by `lastFourDigits`.
-
-2. **`DynamoDbSingleTableRepositoryAdapterTest`**
-   - Verifies single-table Partition Key (`PK = USER#<UserId>`) and Sort Key formatting (`SK = ACC#<AccountId>` and `SK = TXN#<Timestamp>#<TxnId>`).
-   - Verifies serialization and deserialization of `FinancialAccount` and `Transaction` entities.
-
-3. **`SmsTransactionParserTest`**
-   - Verifies regex extraction of monetary amounts, account identifiers, and merchant names from raw bank SMS bodies.
+1. **`IngestTransactionUseCaseTest`**: Verifies manual transaction ingestion, account balance deduction, and SMS event parsing.
+2. **`DynamoDbSingleTableRepositoryAdapterTest`**: Verifies Single-Table Partition Key (`PK = USER#<UserId>`) and Sort Key (`SK = ACC#<AccountId>`, `SK = TXN#<Timestamp>#<TxnId>`) mappings.
 
 ---
 
-## 4. Manual Verification via Executable Test Runner
+## 2. Infrastructure Layer Verification (`/terraform`)
 
-You can also run a targeted single-class test verification:
+Navigate to the terraform directory:
 
 ```bash
-./gradlew test --tests "com.automaticexpense.tracker.application.IngestTransactionUseCaseTest"
+cd terraform
 ```
 
-Expected Output:
-```text
-BUILD SUCCESSFUL in 1s
+Validate the HCL syntax and plan execution for the `ExpenseTrackerData` DynamoDB table:
+
+```bash
+terraform fmt -check
+terraform validate
 ```
+
+---
+
+## 3. Frontend UI Layer Verification (`/frontend`)
+
+Navigate to the frontend directory:
+
+```bash
+cd frontend
+```
+
+Run Flutter static analysis and tests:
+
+```bash
+flutter analyze
+flutter test
+```
+
+Launch the responsive Glassmorphic dashboard app locally on Chrome or connected Android device:
+
+```bash
+flutter run -d chrome
+```
+
+---
+
+## 4. Verification Checklists
+
+- [x] Pure Domain entities (`FinancialAccount`, `Transaction`, `Money`) free of framework imports.
+- [x] DynamoDB Single-Table schema defined in `/terraform/main.tf`.
+- [x] Flutter responsive dashboard & `MethodChannel` SMS receiver stub in `/frontend`.
+- [x] Backend tests passing in `./gradlew test`.
