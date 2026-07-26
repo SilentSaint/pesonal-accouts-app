@@ -20,3 +20,14 @@
 * **SOLID Principles**: Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion.
 * **Explicit Intent & Ubiquitous Language**: Name classes, methods, and variables using domain terminology defined in `CONTEXT.md`.
 * **YAGNI & DRY**: Do not write speculative code or over-engineer abstractions before they are required by a failing test.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues (`gh issue`) for `SilentSaint/pesonal-accouts-app`. See [issue-tracker.md](file:///home/rakshith/Antigravity/AutomaticExpenseTracker/docs/agents/issue-tracker.md).
+
+### Domain docs
+
+Single-context (`CONTEXT.md` + `docs/adr/`). See [domain.md](file:///home/rakshith/Antigravity/AutomaticExpenseTracker/docs/agents/domain.md).
+
