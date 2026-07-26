@@ -23,7 +23,11 @@
 * **Email Ingestion Account**: An authenticated email account configured within the app using real-time push notifications (event-driven webhooks). When a financial email or bill statement arrives in the inbox, the email provider instantly notifies the system to extract transaction details without polling. Multiple email accounts can be linked.
 * **Serverless Backend Stack**: Java 21 (Quarkus / GraalVM Native) running on AWS Lambda + Amazon DynamoDB + Amazon API Gateway (REST & WebSockets for real-time mobile/web sync).
 * **Infrastructure as Code (IaC)**: Terraform HCL configurations used to provision, version, and deploy all cloud resources (Lambda functions, DynamoDB tables, API Gateway endpoints, SNS topics, IAM roles) reproducibly.
+* **Project Layout**: Monorepo structure organizing code into `/frontend` (Flutter mobile/web), `/backend` (Java 21 Quarkus Lambdas), `/terraform` (IaC infrastructure), and `/docs` (specifications & ADRs).
+* **Offline-First Sync Queue**: Mobile architecture using local storage (Isar / SQLite) to store transactions locally instantly upon SMS receipt, syncing to AWS API Gateway via a background queue whenever network connectivity is restored.
 * **Access Control**: Device biometric (Fingerprint / Face ID) or 4-digit PIN lock on mobile app resume/open, plus idle session lock on web.
+
+
 
 
 
