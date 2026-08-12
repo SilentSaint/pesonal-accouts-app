@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../domain/financial_account.dart';
+import '../domain/transaction_item.dart';
+import 'uncategorized_review_banner.dart';
+import 'transaction_review_modal.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -28,6 +31,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ),
   ];
 
+  final List<TransactionItem> pendingTransactions = [
+    TransactionItem(
+      id: 'txn-review-1',
+      amount: 499.00,
+      currency: 'INR',
+      type: 'DEBIT',
+      merchantName: 'Swiggy Pay',
+      accountId: 'acc-1',
+      categoryId: null,
+      ingestionSource: 'EMAIL',
+      reconciliationStatus: 'NEEDS_REVIEW',
+      timestamp: DateTime.now().subtract(const Duration(minutes: 5)),
+    ),
+    TransactionItem(
+      id: 'txn-review-2',
+      amount: 499.00,
+      currency: 'INR',
+      type: 'DEBIT',
+      merchantName: 'Bundl Tech',
+      accountId: 'acc-1',
+      categoryId: null,
+      ingestionSource: 'SMS',
+      reconciliationStatus: 'NEEDS_REVIEW',
+      timestamp: DateTime.now().subtract(const Duration(minutes: 10)),
+    ),
+  ];
+
+  void _openReviewModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => TransactionReviewModal(
+        pendingTransactions: pendingTransactions,
+        onConfirm: (txn, category) {
+          setState(() {
+            pendingTransactions.removeWhere((t) => t.id == txn.id);
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Transaction confirmed under "$category"'),
+              backgroundColor: const Color(0xFF22C55E),
+            ),
+          );
+        },
+        onMerge: (target, duplicate) {
+          setState(() {
+            pendingTransactions.removeWhere((t) => t.id == target.id || t.id == duplicate.id);
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('1-Tap Merge complete: Duplicate merged successfully!'),
+              backgroundColor: Color(0xFF3B82F6),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -45,6 +108,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            UncategorizedReviewBanner(
+              pendingTransactions: pendingTransactions,
+              onReviewPressed: _openReviewModal,
+            ),
             const Text(
               'Your Accounts',
               style: TextStyle(

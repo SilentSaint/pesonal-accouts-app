@@ -4,11 +4,13 @@ import com.automaticexpense.tracker.application.port.out.AccountRepository;
 import com.automaticexpense.tracker.application.port.out.TransactionRepository;
 import com.automaticexpense.tracker.domain.*;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public class DynamoDbSingleTableRepositoryAdapter implements AccountRepository, TransactionRepository {
 
@@ -65,5 +67,29 @@ public class DynamoDbSingleTableRepositoryAdapter implements AccountRepository, 
             }
         }
         return result;
+    }
+
+    @Override
+    public List<Transaction> findByReconciliationStatus(ReconciliationStatus status) {
+        return tableStorage.values().stream()
+            .filter(item -> "TRANSACTION".equals(item.get("entityType")))
+            .map(DynamoDbItem::toTransaction)
+            .filter(txn -> txn.reconciliationStatus() == status || (status == ReconciliationStatus.NEEDS_REVIEW && txn.categoryId() == null))
+            .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<Transaction> findByAccountIdAndWindow(AccountId accountId, LocalDateTime startTime, LocalDateTime endTime) {
+        return tableStorage.values().stream()
+            .filter(item -> "TRANSACTION".equals(item.get("entityType")))
+            .map(DynamoDbItem::toTransaction)
+            .filter(txn -> txn.accountId().equals(accountId))
+            .filter(txn -> !txn.timestamp().isBefore(startTime) && !txn.timestamp().isAfter(endTime))
+            .collect(Collectors.toList());
+    }
+
+    @Override
+    public void delete(TransactionId id) {
+        tableStorage.values().removeIf(item -> "TRANSACTION".equals(item.get("entityType")) && id.value().equals(item.get("txnId")));
     }
 }
