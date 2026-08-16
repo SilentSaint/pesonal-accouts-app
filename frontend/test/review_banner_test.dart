@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:frontend/domain/transaction_item.dart';
-import 'package:frontend/ui/uncategorized_review_banner.dart';
-import 'package:frontend/ui/dashboard_screen.dart';
+import 'package:automatic_expense_tracker/domain/transaction_item.dart';
+import 'package:automatic_expense_tracker/ui/uncategorized_review_banner.dart';
+import 'package:automatic_expense_tracker/ui/dashboard_screen.dart';
 
 void main() {
   testWidgets('UncategorizedReviewBanner renders when pending transactions exist', (WidgetTester tester) async {

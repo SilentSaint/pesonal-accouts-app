@@ -81,7 +81,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       accounts.add(
         FinancialAccount(
           id: 'acc-auto-9988',
-          name: 'Discovered ICICI Card',
+          name: 'ICICI Card',
           type: 'CREDIT_CARD',
           lastFourDigits: '9988',
           currency: 'INR',
@@ -194,13 +194,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              acc.name,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
+                            Expanded(
+                              child: Text(
+                                acc.name,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
+                            const SizedBox(width: 8),
                             Text(
                               '•••• ${acc.lastFourDigits}',
                               style: const TextStyle(color: Colors.white54),

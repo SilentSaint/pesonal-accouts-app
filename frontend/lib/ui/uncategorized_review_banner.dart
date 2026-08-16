@@ -30,12 +30,12 @@ class UncategorizedReviewBanner extends StatelessWidget {
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFF59E0B).withOpacity(0.5), width: 1.5),
-        boxShadow: [
+        border: Border.all(color: const Color(0x80F59E0B), width: 1.5),
+        boxShadow: const [
           BoxShadow(
-            color: Colors.amber.withOpacity(0.1),
+            color: Color(0x1AF59E0B),
             blurRadius: 12,
-            offset: const Offset(0, 4),
+            offset: Offset(0, 4),
           ),
         ],
       ),
@@ -43,8 +43,8 @@ class UncategorizedReviewBanner extends StatelessWidget {
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF59E0B).withOpacity(0.2),
+            decoration: const BoxDecoration(
+              color: Color(0x33F59E0B),
               shape: BoxShape.circle,
             ),
             child: const Icon(
@@ -67,10 +67,10 @@ class UncategorizedReviewBanner extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  '$count transactions need confirmation or deduplication',
+                const Text(
+                  'transactions need confirmation or deduplication',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.8),
+                    color: Color(0xCCFFFFFF),
                     fontSize: 12,
                   ),
                 ),

@@ -23,12 +23,12 @@ class HistoricalBackfillCard extends StatelessWidget {
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF6366F1).withOpacity(0.4)),
-        boxShadow: [
+        border: Border.all(color: const Color(0x666366F1)),
+        boxShadow: const [
           BoxShadow(
-            color: Colors.indigo.withOpacity(0.15),
+            color: Color(0x266366F1),
             blurRadius: 12,
-            offset: const Offset(0, 4),
+            offset: Offset(0, 4),
           ),
         ],
       ),
@@ -36,8 +36,8 @@ class HistoricalBackfillCard extends StatelessWidget {
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: const Color(0xFF6366F1).withOpacity(0.2),
+            decoration: const BoxDecoration(
+              color: Color(0x336366F1),
               shape: BoxShape.circle,
             ),
             child: const Icon(
@@ -47,11 +47,11 @@ class HistoricalBackfillCard extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          Expanded(
+          const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   '30-Day Auto Backfill',
                   style: TextStyle(
                     color: Colors.white,
@@ -59,11 +59,11 @@ class HistoricalBackfillCard extends StatelessWidget {
                     fontSize: 15,
                   ),
                 ),
-                const SizedBox(height: 2),
+                SizedBox(height: 2),
                 Text(
                   'Scan last 30 days SMS & Emails to auto-discover bank accounts',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.8),
+                    color: Color(0xCCFFFFFF),
                     fontSize: 12,
                   ),
                 ),
