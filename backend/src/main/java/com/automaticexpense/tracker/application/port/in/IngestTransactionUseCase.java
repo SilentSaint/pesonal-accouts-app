@@ -1,5 +1,6 @@
 package com.automaticexpense.tracker.application.port.in;
 
+import com.automaticexpense.tracker.domain.BackfillResult;
 import com.automaticexpense.tracker.domain.Transaction;
 import com.automaticexpense.tracker.domain.TransactionId;
 
@@ -13,4 +14,6 @@ public interface IngestTransactionUseCase {
     List<Transaction> getPendingReviewTransactions();
     Transaction confirmTransaction(TransactionId id, String categoryId);
     Transaction mergeTransactions(TransactionId targetId, TransactionId duplicateId);
+    Transaction assignCategoryAndLearnRule(TransactionId id, String categoryId, String payeeNickname);
+    BackfillResult execute30DayBackfill(List<String> smsBodies, List<String> emailBodies);
 }

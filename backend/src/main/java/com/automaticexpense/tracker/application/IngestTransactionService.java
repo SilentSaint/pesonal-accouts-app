@@ -7,8 +7,11 @@ import com.automaticexpense.tracker.application.port.out.TransactionRepository;
 import com.automaticexpense.tracker.domain.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class IngestTransactionService implements IngestTransactionUseCase {
 
@@ -17,6 +20,8 @@ public class IngestTransactionService implements IngestTransactionUseCase {
     private final SmsTransactionParser smsParser;
     private final EmailTransactionParser emailParser;
     private final DeduplicationEngine deduplicationEngine;
+    private final AccountDiscoveryEngine discoveryEngine;
+    private final Map<String, VendorCategoryRule> vendorRules = new ConcurrentHashMap<>();
 
     public IngestTransactionService(AccountRepository accountRepository, TransactionRepository transactionRepository) {
         this.accountRepository = Objects.requireNonNull(accountRepository, "accountRepository cannot be null");
@@ -24,6 +29,7 @@ public class IngestTransactionService implements IngestTransactionUseCase {
         this.smsParser = new SmsTransactionParser();
         this.emailParser = new EmailTransactionParser();
         this.deduplicationEngine = new DeduplicationEngine();
+        this.discoveryEngine = new AccountDiscoveryEngine();
     }
 
     @Override
@@ -116,6 +122,14 @@ public class IngestTransactionService implements IngestTransactionUseCase {
 
         ReconciliationStatus status = dedupResult.recommendedStatus();
 
+        // Check rule-based auto-categorization
+        String learnedCategory = null;
+        String normalizedKey = VendorCategoryRule.normalizePayeeKey(parsed.merchantName());
+        VendorCategoryRule matchingRule = vendorRules.get(normalizedKey);
+        if (matchingRule != null) {
+            learnedCategory = matchingRule.categoryId();
+        }
+
         Transaction transaction = new Transaction(
             new TransactionId(idPrefix + System.currentTimeMillis() + "-" + (int)(Math.random() * 1000)),
             amount,
@@ -123,7 +137,7 @@ public class IngestTransactionService implements IngestTransactionUseCase {
             parsed.timestamp(),
             parsed.merchantName(),
             account.id(),
-            null,
+            learnedCategory,
             source,
             status,
             amount
@@ -161,6 +175,23 @@ public class IngestTransactionService implements IngestTransactionUseCase {
     }
 
     @Override
+    public Transaction assignCategoryAndLearnRule(TransactionId id, String categoryId, String payeeNickname) {
+        Transaction confirmed = confirmTransaction(id, categoryId);
+
+        String normalizedKey = VendorCategoryRule.normalizePayeeKey(confirmed.merchantName());
+        VendorCategoryRule rule = new VendorCategoryRule(
+            normalizedKey,
+            confirmed.merchantName(),
+            categoryId,
+            payeeNickname,
+            true
+        );
+        vendorRules.put(normalizedKey, rule);
+
+        return confirmed;
+    }
+
+    @Override
     public Transaction mergeTransactions(TransactionId targetId, TransactionId duplicateId) {
         Transaction target = transactionRepository.findById(targetId)
             .orElseThrow(() -> new IllegalArgumentException("Target transaction not found: " + targetId.value()));
@@ -183,5 +214,38 @@ public class IngestTransactionService implements IngestTransactionUseCase {
         transactionRepository.delete(duplicate.id());
         transactionRepository.save(merged);
         return merged;
+    }
+
+    @Override
+    public BackfillResult execute30DayBackfill(List<String> smsBodies, List<String> emailBodies) {
+        List<ParsedTransactionEvent> smsEvents = new ArrayList<>();
+        if (smsBodies != null) {
+            LocalDateTime now = LocalDateTime.now();
+            for (String body : smsBodies) {
+                ParsedTransactionEvent event = smsParser.parse("UNKNOWN", body, now.minusDays((int)(Math.random() * 25)));
+                if (event != null) smsEvents.add(event);
+            }
+        }
+
+        List<ParsedTransactionEvent> emailEvents = new ArrayList<>();
+        if (emailBodies != null) {
+            LocalDateTime now = LocalDateTime.now();
+            for (String body : emailBodies) {
+                ParsedTransactionEvent event = emailParser.parse("UNKNOWN", "Transaction Alert", body, now.minusDays((int)(Math.random() * 25)));
+                if (event != null) emailEvents.add(event);
+            }
+        }
+
+        BackfillResult result = discoveryEngine.processHistoricalEvents(smsEvents, emailEvents, new ArrayList<>());
+
+        for (FinancialAccount acc : result.discoveredAccounts()) {
+            accountRepository.save(acc);
+        }
+
+        for (Transaction txn : result.transactions()) {
+            transactionRepository.save(txn);
+        }
+
+        return result;
     }
 }

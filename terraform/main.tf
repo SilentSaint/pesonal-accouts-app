@@ -43,6 +43,15 @@ resource "aws_sns_topic" "gmail_ingestion_webhook" {
   }
 }
 
+resource "aws_sns_topic" "budget_alerts_topic" {
+  name = "budget-spending-alerts-${var.environment}"
+
+  tags = {
+    Environment = var.environment
+    Project     = "AutomaticExpenseTracker"
+  }
+}
+
 resource "aws_cloudwatch_event_rule" "gmail_push_event_rule" {
   name        = "gmail-push-event-rule-${var.environment}"
   description = "EventBridge rule to capture real-time Gmail push notification webhooks"
@@ -77,6 +86,11 @@ output "dynamodb_table_arn" {
 output "sns_topic_arn" {
   value       = aws_sns_topic.gmail_ingestion_webhook.arn
   description = "The ARN of the Gmail Ingestion SNS Push Webhook Topic"
+}
+
+output "budget_alerts_topic_arn" {
+  value       = aws_sns_topic.budget_alerts_topic.arn
+  description = "The ARN of the Budget Spending Threshold Alerts SNS Topic"
 }
 
 output "eventbridge_rule_arn" {

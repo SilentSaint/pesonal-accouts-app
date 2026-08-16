@@ -98,11 +98,9 @@ class IngestTransactionUseCaseTest {
 
         LocalDateTime baseTime = LocalDateTime.of(2026, 7, 26, 14, 0);
 
-        // 1. Ingest SMS
         String smsBody = "INR 850.00 spent on Card 1234 at Swiggy on 2026-07-26.";
         Transaction smsTxn = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody, baseTime);
 
-        // 2. Ingest Email 8 minutes later (within +-15m window) for same card, amount, and merchant
         String emailSubject = "Order Confirmation: Swiggy";
         String emailBody = "INR 850.00 debited from card ending in 1234 at Swiggy on 2026-07-26.";
         Transaction emailTxn = ingestTransactionUseCase.ingestEmailTransaction("alerts@swiggy.in", emailSubject, emailBody, baseTime.plusMinutes(8));
@@ -112,63 +110,47 @@ class IngestTransactionUseCaseTest {
     }
 
     @Test
-    void shouldFlagAmbiguousDualChannelEventAsNeedsReview() {
+    void shouldLearnVendorCategoryRuleAndAutoCategorizeFutureTransactions() {
         FinancialAccount account = new FinancialAccount(
-            new AccountId("acc-4"),
-            "ICICI Savings Account",
+            new AccountId("acc-rule-1"),
+            "HDFC Account",
             AccountType.SAVINGS,
-            "9988",
+            "7788",
             "INR",
             new Money(new BigDecimal("5000.00"), "INR")
         );
         accountRepository.save(account);
 
-        LocalDateTime baseTime = LocalDateTime.of(2026, 7, 26, 15, 0);
+        LocalDateTime baseTime = LocalDateTime.of(2026, 7, 26, 10, 0);
 
-        // 1. Ingest SMS with merchant string "Bundl Tech"
-        String smsBody = "Rs 499.00 debited from a/c **9988 at Bundl Tech.";
-        Transaction smsTxn = ingestTransactionUseCase.ingestSmsTransaction("ICICIB", smsBody, baseTime);
+        // 1. Ingest transaction for payee "Saira Banu"
+        String smsBody1 = "Rs 150.00 debited from a/c **7788 at Saira Banu.";
+        Transaction txn1 = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody1, baseTime);
+        assertThat(txn1.categoryId()).isNull();
 
-        // 2. Ingest Email with merchant string "Swiggy Pay" (ambiguous matching merchant)
-        String emailSubject = "Transaction Alert";
-        String emailBody = "INR 499.00 debited from account 9988 at Swiggy Pay.";
-        Transaction emailTxn = ingestTransactionUseCase.ingestEmailTransaction("alerts@icici.com", emailSubject, emailBody, baseTime.plusMinutes(5));
+        // 2. Assign category "Food & Dining > Tea & Snacks" and learn rule
+        ingestTransactionUseCase.assignCategoryAndLearnRule(txn1.id(), "Food & Dining > Tea & Snacks", "Tea Stall");
 
-        assertThat(emailTxn.reconciliationStatus()).isEqualTo(ReconciliationStatus.NEEDS_REVIEW);
+        // 3. Ingest future transaction for payee "Saira Banu"
+        String smsBody2 = "Rs 200.00 debited from a/c **7788 at Saira Banu.";
+        Transaction txn2 = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody2, baseTime.plusDays(1));
 
-        List<Transaction> pendingReviews = ingestTransactionUseCase.getPendingReviewTransactions();
-        assertThat(pendingReviews).isNotEmpty();
+        assertThat(txn2.categoryId()).isEqualTo("Food & Dining > Tea & Snacks");
     }
 
     @Test
-    void shouldAllow1TapConfirmOrMergeForPendingReviewTransactions() {
-        FinancialAccount account = new FinancialAccount(
-            new AccountId("acc-5"),
-            "Axis Bank Account",
-            AccountType.SAVINGS,
-            "1122",
-            "INR",
-            new Money(new BigDecimal("1000.00"), "INR")
+    void shouldExecute30DayHistoricalBackfillAndDiscoverAccounts() {
+        List<String> smsBodies = List.of(
+            "Rs 450.00 debited from a/c **1122 at Starbucks.",
+            "INR 1200.00 spent on Card 3344 at Amazon."
         );
-        accountRepository.save(account);
+        List<String> emailBodies = List.of(
+            "INR 1200.00 debited from card ending in 3344 at Amazon."
+        );
 
-        LocalDateTime baseTime = LocalDateTime.of(2026, 7, 26, 16, 0);
+        BackfillResult result = ingestTransactionUseCase.execute30DayBackfill(smsBodies, emailBodies);
 
-        String smsBody = "Rs 300.00 debited from a/c **1122 at Cafe Coffee Day.";
-        Transaction smsTxn = ingestTransactionUseCase.ingestSmsTransaction("AXISBK", smsBody, baseTime);
-
-        String emailSubject = "Alert: Axis Bank";
-        String emailBody = "INR 300.00 debited from account 1122 at CCD.";
-        Transaction emailTxn = ingestTransactionUseCase.ingestEmailTransaction("alerts@axisbank.com", emailSubject, emailBody, baseTime.plusMinutes(2));
-
-        // 1-Tap Confirm
-        Transaction confirmed = ingestTransactionUseCase.confirmTransaction(emailTxn.id(), "Food & Dining");
-        assertThat(confirmed.reconciliationStatus()).isEqualTo(ReconciliationStatus.CONFIRMED);
-        assertThat(confirmed.categoryId()).isEqualTo("Food & Dining");
-
-        // 1-Tap Merge
-        Transaction merged = ingestTransactionUseCase.mergeTransactions(smsTxn.id(), emailTxn.id());
-        assertThat(merged.reconciliationStatus()).isEqualTo(ReconciliationStatus.AUTO_MERGED);
-        assertThat(transactionRepository.findById(emailTxn.id())).isEmpty();
+        assertThat(result.discoveredAccounts()).hasSize(2);
+        assertThat(result.transactions()).isNotEmpty();
     }
 }

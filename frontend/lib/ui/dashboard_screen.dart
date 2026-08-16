@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../domain/financial_account.dart';
 import '../domain/transaction_item.dart';
 import 'uncategorized_review_banner.dart';
+import 'historical_backfill_card.dart';
+import 'category_breakdown_view.dart';
 import 'transaction_review_modal.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -12,6 +14,8 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  bool isScanning30Days = false;
+
   final List<FinancialAccount> accounts = [
     FinancialAccount(
       id: 'acc-1',
@@ -30,6 +34,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       currentBalance: -250.00,
     ),
   ];
+
+  final Map<String, double> categoryTotals = {
+    'Food & Dining': 1850.00,
+    'Shopping': 2450.00,
+    'Transport & Fuel': 650.00,
+    'Bills & Utilities': 1200.00,
+  };
 
   final List<TransactionItem> pendingTransactions = [
     TransactionItem(
@@ -57,6 +68,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
       timestamp: DateTime.now().subtract(const Duration(minutes: 10)),
     ),
   ];
+
+  void _run30DayBackfillScan() async {
+    setState(() {
+      isScanning30Days = true;
+    });
+
+    await Future.delayed(const Duration(seconds: 2));
+
+    setState(() {
+      isScanning30Days = false;
+      accounts.add(
+        FinancialAccount(
+          id: 'acc-auto-9988',
+          name: 'Discovered ICICI Card',
+          type: 'CREDIT_CARD',
+          lastFourDigits: '9988',
+          currency: 'INR',
+          currentBalance: -1200.00,
+        ),
+      );
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('30-Day Scan Complete! Auto-discovered 1 new account & 14 historical transactions.'),
+          backgroundColor: Color(0xFF6366F1),
+        ),
+      );
+    }
+  }
 
   void _openReviewModal() {
     showModalBottomSheet(
@@ -108,6 +150,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            HistoricalBackfillCard(
+              onScanPressed: _run30DayBackfillScan,
+              isScanning: isScanning30Days,
+            ),
             UncategorizedReviewBanner(
               pendingTransactions: pendingTransactions,
               onReviewPressed: _openReviewModal,
@@ -184,6 +230,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 },
               ),
             ),
+            const SizedBox(height: 16),
+            CategoryBreakdownView(categoryTotals: categoryTotals),
           ],
         ),
       ),
