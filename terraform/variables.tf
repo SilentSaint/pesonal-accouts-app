@@ -12,6 +12,5 @@ variable "environment" {
 
 variable "alert_email_address" {
   type        = string
-  default     = "alerts@automaticexpense.com"
-  description = "Email address for $0 AWS Free Tier budget notifications"
+  description = "Email address for $0 AWS Free Tier budget notifications (Must be provided by user)"
 }

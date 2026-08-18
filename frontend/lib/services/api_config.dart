@@ -1,14 +1,14 @@
 class ApiConfig {
-  static const String localDevUrl = 'http://localhost:8080/api';
-  static const String awsLambdaUrl = 'https://api.automaticexpense.com/prod/api';
+  static const String defaultLocalUrl = 'http://localhost:8080/api';
 
-  static String baseUrl = localDevUrl;
+  static String baseUrl = defaultLocalUrl;
 
-  static void useAwsLambdaApi(String apiGatewayEndpoint) {
-    baseUrl = apiGatewayEndpoint.endsWith('/api') ? apiGatewayEndpoint : '$apiGatewayEndpoint/api';
+  static void useCustomApiEndpoint(String apiEndpoint) {
+    if (apiEndpoint.isEmpty) return;
+    baseUrl = apiEndpoint.endsWith('/api') ? apiEndpoint : '$apiEndpoint/api';
   }
 
-  static void useLocalDevApi() {
-    baseUrl = localDevUrl;
+  static void resetToDefault() {
+    baseUrl = defaultLocalUrl;
   }
 }

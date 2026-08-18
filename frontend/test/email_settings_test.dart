@@ -12,7 +12,7 @@ void main() {
 
     expect(find.text('Linked Email Accounts'), findsOneWidget);
     expect(find.text('Link Financial Email Account'), findsOneWidget);
-    expect(find.text('user.personal@gmail.com'), findsOneWidget);
+    expect(find.text('No linked email accounts yet. Enter your email above to link one.'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField), 'test.finance@gmail.com');
     await tester.tap(find.text('Link Account'));
