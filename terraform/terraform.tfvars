@@ -1,3 +1,3 @@
-aws_region          = "us-east-1"
+aws_region          = "ap-south-2"
 environment         = "dev"
 alert_email_address = "rakshithgowdagaws@gmail.com"
