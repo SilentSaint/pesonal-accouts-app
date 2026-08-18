@@ -123,15 +123,12 @@ class IngestTransactionUseCaseTest {
 
         LocalDateTime baseTime = LocalDateTime.of(2026, 7, 26, 10, 0);
 
-        // 1. Ingest transaction for payee "Saira Banu"
         String smsBody1 = "Rs 150.00 debited from a/c **7788 at Saira Banu.";
         Transaction txn1 = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody1, baseTime);
         assertThat(txn1.categoryId()).isNull();
 
-        // 2. Assign category "Food & Dining > Tea & Snacks" and learn rule
         ingestTransactionUseCase.assignCategoryAndLearnRule(txn1.id(), "Food & Dining > Tea & Snacks", "Tea Stall");
 
-        // 3. Ingest future transaction for payee "Saira Banu"
         String smsBody2 = "Rs 200.00 debited from a/c **7788 at Saira Banu.";
         Transaction txn2 = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody2, baseTime.plusDays(1));
 
@@ -152,5 +149,17 @@ class IngestTransactionUseCaseTest {
 
         assertThat(result.discoveredAccounts()).hasSize(2);
         assertThat(result.transactions()).isNotEmpty();
+    }
+
+    @Test
+    void shouldLinkEmailAccountSuccessfully() {
+        EmailAccountConfig config = ingestTransactionUseCase.linkEmailAccount("user@gmail.com");
+
+        assertThat(config.emailAddress()).isEqualTo("user@gmail.com");
+        assertThat(config.status()).isEqualTo("PUSH_ACTIVE");
+
+        List<EmailAccountConfig> linked = ingestTransactionUseCase.getLinkedEmailAccounts();
+        assertThat(linked).hasSize(1);
+        assertThat(linked.get(0).emailAddress()).isEqualTo("user@gmail.com");
     }
 }

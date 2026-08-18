@@ -9,3 +9,9 @@ variable "environment" {
   default     = "dev"
   description = "Deployment environment"
 }
+
+variable "alert_email_address" {
+  type        = string
+  default     = "alerts@automaticexpense.com"
+  description = "Email address for $0 AWS Free Tier budget notifications"
+}

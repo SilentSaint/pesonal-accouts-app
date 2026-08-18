@@ -22,6 +22,7 @@ public class IngestTransactionService implements IngestTransactionUseCase {
     private final DeduplicationEngine deduplicationEngine;
     private final AccountDiscoveryEngine discoveryEngine;
     private final Map<String, VendorCategoryRule> vendorRules = new ConcurrentHashMap<>();
+    private final Map<String, EmailAccountConfig> linkedEmailAccounts = new ConcurrentHashMap<>();
 
     public IngestTransactionService(AccountRepository accountRepository, TransactionRepository transactionRepository) {
         this.accountRepository = Objects.requireNonNull(accountRepository, "accountRepository cannot be null");
@@ -122,7 +123,6 @@ public class IngestTransactionService implements IngestTransactionUseCase {
 
         ReconciliationStatus status = dedupResult.recommendedStatus();
 
-        // Check rule-based auto-categorization
         String learnedCategory = null;
         String normalizedKey = VendorCategoryRule.normalizePayeeKey(parsed.merchantName());
         VendorCategoryRule matchingRule = vendorRules.get(normalizedKey);
@@ -247,5 +247,20 @@ public class IngestTransactionService implements IngestTransactionUseCase {
         }
 
         return result;
+    }
+
+    @Override
+    public EmailAccountConfig linkEmailAccount(String emailAddress) {
+        if (emailAddress == null || !emailAddress.contains("@")) {
+            throw new IllegalArgumentException("Invalid email address");
+        }
+        EmailAccountConfig config = new EmailAccountConfig(emailAddress, "PUSH_ACTIVE", LocalDateTime.now());
+        linkedEmailAccounts.put(emailAddress.toLowerCase(), config);
+        return config;
+    }
+
+    @Override
+    public List<EmailAccountConfig> getLinkedEmailAccounts() {
+        return new ArrayList<>(linkedEmailAccounts.values());
     }
 }

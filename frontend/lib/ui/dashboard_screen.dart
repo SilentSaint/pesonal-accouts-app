@@ -5,6 +5,7 @@ import 'uncategorized_review_banner.dart';
 import 'historical_backfill_card.dart';
 import 'category_breakdown_view.dart';
 import 'transaction_review_modal.dart';
+import 'email_settings_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -144,6 +145,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'Automatic Expense Tracker',
           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.mark_email_read_outlined, color: Color(0xFF38BDF8)),
+            tooltip: 'Linked Email Accounts',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (context) => const EmailSettingsScreen()),
+              );
+            },
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
