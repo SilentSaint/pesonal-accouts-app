@@ -41,18 +41,23 @@ class ApiConfig {
 EOF
 
 echo "[3/4] Running Static Analysis & Test Suite..."
-export PATH="$PATH:/home/rakshith/flutter/flutter/bin"
+export PATH="$PATH:/home/rakshith/flutter/flutter/bin:$HOME/android_sdk/platform-tools"
+export ANDROID_HOME="$HOME/android_sdk"
+
 flutter analyze
 flutter test
 
-echo "[4/4] Compiling Application Release Deliverable..."
+echo "[4/4] Compiling Application Web Bundle & Android APK..."
 flutter build web --release
+flutter build apk --target-platform android-arm64 --debug --android-skip-build-dependency-validation
 
 mkdir -p "$ROOT_DIR/dev_builds"
 cp -r build/web "$ROOT_DIR/dev_builds/web-v1.0.1+2"
+cp build/app/outputs/flutter-apk/app-debug.apk "$ROOT_DIR/dev_builds/app-v1.0.1+2-debug.apk"
 
 echo "=========================================================="
-echo " Deployment & Build Pipeline Completed!"
-echo " Release Deliverable: $ROOT_DIR/dev_builds/web-v1.0.1+2"
+echo " Deployment & Build Pipeline Completed Successfully!"
+echo " Mobile APK Deliverable: $ROOT_DIR/dev_builds/app-v1.0.1+2-debug.apk"
+echo " Web Bundle Deliverable: $ROOT_DIR/dev_builds/web-v1.0.1+2"
 echo " Configured API Endpoint: $API_URL"
 echo "=========================================================="
