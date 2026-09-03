@@ -41,6 +41,16 @@ const headers = {
   'Content-Type': 'application/json',
 };
 
+function logBackendEvent(level, event, fields = {}) {
+  const payload = {
+    event,
+    service: 'api-handler',
+    ...fields,
+  };
+  const writer = typeof console[level] === 'function' ? console[level] : console.log;
+  writer(`[BACKEND] ${JSON.stringify(payload)}`);
+}
+
 function formatResponse(statusCode, body) {
   return { statusCode, headers, body: JSON.stringify(body) };
 }
@@ -69,8 +79,13 @@ async function publishSyncEvent(userPk, type, entity) {
         payload: entity,
       },
     });
+    logBackendEvent('info', 'sync_publication', { outcome: 'completed', type });
   } catch (error) {
-    console.error('Canonical sync event delivery failed:', error.message);
+    logBackendEvent('warn', 'sync_publication', {
+      outcome: 'failed',
+      type,
+      exception: error?.name || 'Error',
+    });
   }
 }
 
@@ -867,10 +882,15 @@ function httpsGetJson(url, extraHeaders = {}, timeoutMs = 4000) {
 }
 
 exports.handler = async (event) => {
-  console.log('Event received:', JSON.stringify({ path: event.rawPath, method: event.requestContext?.http?.method }));
-
   const httpMethod = event.requestContext?.http?.method || event.httpMethod || 'GET';
   const rawPath = event.rawPath || event.path || '/';
+  const requestId = event.requestContext?.requestId || 'unknown';
+  logBackendEvent('info', 'request', {
+    outcome: 'started',
+    requestId,
+    method: httpMethod,
+    path: rawPath,
+  });
 
   if (httpMethod === 'OPTIONS') {
     return formatResponse(200, { message: 'OK' });
@@ -1255,7 +1275,13 @@ exports.handler = async (event) => {
 
     return formatResponse(404, { error: 'Route not found', path: rawPath, method: httpMethod });
   } catch (err) {
-    console.error('Handler Error:', err);
+    logBackendEvent('error', 'request', {
+      outcome: 'failed',
+      requestId,
+      method: httpMethod,
+      path: rawPath,
+      exception: err?.name || 'Error',
+    });
     return formatResponse(500, { error: err.message });
   }
 };

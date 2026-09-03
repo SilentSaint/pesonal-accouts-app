@@ -19,3 +19,10 @@ terraform/
 
 ### 3. Cost-Optimization Invariants
 * DynamoDB tables must be configured with `PAY_PER_REQUEST` billing mode or 1 RCU / 1 WCU provisioned capacity to enforce $0.00 cost under AWS Free Tier.
+
+## Mandatory TDD and Vertical-Slice Workflow
+
+* Invoke the `/tdd` skill before changing Terraform that affects runtime behavior, permissions, routes, Lambda wiring, or data storage.
+* Start with a failing test or executable plan/validation at the public infrastructure seam, then make the smallest IaC change and re-run validation.
+* Treat infrastructure work as part of one vertical slice with the application adapter and runtime behavior. Do not implement horizontal batches of Terraform resources detached from a verified use case.
+* Do not close an issue for an HCL-only change until the relevant plan, deployment, backend tests, and runtime verification satisfy its acceptance criteria.

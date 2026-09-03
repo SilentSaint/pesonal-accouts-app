@@ -23,3 +23,7 @@ com.automaticexpense.tracker.backend/
 ### 3. Backend TDD Rules
 * Write unit tests for domain entities and use-case ports using JUnit 5 and AssertJ.
 * Use stub/fake implementations for outbound ports in application layer tests rather than heavy mocking frameworks wherever possible.
+* Invoke the `/tdd` skill for every backend bug fix, feature, handler, adapter, IAM, or deployment behavior change.
+* Start at the public seam with a failing regression or behavior test (handler, use case, repository port, or Lambda boundary), then make the smallest implementation change and refactor only after green.
+* Treat each issue as one vertical slice through the applicable domain, application, persistence/infrastructure/IaC, and runtime boundary. Never implement a horizontal layer batch across multiple unfinished behaviors.
+* Do not close backend issues for domain scaffolding, a policy edit, or a passing narrow unit test alone; verify the issue acceptance criteria and the deployed runtime path.

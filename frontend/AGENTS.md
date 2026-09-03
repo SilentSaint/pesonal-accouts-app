@@ -22,3 +22,7 @@ lib/
 ### 3. Frontend TDD Rules
 * Unit test domain logic and application state controllers test-first using `package:test`.
 * Widget tests verify user interaction at the presentation boundary without reaching into low-level network or native platform channels.
+* Invoke the `/tdd` skill for every frontend bug fix, feature, auth change, or API integration change.
+* Write the failing test first at the public UI/application seam, make the smallest change to reach green, then refactor with the relevant Flutter suite passing.
+* Each issue must be one vertical slice from user interaction through application state and its live adapter/API. Do not build horizontal batches of widgets, services, or models for unfinished behaviors.
+* Do not close an issue for static UI scaffolding or isolated widget tests; verify loading, empty, error, retry, and live behavior required by the issue.
