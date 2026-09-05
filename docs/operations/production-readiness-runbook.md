@@ -39,6 +39,12 @@ invalidation, and fetches that marker from CloudFront. It also verifies the unau
 API health endpoint. A failed identity check, gate, invalidation, marker fetch, or smoke
 check stops the deployment.
 
+Terraform state is stored in the encrypted, versioned S3 backend at
+`automatic-expense-tracker-terraform-state-727118420276`, under
+`production/terraform.tfstate`, with S3-native lockfiles enabled. Use Terraform 1.16.x
+or newer for both local operations and CI. Never commit local state files or run an
+apply with `-lock=false`.
+
 ## Backup and restore verification
 
 The DynamoDB table has point-in-time recovery, encryption at rest, and production-only
