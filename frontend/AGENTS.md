@@ -1,5 +1,8 @@
 # Frontend Engineering Guidelines (Flutter / Dart)
 
+Read and follow the repository [engineering workflow](../docs/engineering/workflow.md)
+first. This file adds frontend-specific constraints only.
+
 ## Architecture (Clean Architecture / Hexagonal for Flutter)
 
 ```text

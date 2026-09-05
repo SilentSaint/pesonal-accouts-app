@@ -1,0 +1,40 @@
+name: Feature or behavior
+description: Request one user-observable vertical slice.
+title: "[Feature]: "
+labels: [feature]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: User-observable behavior
+      description: Describe what a user or external caller can do when this is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Use independently verifiable checkboxes.
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Explicit non-goals
+    validations:
+      required: true
+  - type: input
+    id: seam
+    attributes:
+      label: Public test seam
+      placeholder: e.g. TransactionCommandHandler or SubmitTransactionUseCase
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment impact
+      options: [None, Backend, Frontend, Infrastructure, Multiple]
+    validations:
+      required: true

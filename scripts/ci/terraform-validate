@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+temp_data_dir="$(mktemp -d)"
+trap 'rm -rf "$temp_data_dir"' EXIT
+
+command -v terraform >/dev/null || { echo "Terraform must be installed for validation." >&2; exit 1; }
+cd "$repo_root/terraform"
+terraform fmt -check -recursive
+TF_DATA_DIR="$temp_data_dir" terraform init -backend=false -input=false
+TF_DATA_DIR="$temp_data_dir" terraform validate
