@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../domain/financial_account.dart';
 import '../domain/transaction_item.dart';
+import '../domain/review_payee_identity.dart';
+import '../domain/review_confirmation_propagation.dart';
 import '../domain/peer_debt_entry.dart';
 import '../domain/expense_categories.dart';
 import '../services/peer_debt_service.dart';
@@ -2343,6 +2345,21 @@ class _DashboardScreenState extends State<DashboardScreen>
           }
         },
         onConfirm: (txn, category) async {
+          final reviewedTransaction = pendingTransactions.firstWhere(
+            (candidate) => candidate.id == txn.id,
+            orElse: () => txn,
+          );
+          final matchingReviews = pendingTransactions
+              .where(
+                (candidate) =>
+                    candidate.id != txn.id &&
+                    candidate.type == reviewedTransaction.type &&
+                    ReviewPayeeIdentity.matches(
+                      reviewedTransaction,
+                      candidate,
+                    ),
+              )
+              .toList();
           final isExcluded = category == 'Not Applicable / Exclude';
           var confirmedTxn = txn.copyWith(
             categoryId: category,
@@ -2360,17 +2377,43 @@ class _DashboardScreenState extends State<DashboardScreen>
           }
           confirmedTxn = persisted;
 
+          final persistedMatches = <TransactionItem>[];
+          for (final matchingReview in matchingReviews) {
+            final propagated = ReviewConfirmationPropagation.apply(
+              confirmedTxn,
+              matchingReview,
+            );
+            final savedMatch =
+                await (widget.onReviewConfirmation?.call(propagated) ??
+                    (matchingReview.potentialDuplicateOfTransactionId != null
+                        ? BackendApiService().confirmReconciledTransaction(
+                            propagated,
+                          )
+                        : _confirmReviewedTransaction(propagated)));
+            if (savedMatch != null) {
+              persistedMatches.add(savedMatch);
+            }
+          }
+          if (!mounted) return false;
+          final savedTransactions = [confirmedTxn, ...persistedMatches];
+          final savedIds = savedTransactions.map((item) => item.id).toSet();
+
           setState(() {
-            pendingTransactions.removeWhere((t) => t.id == txn.id);
-            _addConfirmedTransaction(confirmedTxn);
-            if (confirmedTxn.isTransfer || category == 'Self Transfer') {
+            pendingTransactions.removeWhere((t) => savedIds.contains(t.id));
+            for (final savedTransaction in savedTransactions) {
+              _addConfirmedTransaction(savedTransaction);
+            }
+            if (savedTransactions.any((item) => item.isTransfer) ||
+                category == 'Self Transfer') {
               _reconcileSelfTransfers();
             }
-            if (txn.type == 'DEBIT' &&
-                !isExcluded &&
-                !confirmedTxn.isTransfer) {
-              categoryTotals[category] =
-                  (categoryTotals[category] ?? 0.0) + confirmedTxn.amount;
+            for (final savedTransaction in savedTransactions) {
+              if (savedTransaction.type == 'DEBIT' &&
+                  !isExcluded &&
+                  !savedTransaction.isTransfer) {
+                categoryTotals[category] = (categoryTotals[category] ?? 0.0) +
+                    savedTransaction.amount;
+              }
             }
           });
           _savePersistentState(
