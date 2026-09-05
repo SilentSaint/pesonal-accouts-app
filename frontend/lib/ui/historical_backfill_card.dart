@@ -1,94 +1,140 @@
 import 'package:flutter/material.dart';
+import 'theme/app_theme.dart';
 
 class HistoricalBackfillCard extends StatelessWidget {
   final VoidCallback onScanPressed;
   final bool isScanning;
+  final bool isCompleted;
+  final DateTime? lastScannedAt;
 
   const HistoricalBackfillCard({
     super.key,
     required this.onScanPressed,
     this.isScanning = false,
+    this.isCompleted = false,
+    this.lastScannedAt,
   });
 
   @override
   Widget build(BuildContext context) {
+    final statusColor = isCompleted ? AppColors.success : AppColors.primary;
+    final statusBg = isCompleted ? const Color(0x1A10B981) : const Color(0x1A6366F1);
+
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 16.0),
+      margin: const EdgeInsets.only(bottom: 14.0),
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF1E1B4B), Color(0xFF312E81)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x666366F1)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x266366F1),
-            blurRadius: 12,
-            offset: Offset(0, 4),
-          ),
+        border: Border.all(
+          color: isCompleted ? const Color(0x4010B981) : AppColors.border,
+          width: 1,
+        ),
+        boxShadow: [
+          if (isCompleted)
+            const BoxShadow(
+              color: Color(0x1410B981),
+              blurRadius: 16,
+              offset: Offset(0, 4),
+            ),
         ],
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: const BoxDecoration(
-              color: Color(0x336366F1),
+            decoration: BoxDecoration(
+              color: statusBg,
               shape: BoxShape.circle,
+              border: Border.all(
+                color: statusColor.withValues(alpha: 0.3),
+                width: 1,
+              ),
             ),
-            child: const Icon(
-              Icons.history_toggle_off,
-              color: Color(0xFF818CF8),
-              size: 24,
+            child: Icon(
+              isCompleted ? Icons.check_circle_outline : Icons.history_toggle_off,
+              color: statusColor,
+              size: 22,
             ),
           ),
-          const SizedBox(width: 12),
-          const Expanded(
+          const SizedBox(width: 14),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '30-Day Auto Backfill',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                  ),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 6,
+                  runSpacing: 2,
+                  children: [
+                    Text(
+                      isCompleted ? '30-Day Sync Active' : '30-Day Auto Backfill',
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: statusBg,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        isCompleted ? 'SYNCED' : 'PENDING',
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                SizedBox(height: 2),
+                const SizedBox(height: 3),
                 Text(
-                  'Scan last 30 days SMS & Emails to auto-discover bank accounts',
-                  style: TextStyle(
-                    color: Color(0xCCFFFFFF),
+                  isCompleted
+                      ? 'Scanned at ${lastScannedAt?.hour.toString().padLeft(2, '0')}:${lastScannedAt?.minute.toString().padLeft(2, '0')}:${lastScannedAt?.second.toString().padLeft(2, '0')}. All accounts mapped.'
+                      : 'Scan SMS & financial receipts to discover accounts & balances.',
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
                     fontSize: 12,
+                    height: 1.3,
                   ),
                 ),
               ],
             ),
           ),
+          const SizedBox(width: 12),
           ElevatedButton(
             onPressed: isScanning ? null : onScanPressed,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF6366F1),
-              foregroundColor: Colors.white,
+              backgroundColor: isCompleted ? AppColors.surfaceElevated : AppColors.primary,
+              foregroundColor: isCompleted ? AppColors.successLight : Colors.white,
+              elevation: 0,
+              side: isCompleted
+                  ? const BorderSide(color: Color(0x4010B981))
+                  : BorderSide.none,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(10),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             ),
             child: isScanning
                 ? const SizedBox(
-                    width: 16,
-                    height: 16,
+                    width: 14,
+                    height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                   )
-                : const Text(
-                    'Scan 30 Days',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                : Text(
+                    isCompleted ? 'Incremental' : 'Scan 30 Days',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
                   ),
           ),
         ],

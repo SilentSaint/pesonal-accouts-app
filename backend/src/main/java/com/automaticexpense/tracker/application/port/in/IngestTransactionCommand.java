@@ -11,5 +11,26 @@ public record IngestTransactionCommand(
     String merchantName,
     AccountId accountId,
     String categoryId,
-    IngestionSource ingestionSource
-) {}
+    IngestionSource ingestionSource,
+    String subCategory,
+    Money netPersonalExpense,
+    String accountMask,
+    String referenceNumber,
+    String rawSnippet,
+    String transferCounterpartMask
+) {
+    public IngestTransactionCommand(
+        Money amount,
+        TransactionType type,
+        LocalDateTime timestamp,
+        String merchantName,
+        AccountId accountId,
+        String categoryId,
+        IngestionSource ingestionSource
+    ) {
+        this(
+            amount, type, timestamp, merchantName, accountId, categoryId,
+            ingestionSource, null, amount, null, null, null, null
+        );
+    }
+}

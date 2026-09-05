@@ -1,7 +1,10 @@
 class ApiConfig {
-  static const String defaultLocalUrl = 'http://localhost:8080/api';
-
-  static String baseUrl = defaultLocalUrl;
+  static String baseUrl = const String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://6nyqikrpbb.execute-api.ap-south-2.amazonaws.com/api',
+  );
+  static const String websocketUrl =
+      String.fromEnvironment('WEBSOCKET_SYNC_URL', defaultValue: '');
 
   static void useCustomApiEndpoint(String apiEndpoint) {
     if (apiEndpoint.isEmpty) return;
@@ -9,6 +12,6 @@ class ApiConfig {
   }
 
   static void resetToDefault() {
-    baseUrl = defaultLocalUrl;
+    baseUrl = 'https://6nyqikrpbb.execute-api.ap-south-2.amazonaws.com/api';
   }
 }

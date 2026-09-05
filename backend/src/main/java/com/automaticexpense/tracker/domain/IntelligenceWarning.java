@@ -1,0 +1,11 @@
+package com.automaticexpense.tracker.domain;
+
+public enum IntelligenceWarning {
+    INCOMPLETE_PERIOD,
+    INSUFFICIENT_HISTORY,
+    MISSING_COMPARISON_BASELINE,
+    MIXED_OR_UNSUPPORTED_CURRENCIES,
+    EXCLUDED_NON_CANONICAL_RECORDS,
+    EXCLUDED_TRANSFERS,
+    STALE_SNAPSHOT
+}

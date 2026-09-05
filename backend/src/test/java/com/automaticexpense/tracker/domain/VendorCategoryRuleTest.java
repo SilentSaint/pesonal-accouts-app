@@ -25,6 +25,7 @@ class VendorCategoryRuleTest {
             "Saira Banu",
             "Food & Dining",
             "Tea & Snacks",
+            "Tea & Snacks",
             true
         );
 

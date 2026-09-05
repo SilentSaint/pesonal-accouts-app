@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.automaticexpense.tracker.application.SmsIngestionServiceTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-08-18T12:50:54" hostname="predator" time="0.007">
-  <properties/>
-  <testcase name="shouldNotSaveNonFinancialSms()" classname="com.automaticexpense.tracker.application.SmsIngestionServiceTest" time="0.002"/>
-  <testcase name="shouldParseAndSaveValidSmsTransaction()" classname="com.automaticexpense.tracker.application.SmsIngestionServiceTest" time="0.004"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

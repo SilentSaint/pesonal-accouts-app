@@ -9,6 +9,19 @@
 build/
 backend/build/
 backend/.gradle/
+backend/bin/
+backend/lambda/function.zip
+backend/lambda/lambda.zip
+
+# Published and test build outputs
+dev_builds/
+frontend/*_e2e_*.png
+frontend/live_*.png
+frontend/playwright_*.png
+frontend/prod_*.png
+frontend/production_live_screenshot.png
+frontend/test_dashboard_clean.png
+frontend/web_e2e_*.png
 
 # Flutter & Dart
 frontend/build/
@@ -16,6 +29,11 @@ frontend/.dart_tool/
 frontend/.idea/
 frontend/.pub/
 frontend/.pub-cache/
+frontend/android/local.properties
+frontend/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+frontend/linux/flutter/generated_plugin_registrant.cc
+frontend/linux/flutter/generated_plugin_registrant.h
+frontend/linux/flutter/generated_plugins.cmake
 
 # OS / IDE
 .DS_Store

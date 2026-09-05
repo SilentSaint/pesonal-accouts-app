@@ -1,6 +1,6 @@
 # Milestone: Stabilize Transaction Capture
 
-Status: In progress; production baseline deployed  
+Status: In progress; production baseline deployed
 Scope: One complete path from transaction input to confirmed persisted transaction.
 
 ## Goal
