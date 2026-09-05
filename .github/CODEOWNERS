@@ -1,0 +1,6 @@
+# Workflow and guardrail changes require repository-owner review.
+* @SilentSaint
+
+/.github/ @SilentSaint
+/docs/engineering/ @SilentSaint
+/scripts/ci/ @SilentSaint

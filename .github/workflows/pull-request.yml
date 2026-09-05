@@ -1,0 +1,132 @@
+name: Pull request validation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  generated-artifacts-and-secrets:
+    name: Generated artifacts and secrets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/generated-artifact-check
+      - uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  backend:
+    name: Backend Gradle tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: actions/setup-java@v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/backend-test
+      - if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: backend-test-reports-${{ env.CANDIDATE_SHA }}
+          path: backend/build/reports/tests/test
+          if-no-files-found: warn
+
+  flutter-tests:
+    name: Flutter tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: subosito/flutter-action@v2.21.0
+        with:
+          channel: stable
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/flutter-test
+
+  flutter-analysis:
+    name: Flutter static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: subosito/flutter-action@v2.21.0
+        with:
+          channel: stable
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/static-analysis
+
+  lambda:
+    name: Node Lambda tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '22'
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/lambda-test
+
+  terraform:
+    name: Terraform format and validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: hashicorp/setup-terraform@v3.1.2
+      - uses: actions/setup-java@v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/terraform-validate
+
+  web-build:
+    name: Flutter web build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: subosito/flutter-action@v2.21.0
+        with:
+          channel: stable
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: scripts/ci/web-build
+
+  playwright-smoke:
+    name: Playwright smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: '22'
+      - run: echo "Testing candidate commit $CANDIDATE_SHA"
+      - run: npm install --no-save --no-package-lock playwright@1.47.2
+        working-directory: frontend
+      - run: scripts/ci/playwright-smoke

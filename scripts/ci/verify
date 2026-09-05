@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" ]]; then
+  echo "Run every repository verification command from a clean candidate checkout."
+  exit 0
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+failed=0
+for check in generated-artifact-check backend-test flutter-test static-analysis lambda-test terraform-validate web-build playwright-smoke; do
+  if ! "$repo_root/scripts/ci/$check"; then
+    failed=1
+  fi
+done
+
+exit "$failed"

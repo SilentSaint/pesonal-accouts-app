@@ -1,5 +1,8 @@
 # Infrastructure as Code (IaC) Guidelines (Terraform)
 
+Read and follow the repository [engineering workflow](../docs/engineering/workflow.md)
+first. This file adds infrastructure-specific constraints only.
+
 ## Terraform Structure & Best Practices
 
 ```text

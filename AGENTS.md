@@ -1,5 +1,11 @@
 # Project Rules & Guidance for AI Agents
 
+## Mandatory repository workflow
+
+Read and follow [the canonical engineering workflow](docs/engineering/workflow.md)
+before making changes. It is the sole source for branch, worktree, PR, CI, merge,
+and deployment guardrails; scoped instructions add only area-specific detail.
+
 ## Core Architectural & Engineering Principles
 
 ### 1. Domain-Driven Design (DDD) & Hexagonal Architecture

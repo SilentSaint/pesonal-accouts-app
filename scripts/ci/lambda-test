@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+test_dir="$repo_root/backend/lambda/test"
+
+test -d "$test_dir" || {
+  echo "Lambda tests are unavailable: backend/lambda/test is absent from this candidate commit." >&2
+  echo "Reconcile the repository baseline before enabling this check as required." >&2
+  exit 1
+}
+
+command -v node >/dev/null || { echo "Node.js must be installed for Lambda tests." >&2; exit 1; }
+"$repo_root/scripts/ci/build-lambda-artifacts"
+node --test "$test_dir"/*.test.js

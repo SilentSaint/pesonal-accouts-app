@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+runner="$repo_root/frontend/e2e_playwright_test.js"
+
+test -f "$runner" || {
+  echo "Playwright smoke test is unavailable: frontend/e2e_playwright_test.js is absent from this candidate commit." >&2
+  echo "Reconcile the repository baseline before enabling this check as required." >&2
+  exit 1
+}
+
+command -v node >/dev/null || { echo "Node.js must be installed for Playwright smoke tests." >&2; exit 1; }
+node "$runner"

@@ -1,5 +1,8 @@
 # Backend Engineering Guidelines (Java 21 / Quarkus / AWS)
 
+Read and follow the repository [engineering workflow](../docs/engineering/workflow.md)
+first. This file adds backend-specific constraints only.
+
 ## Package Architecture (Hexagonal DDD)
 
 ```text
