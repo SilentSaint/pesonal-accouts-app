@@ -31,13 +31,42 @@ have an active human destination.
 4. A disposable DynamoDB Local table creation, transactional write, and read.
 5. Terraform formatting and configuration validation.
 
-`Production Deployment` is manual and targets the protected `production` environment.
-It invokes the same reusable CI workflow first. The publish job cannot begin unless
-every gate succeeds, then verifies the assumed AWS account before applying Terraform.
+`Production Deployment` is the manual deployment hatch for the temporary GitHub Actions
+billing outage. It is deliberately narrow:
+
+1. The workflow must be dispatched for `main`; another branch is rejected.
+2. The dispatcher must select the explicit `yes` approval input.
+3. The protected `production` environment must require your GitHub approval.
+4. Repository branch protection must require changes to arrive through a merged PR.
+5. The reusable CI workflow must pass before the publish job can begin.
+
+This means the hatch deploys only the reviewed contents of `main`, and does not provide
+a branch-based or local-workstation production bypass. If GitHub Actions is unavailable
+because of account billing restrictions, this hatch cannot run until Actions is restored;
+use the local validation commands in the repository runbook, but do not treat them as
+production deployment approval.
+
+After approval, the publish job verifies the assumed AWS account before applying Terraform.
 It builds a deployment marker containing the immutable Git SHA, waits for CloudFront
 invalidation, and fetches that marker from CloudFront. It also verifies the unauthenticated
 API health endpoint. A failed identity check, gate, invalidation, marker fetch, or smoke
 check stops the deployment.
+
+The billing problem is an operational dependency, not a reason to weaken the release
+boundary. Record any GitHub Actions billing/account incident in the deployment notes and
+re-check Actions availability before relying on this hatch.
+
+When GitHub Actions is unavailable, the owner-approved local fallback is:
+
+```bash
+PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
+```
+
+The wrapper refuses to proceed unless the checkout is on `main`, exactly matches
+`origin/main`, has no uncommitted changes, passes the local backend and Flutter gates,
+and has valid AWS credentials. Repository branch protection remains the control that
+ensures the `main` revision arrived through a merged PR. The command requires the owner
+to set the approval variable deliberately; do not export it in a shell profile.
 
 Terraform state is stored in the encrypted, versioned S3 backend at
 `automatic-expense-tracker-terraform-state-727118420276`, under
