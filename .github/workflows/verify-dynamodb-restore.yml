@@ -1,0 +1,65 @@
+name: Verify DynamoDB Backup Restore
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-dynamodb-restore-verification
+  cancel-in-progress: false
+
+jobs:
+  verify-restore:
+    name: Verify production backup and restore
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      DYNAMODB_TABLE_NAME: ${{ vars.DYNAMODB_TABLE_NAME }}
+    steps:
+      - name: Configure production AWS identity through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-dynamodb-restore
+
+      - name: Verify production identity and backup prerequisites
+        run: |
+          test -n "$AWS_ACCOUNT_ID"
+          test -n "$DYNAMODB_TABLE_NAME"
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+          test "$(aws dynamodb describe-continuous-backups --table-name "$DYNAMODB_TABLE_NAME" --query 'ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus' --output text)" = ENABLED
+
+      - name: Create an isolated on-demand backup and restore it
+        run: |
+          restore_table="${DYNAMODB_TABLE_NAME}-restore-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          backup_name="${DYNAMODB_TABLE_NAME}-restore-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          backup_arn="$(aws dynamodb create-backup --table-name "$DYNAMODB_TABLE_NAME" --backup-name "$backup_name" --query 'BackupDetails.BackupArn' --output text)"
+          echo "RESTORE_TABLE=$restore_table" >> "$GITHUB_ENV"
+          echo "BACKUP_ARN=$backup_arn" >> "$GITHUB_ENV"
+          until test "$(aws dynamodb describe-backup --backup-arn "$backup_arn" --query 'BackupDescription.BackupDetails.BackupStatus' --output text)" = AVAILABLE; do sleep 15; done
+          aws dynamodb restore-table-from-backup --target-table-name "$restore_table" --backup-arn "$backup_arn"
+          aws dynamodb wait table-exists --table-name "$restore_table"
+          test "$(aws dynamodb describe-table --table-name "$restore_table" --query 'Table.TableStatus' --output text)" = ACTIVE
+          test "$(aws dynamodb describe-table --table-name "$DYNAMODB_TABLE_NAME" --query 'Table.KeySchema' --output json)" = "$(aws dynamodb describe-table --table-name "$restore_table" --query 'Table.KeySchema' --output json)"
+
+      - name: Remove verification-only restore resources
+        if: always()
+        run: |
+          if test -n "${RESTORE_TABLE:-}"; then
+            aws dynamodb delete-table --table-name "$RESTORE_TABLE" || true
+          fi
+          if test -n "${BACKUP_ARN:-}"; then
+            aws dynamodb delete-backup --backup-arn "$BACKUP_ARN" || true
+          fi

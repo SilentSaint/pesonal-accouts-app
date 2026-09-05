@@ -16,13 +16,17 @@ class IngestTransactionUseCaseTest {
 
     private InMemoryAccountRepository accountRepository;
     private InMemoryTransactionRepository transactionRepository;
+    private InMemoryVendorRuleRepository vendorRuleRepository;
     private IngestTransactionUseCase ingestTransactionUseCase;
 
     @BeforeEach
     void setUp() {
         accountRepository = new InMemoryAccountRepository();
         transactionRepository = new InMemoryTransactionRepository();
-        ingestTransactionUseCase = new IngestTransactionService(accountRepository, transactionRepository);
+        vendorRuleRepository = new InMemoryVendorRuleRepository();
+        ingestTransactionUseCase = new IngestTransactionService(
+            accountRepository, transactionRepository, vendorRuleRepository
+        );
     }
 
     @Test
@@ -57,6 +61,50 @@ class IngestTransactionUseCaseTest {
 
         FinancialAccount updatedAccount = accountRepository.findById(new AccountId("acc-1")).orElseThrow();
         assertThat(updatedAccount.currentBalance().amount()).isEqualByComparingTo("9500.00");
+    }
+
+    @Test
+    void shouldPersistEveryEditedReviewFieldOnManualConfirmation() {
+        accountRepository.save(new FinancialAccount(
+            new AccountId("acc-1234"),
+            "Review account",
+            AccountType.SAVINGS,
+            "1234",
+            "INR",
+            Money.of("10000.00", "INR")
+        ));
+        IngestTransactionCommand command = new IngestTransactionCommand(
+            Money.of("913.42", "INR"),
+            TransactionType.DEBIT,
+            LocalDateTime.of(2026, 8, 29, 6, 0),
+            "Green Market",
+            new AccountId("acc-1234"),
+            "Groceries",
+            IngestionSource.MANUAL,
+            "Fruits & Vegetables",
+            Money.of("900.00", "INR"),
+            "•••• 1234",
+            "upi-12345678",
+            "edited receipt",
+            "•••• 9876"
+        );
+
+        Transaction confirmed = ingestTransactionUseCase.ingestManualTransaction(command);
+
+        assertThat(confirmed.merchantName()).isEqualTo("Green Market");
+        assertThat(confirmed.amount()).isEqualTo(Money.of("913.42", "INR"));
+        assertThat(confirmed.type()).isEqualTo(TransactionType.DEBIT);
+        assertThat(confirmed.timestamp()).isEqualTo(LocalDateTime.of(2026, 8, 29, 6, 0));
+        assertThat(confirmed.accountId()).isEqualTo(new AccountId("acc-1234"));
+        assertThat(confirmed.categoryId()).isEqualTo("Groceries");
+        assertThat(confirmed.subCategory()).isEqualTo("Fruits & Vegetables");
+        assertThat(confirmed.ingestionSource()).isEqualTo(IngestionSource.MANUAL);
+        assertThat(confirmed.reconciliationStatus()).isEqualTo(ReconciliationStatus.CONFIRMED);
+        assertThat(confirmed.netPersonalExpense()).isEqualTo(Money.of("900.00", "INR"));
+        assertThat(confirmed.accountMask()).isEqualTo("•••• 1234");
+        assertThat(confirmed.referenceNumber()).isEqualTo("upi-12345678");
+        assertThat(confirmed.rawSnippet()).isEqualTo("edited receipt");
+        assertThat(confirmed.transferCounterpartMask()).isEqualTo("•••• 9876");
     }
 
     @Test
@@ -107,6 +155,57 @@ class IngestTransactionUseCaseTest {
 
         assertThat(emailTxn.id()).isEqualTo(smsTxn.id());
         assertThat(emailTxn.reconciliationStatus()).isEqualTo(ReconciliationStatus.AUTO_MERGED);
+        assertThat(emailTxn.ingestionSources())
+            .containsExactlyInAnyOrder(IngestionSource.SMS, IngestionSource.EMAIL);
+        assertThat(transactionRepository.findAllTransactions()).hasSize(1);
+        assertThat(accountRepository.findById(account.id()).orElseThrow().currentBalance())
+            .isEqualTo(Money.of("-850.00", "INR"));
+
+        Transaction retriedEmail = ingestTransactionUseCase.ingestEmailTransaction(
+            "alerts@swiggy.in", emailSubject, emailBody, baseTime.plusMinutes(8)
+        );
+        assertThat(retriedEmail.id()).isEqualTo(smsTxn.id());
+        assertThat(transactionRepository.findAllTransactions()).hasSize(1);
+    }
+
+    @Test
+    void keepsAnAmbiguousEmailOutOfTheBalanceUntilTheUserMergesIt() {
+        FinancialAccount account = new FinancialAccount(
+            new AccountId("acc-ambiguity"),
+            "HDFC Credit Card",
+            AccountType.CREDIT_CARD,
+            "1234",
+            "INR",
+            Money.of("0.00", "INR")
+        );
+        accountRepository.save(account);
+        LocalDateTime baseTime = LocalDateTime.of(2026, 7, 26, 14, 0);
+
+        Transaction sms = ingestTransactionUseCase.ingestSmsTransaction(
+            "HDFCBK",
+            "INR 850.00 spent on Card 1234 at Bundl Tech on 2026-07-26.",
+            baseTime
+        );
+        Transaction email = ingestTransactionUseCase.ingestEmailTransaction(
+            "alerts@swiggy.in",
+            "Payment confirmation",
+            "INR 850.00 debited from card ending in 1234 at Swiggy Pay on 2026-07-26.",
+            baseTime.plusMinutes(8)
+        );
+
+        assertThat(email.reconciliationStatus()).isEqualTo(ReconciliationStatus.NEEDS_REVIEW);
+        assertThat(email.potentialDuplicateOfTransactionId()).isEqualTo(sms.id());
+        assertThat(accountRepository.findById(account.id()).orElseThrow().currentBalance())
+            .isEqualTo(Money.of("-850.00", "INR"));
+
+        Transaction canonical = ingestTransactionUseCase.mergeTransactions(sms.id(), email.id());
+
+        assertThat(canonical.ingestionSources())
+            .containsExactlyInAnyOrder(IngestionSource.SMS, IngestionSource.EMAIL);
+        assertThat(transactionRepository.findById(email.id())).isEmpty();
+        assertThat(ingestTransactionUseCase.getPendingReviewTransactions()).isEmpty();
+        assertThat(accountRepository.findById(account.id()).orElseThrow().currentBalance())
+            .isEqualTo(Money.of("-850.00", "INR"));
     }
 
     @Test
@@ -127,12 +226,42 @@ class IngestTransactionUseCaseTest {
         Transaction txn1 = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody1, baseTime);
         assertThat(txn1.categoryId()).isNull();
 
-        ingestTransactionUseCase.assignCategoryAndLearnRule(txn1.id(), "Food & Dining > Tea & Snacks", "Tea Stall");
+        ingestTransactionUseCase.assignCategoryAndLearnRule(
+            txn1.id(), "Food & Dining", "Tea & Snacks", "Tea Stall"
+        );
 
-        String smsBody2 = "Rs 200.00 debited from a/c **7788 at Saira Banu.";
-        Transaction txn2 = ingestTransactionUseCase.ingestSmsTransaction("HDFCBK", smsBody2, baseTime.plusDays(1));
+        IngestTransactionUseCase restartedUseCase = new IngestTransactionService(
+            accountRepository, transactionRepository, vendorRuleRepository
+        );
+        String smsBody2 = "Rs 200.00 debited from a/c **7788 at Saira Banu Info: UPI.";
+        Transaction txn2 = restartedUseCase.ingestSmsTransaction("HDFCBK", smsBody2, baseTime.plusDays(1));
 
-        assertThat(txn2.categoryId()).isEqualTo("Food & Dining > Tea & Snacks");
+        assertThat(txn2.categoryId()).isEqualTo("Food & Dining");
+        assertThat(txn2.subCategory()).isEqualTo("Tea & Snacks");
+    }
+
+    @Test
+    void leavesAnUnmappedPayeeInTheReviewQueue() {
+        accountRepository.save(new FinancialAccount(
+            new AccountId("acc-rule-2"),
+            "HDFC Account",
+            AccountType.SAVINGS,
+            "7788",
+            "INR",
+            Money.of("5000.00", "INR")
+        ));
+
+        Transaction transaction = ingestTransactionUseCase.ingestSmsTransaction(
+            "HDFCBK",
+            "Rs 150.00 debited from a/c **7788 at Unknown Tea Counter.",
+            LocalDateTime.of(2026, 7, 26, 10, 0)
+        );
+
+        assertThat(transaction.categoryId()).isNull();
+        assertThat(transaction.reconciliationStatus()).isEqualTo(ReconciliationStatus.NEEDS_REVIEW);
+        assertThat(ingestTransactionUseCase.getPendingReviewTransactions())
+            .extracting(Transaction::id)
+            .contains(transaction.id());
     }
 
     @Test

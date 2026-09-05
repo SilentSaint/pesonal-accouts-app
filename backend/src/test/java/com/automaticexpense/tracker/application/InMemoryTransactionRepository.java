@@ -36,7 +36,7 @@ public class InMemoryTransactionRepository implements TransactionRepository {
     @Override
     public List<Transaction> findByReconciliationStatus(ReconciliationStatus status) {
         return transactions.values().stream()
-            .filter(txn -> txn.reconciliationStatus() == status || (status == ReconciliationStatus.NEEDS_REVIEW && txn.categoryId() == null))
+            .filter(txn -> txn.reconciliationStatus() == status)
             .collect(Collectors.toList());
     }
 
@@ -46,6 +46,11 @@ public class InMemoryTransactionRepository implements TransactionRepository {
             .filter(txn -> txn.accountId().equals(accountId))
             .filter(txn -> !txn.timestamp().isBefore(startTime) && !txn.timestamp().isAfter(endTime))
             .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<Transaction> findAllTransactions() {
+        return new java.util.ArrayList<>(transactions.values());
     }
 
     @Override

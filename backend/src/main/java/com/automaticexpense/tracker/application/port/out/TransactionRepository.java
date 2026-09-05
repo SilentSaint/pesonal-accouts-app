@@ -15,5 +15,6 @@ public interface TransactionRepository {
     List<Transaction> findByAccountId(AccountId accountId);
     List<Transaction> findByReconciliationStatus(ReconciliationStatus status);
     List<Transaction> findByAccountIdAndWindow(AccountId accountId, LocalDateTime startTime, LocalDateTime endTime);
+    List<Transaction> findAllTransactions();
     void delete(TransactionId id);
 }

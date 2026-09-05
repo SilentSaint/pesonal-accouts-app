@@ -5,19 +5,36 @@ import java.math.RoundingMode;
 import java.util.Objects;
 
 public class CategoryBudget {
+    private final String id;
     private final String categoryId;
+    private final String categoryName;
+    private final String yearMonth;
     private final Money limitAmount;
     private Money currentSpend;
 
     public CategoryBudget(String categoryId, Money limitAmount, Money currentSpend) {
+        this(categoryId, categoryId, categoryId, "DEFAULT", limitAmount, currentSpend);
+    }
+
+    public CategoryBudget(
+        String id,
+        String categoryId,
+        String categoryName,
+        String yearMonth,
+        Money limitAmount,
+        Money currentSpend
+    ) {
+        this.id = id != null ? id : categoryId;
         this.categoryId = Objects.requireNonNull(categoryId, "categoryId cannot be null");
+        this.categoryName = categoryName != null ? categoryName : categoryId;
+        this.yearMonth = yearMonth != null ? yearMonth : "DEFAULT";
         this.limitAmount = Objects.requireNonNull(limitAmount, "limitAmount cannot be null");
-        this.currentSpend = currentSpend != null ? currentSpend : new Money(BigDecimal.ZERO, limitAmount.currency());
+        this.currentSpend = currentSpend != null ? currentSpend : Money.zero(limitAmount.currency());
     }
 
     public void addSpend(Money amount) {
-        if (amount != null && amount.currency().equals(limitAmount.currency())) {
-            this.currentSpend = new Money(this.currentSpend.amount().add(amount.amount()), limitAmount.currency());
+        if (amount != null && amount.currency().equalsIgnoreCase(limitAmount.currency())) {
+            this.currentSpend = this.currentSpend.add(amount);
         }
     }
 
@@ -37,8 +54,27 @@ public class CategoryBudget {
         return getSpendPercentage() >= 100.0;
     }
 
+    public Money remainingBudget() {
+        if (currentSpend.isGreaterThanOrEqualTo(limitAmount)) {
+            return Money.zero(limitAmount.currency());
+        }
+        return limitAmount.subtract(currentSpend);
+    }
+
+    public String id() {
+        return id;
+    }
+
     public String categoryId() {
         return categoryId;
+    }
+
+    public String categoryName() {
+        return categoryName;
+    }
+
+    public String yearMonth() {
+        return yearMonth;
     }
 
     public Money limitAmount() {

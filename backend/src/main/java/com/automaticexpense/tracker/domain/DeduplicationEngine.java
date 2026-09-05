@@ -13,6 +13,18 @@ public class DeduplicationEngine {
         }
 
         for (Transaction existing : existingTransactionsInWindow) {
+            if (existing.potentialDuplicateOfTransactionId() != null) {
+                continue;
+            }
+            if (existing.ingestionSources().contains(candidateSource)) {
+                if (existing.ingestionSources().size() > 1
+                    && existing.amount().amount().compareTo(candidate.amount()) == 0
+                    && existing.type() == candidate.type()
+                    && isExactOrCompatibleMerchant(existing.merchantName(), candidate.merchantName())) {
+                    return DeduplicationResult.autoMerge(existing.id());
+                }
+                continue;
+            }
             if (existing.amount().amount().compareTo(candidate.amount()) == 0 &&
                 existing.type() == candidate.type()) {
                 

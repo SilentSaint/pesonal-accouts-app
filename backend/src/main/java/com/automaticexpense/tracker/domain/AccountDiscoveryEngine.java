@@ -19,17 +19,22 @@ public class AccountDiscoveryEngine {
             }
         }
 
-        List<ParsedTransactionEvent> allEvents = new ArrayList<>();
-        if (smsEvents != null) allEvents.addAll(smsEvents);
-        if (emailEvents != null) allEvents.addAll(emailEvents);
+        List<IngestedEvent> allEvents = new ArrayList<>();
+        if (smsEvents != null) {
+            smsEvents.forEach(event -> allEvents.add(new IngestedEvent(event, IngestionSource.SMS)));
+        }
+        if (emailEvents != null) {
+            emailEvents.forEach(event -> allEvents.add(new IngestedEvent(event, IngestionSource.EMAIL)));
+        }
 
         // Sort events chronologically
-        allEvents.sort(Comparator.comparing(ParsedTransactionEvent::timestamp));
+        allEvents.sort(Comparator.comparing(event -> event.transaction().timestamp()));
 
         List<Transaction> createdTransactions = new ArrayList<>();
         int autoMergedCount = 0;
 
-        for (ParsedTransactionEvent event : allEvents) {
+        for (IngestedEvent ingestedEvent : allEvents) {
+            ParsedTransactionEvent event = ingestedEvent.transaction();
             String last4 = event.accountLast4();
             FinancialAccount account = accountMap.computeIfAbsent(last4, k -> new FinancialAccount(
                 new AccountId("acc-auto-" + k),
@@ -42,7 +47,7 @@ public class AccountDiscoveryEngine {
 
             DeduplicationResult dedupResult = deduplicationEngine.evaluate(
                 event,
-                IngestionSource.SMS,
+                ingestedEvent.source(),
                 createdTransactions.stream()
                     .filter(t -> t.accountId().equals(account.id()))
                     .toList()
@@ -83,12 +88,13 @@ public class AccountDiscoveryEngine {
                     event.merchantName(),
                     account.id(),
                     null,
-                    IngestionSource.SMS,
+                    ingestedEvent.source(),
                     dedupResult.recommendedStatus(),
                     amount
                 );
                 createdTransactions.add(txn);
             }
+
         }
 
         return new BackfillResult(
@@ -97,5 +103,8 @@ public class AccountDiscoveryEngine {
             allEvents.size(),
             autoMergedCount
         );
+    }
+
+    private record IngestedEvent(ParsedTransactionEvent transaction, IngestionSource source) {
     }
 }

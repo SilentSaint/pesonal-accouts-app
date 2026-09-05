@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../domain/transaction_item.dart';
+import 'theme/app_theme.dart';
 
 class UncategorizedReviewBanner extends StatelessWidget {
   final List<TransactionItem> pendingTransactions;
@@ -21,75 +22,111 @@ class UncategorizedReviewBanner extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 16.0),
+      margin: const EdgeInsets.only(bottom: 14.0),
       padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF451A03), Color(0xFF78350F)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x80F59E0B), width: 1.5),
+        border: Border.all(
+          color: AppColors.warning.withValues(alpha: 0.35),
+          width: 1,
+        ),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x1AF59E0B),
-            blurRadius: 12,
+            color: Color(0x14F59E0B),
+            blurRadius: 16,
             offset: Offset(0, 4),
           ),
         ],
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: const BoxDecoration(
-              color: Color(0x33F59E0B),
+            decoration: BoxDecoration(
+              color: const Color(0x1AF59E0B),
               shape: BoxShape.circle,
+              border: Border.all(
+                color: AppColors.warning.withValues(alpha: 0.3),
+                width: 1,
+              ),
             ),
             child: const Icon(
-              Icons.rule_folder,
-              color: Color(0xFFFBBF24),
-              size: 24,
+              Icons.rule_folder_outlined,
+              color: AppColors.warningLight,
+              size: 22,
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'Review Required ($count)',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                  ),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 6,
+                  runSpacing: 2,
+                  children: [
+                    Text(
+                      'Review Required ($count)',
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0x26F59E0B),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'ACTION NEEDED',
+                        style: TextStyle(
+                          color: AppColors.warningLight,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
                 const Text(
                   'transactions need confirmation or deduplication',
                   style: TextStyle(
-                    color: Color(0xCCFFFFFF),
+                    color: AppColors.textSecondary,
                     fontSize: 12,
+                    height: 1.3,
                   ),
                 ),
               ],
             ),
           ),
+          const SizedBox(width: 12),
           ElevatedButton(
             onPressed: onReviewPressed,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF59E0B),
-              foregroundColor: Colors.black,
+              backgroundColor: AppColors.warning,
+              foregroundColor: const Color(0xFF0F172A),
+              elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(10),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
             child: const Text(
               '1-Tap Review',
-              style: TextStyle(fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+                letterSpacing: 0.2,
+              ),
             ),
           ),
         ],
