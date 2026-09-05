@@ -5,7 +5,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
 git diff --check
-tracked_generated="$(git ls-files | grep -E '(^|/)(\.gradle|build|\.dart_tool|node_modules)(/|$)|\.(zip|class|jar|tfstate)$' || true)"
+tracked_generated="$(git ls-files \
+  | grep -E '(^|/)(\.gradle|build|\.dart_tool|node_modules)(/|$)|\.(zip|class|jar|tfstate)$' \
+  | grep -vx 'backend/gradle/wrapper/gradle-wrapper.jar' \
+  || true)"
 if [[ -n "$tracked_generated" ]]; then
   echo "Generated output must not be committed:" >&2
   printf '%s\n' "$tracked_generated" >&2
