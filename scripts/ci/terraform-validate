@@ -6,6 +6,7 @@ temp_data_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_data_dir"' EXIT
 
 command -v terraform >/dev/null || { echo "Terraform must be installed for validation." >&2; exit 1; }
+"$repo_root/scripts/ci/build-lambda-artifacts"
 cd "$repo_root/terraform"
 terraform fmt -check -recursive
 TF_DATA_DIR="$temp_data_dir" terraform init -backend=false -input=false

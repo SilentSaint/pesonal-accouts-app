@@ -93,7 +93,7 @@ jobs:
 
       - name: Verify reviewed Node.js Lambda source/archive parity
         run: |
-          backend/lambda/build.sh --check
+          scripts/ci/build-lambda-artifacts
           node --test backend/lambda/test/*.test.js
 
       - name: Package and verify Java Lambda deployment artifact
@@ -113,6 +113,15 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.5.7'
+
+      - name: Setup Java for Lambda archive build
+        uses: actions/setup-java@v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build Lambda archives required by Terraform
+        run: scripts/ci/build-lambda-artifacts
 
       - name: Terraform Init & Validate
         working-directory: terraform
