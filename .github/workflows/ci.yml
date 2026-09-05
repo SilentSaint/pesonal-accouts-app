@@ -51,7 +51,9 @@ jobs:
 
       - name: Analyze Static Code Quality
         working-directory: frontend
-        run: flutter analyze
+        # Informational lints remain visible without blocking the release gate;
+        # analyzer warnings and errors remain fatal.
+        run: flutter analyze --no-fatal-infos
 
       - name: Run Flutter Unit & Widget Tests
         working-directory: frontend

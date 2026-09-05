@@ -162,7 +162,6 @@ class AuthService extends ChangeNotifier {
 
   UserProfile? _currentUser;
   String? _idToken;
-  String? _identityAccessToken;
   String? _gmailAccessToken;
   String? _lastError;
   bool _hasGmailAccess = false;
@@ -274,7 +273,6 @@ class AuthService extends ChangeNotifier {
         photoUrl: account.photoUrl,
       );
       _idToken = credentials.idToken;
-      _identityAccessToken = credentials.accessToken;
 
       // Gmail consent is optional and its web provider call must not hold the
       // primary identity unlock screen indefinitely.
@@ -387,7 +385,6 @@ class AuthService extends ChangeNotifier {
         return null;
       }
       _idToken = credentials.idToken ?? _idToken;
-      _identityAccessToken = credentials.accessToken;
       _gmailAccessToken = credentials.accessToken;
       _hasGmailAccess = true;
       _lastError = null;
@@ -450,7 +447,6 @@ class AuthService extends ChangeNotifier {
     _isSignedOut = true;
     _currentUser = null;
     _idToken = null;
-    _identityAccessToken = null;
     _gmailAccessToken = null;
     _hasGmailAccess = false;
     _isLoading = false;

@@ -1365,23 +1365,6 @@ class _TransactionReviewModalState extends State<TransactionReviewModal> {
     }
   }
 
-  String? _getDisplayUpiRef(TransactionItem txn) {
-    if (txn.referenceNumber != null &&
-        txn.referenceNumber!.isNotEmpty &&
-        !txn.referenceNumber!.contains('@')) {
-      return txn.referenceNumber;
-    }
-    final text = '${txn.rawSnippet ?? ''} ${txn.merchantName}';
-    final match = RegExp(
-      r'(?:UPI\s*(?:trans(?:action)?\s*)?ref(?:erence)?(?:\s*no\.?)?|UTR(?:\s*no\.?)?|Ref(?:\s*no\.?)?|RRN)[:\s]+([0-9]{8,18})',
-      caseSensitive: false,
-    ).firstMatch(text);
-    if (match != null) {
-      return match.group(1);
-    }
-    return null;
-  }
-
   String? _extractSnippetDate(TransactionItem txn) {
     final text = '${txn.rawSnippet ?? ''} ${txn.merchantName}';
     final match = RegExp(r'\bon\s+(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})\b',
