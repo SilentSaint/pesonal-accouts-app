@@ -828,11 +828,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
     }
 
-    // 3. Ensure all accounts in all transactions are registered
-    final Set<String> knownLast4 = accounts
-        .map((a) => a.lastFourDigits)
-        .toSet();
-    // 4. Audit accounts to classify Credit Cards (e.g. 9207, 9635)
+    // 3. Audit accounts to classify Credit Cards (e.g. 9207, 9635)
     for (int i = 0; i < accounts.length; i++) {
       final a = accounts[i];
       final isCard =
