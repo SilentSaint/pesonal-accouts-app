@@ -68,13 +68,8 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install pinned Playwright client
-        working-directory: frontend
-        run: npm install --no-save --no-package-lock playwright@1.47.2
-
       - name: Run browser E2E against the release bundle with system Chrome
-        working-directory: frontend
-        run: node e2e_playwright_test.js
+        run: scripts/run-browser-e2e.sh
 
       - name: Upload browser E2E screenshots
         if: always()
