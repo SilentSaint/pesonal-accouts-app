@@ -12,6 +12,7 @@ const https = require('https');
 const { parseGeminiApiKey } = require('./runtime_config');
 const { resolveGatewayAuthenticatedUserPk } = require('./auth_identity');
 const { buildGmailScanRequest } = require('./gmail_scan_query');
+const { extractMessageEvidence } = require('./gmail_message_evidence');
 const {
   InvalidReportRequestError,
   buildFinancialReport,
@@ -213,8 +214,17 @@ Return ONLY valid JSON matching this schema:
   ]
 }
 
-Emails to analyze:
-${JSON.stringify(rawEmails.map((e, idx) => ({ id: e.messageId, index: idx, subject: e.subject, from: e.from, snippet: (e.snippet || '').slice(0, 450) })))}`;
+Emails to analyze (snippet contains bounded message-body evidence when available;
+contentStatus describes coverage, not transaction certainty. Missing content is not evidence):
+${JSON.stringify(rawEmails.map((e, idx) => ({
+  id: e.messageId,
+  index: idx,
+  subject: e.subject,
+  from: e.from,
+  snippet: e.snippet || '',
+  contentSource: e.contentSource,
+  contentStatus: e.contentStatus,
+})))}`;
 
   try {
     const requestBody = JSON.stringify({
@@ -307,6 +317,8 @@ async function scanGmailInbox(accessToken, customQuery, options = {}, { correlat
 
   // Scan ALL messages returned for this timeframe in concurrent batches of 20
   const targetMessages = messages;
+  // Evidence is duplicated in candidates/raw emails and escaped again by the proxy response.
+  const evidenceBytesPerMessage = Math.floor(1024 * 1024 / targetMessages.length);
   const rawEmailsResults = [];
   const chunkSize = 20;
 
@@ -315,7 +327,7 @@ async function scanGmailInbox(accessToken, customQuery, options = {}, { correlat
     const chunkResults = await Promise.all(
       chunk.map(async (msg) => {
         try {
-          const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`;
+          const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`;
           const msgResp = await httpsGetJson(msgUrl, { Authorization: `Bearer ${accessToken}` }, 4500);
           if (msgResp.statusCode !== 200 || !msgResp.body) return null;
 
@@ -324,7 +336,7 @@ async function scanGmailInbox(accessToken, customQuery, options = {}, { correlat
           const subject = headers.find(h => h.name === 'Subject')?.value || '';
           const from = headers.find(h => h.name === 'From')?.value || '';
           const dateHeader = headers.find(h => h.name === 'Date')?.value || '';
-          const snippet = msgData.snippet || '';
+          const evidence = extractMessageEvidence(msgData, evidenceBytesPerMessage);
 
           let isoDate = '';
           if (msgData.internalDate) {
@@ -343,7 +355,7 @@ async function scanGmailInbox(accessToken, customQuery, options = {}, { correlat
             subject,
             from,
             date: isoDate || dateHeader,
-            snippet,
+            ...evidence,
           };
         } catch (e) {
           console.warn('Error fetching message details:', e.message);
@@ -432,6 +444,8 @@ async function scanGmailInbox(accessToken, customQuery, options = {}, { correlat
         date: aiItem.transactionDate || email.date,
         amount: parseFloat(aiItem.amount),
         snippet: email.snippet,
+        contentSource: email.contentSource,
+        contentStatus: email.contentStatus,
         merchantName: aiItem.merchant && aiItem.merchant.trim().length > 0 ? aiItem.merchant.trim() : (email.subject || 'Bank Alert'),
         type: aiItem.type || 'DEBIT',
         category: aiItem.category || 'General Expenses',
@@ -781,6 +795,8 @@ async function scanGmailInbox(accessToken, customQuery, options = {}, { correlat
         date: email.date,
         amount,
         snippet: email.snippet,
+        contentSource: email.contentSource,
+        contentStatus: email.contentStatus,
         merchantName: merchant,
         type: isCredit ? 'CREDIT' : 'DEBIT',
         category,
