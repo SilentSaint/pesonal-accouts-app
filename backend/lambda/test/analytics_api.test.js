@@ -41,6 +41,7 @@ function loadHandler(send) {
       if (dependency === './analytics_reports') return require('../analytics_reports');
       if (dependency === './dynamodb_pagination') return {};
       if (dependency === './gmail_scan_query' || dependency === './runtime_config') return {};
+      if (dependency === './gmail_message_evidence') return require('../gmail_message_evidence');
       throw new Error(`Unexpected dependency: ${dependency}`);
     },
     process: { env: {} },

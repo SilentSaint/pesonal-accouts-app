@@ -10,6 +10,7 @@ const packagedSources = [
   'analytics_reports.js',
   'auth_identity.js',
   'dynamodb_pagination.js',
+  'gmail_message_evidence.js',
   'gmail_scan_query.js',
   'index.js',
   'runtime_config.js',

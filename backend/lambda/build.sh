@@ -8,6 +8,7 @@ readonly sources=(
   "$script_dir/auth_identity.js"
   "$script_dir/dynamodb_pagination.js"
   "$script_dir/gmail_scan_query.js"
+  "$script_dir/gmail_message_evidence.js"
   "$script_dir/runtime_config.js"
   "$script_dir/analytics_reports.js"
   "$script_dir/websocket_authorizer.js"

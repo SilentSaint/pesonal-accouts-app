@@ -17,6 +17,7 @@ function loadArchivedModule(name, dependencies) {
     module,
     exports: module.exports,
     require: (dependency) => dependencies[dependency],
+    Buffer,
   }, { filename: name });
   return module.exports;
 }
@@ -67,6 +68,9 @@ test('deployed Lambda handler sends a bounded Gmail scan query to Gmail', async 
       }
       if (dependency === './dynamodb_pagination') return {};
       if (dependency === './gmail_scan_query') return gmailScanQuery;
+      if (dependency === './gmail_message_evidence') {
+        return loadArchivedModule('gmail_message_evidence.js', { 'node:util': require('node:util') });
+      }
       if (dependency === './analytics_reports') return analyticsReports;
       if (dependency === './runtime_config') return {};
       throw new Error(`Unexpected dependency: ${dependency}`);
@@ -149,6 +153,9 @@ test('deployed Lambda reports why deterministic fallback was selected', async ()
       }
       if (dependency === './dynamodb_pagination') return {};
       if (dependency === './gmail_scan_query') return gmailScanQuery;
+      if (dependency === './gmail_message_evidence') {
+        return loadArchivedModule('gmail_message_evidence.js', { 'node:util': require('node:util') });
+      }
       if (dependency === './analytics_reports') return analyticsReports;
       if (dependency === './runtime_config') return {};
       throw new Error(`Unexpected dependency: ${dependency}`);
