@@ -8,7 +8,7 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 failed=0
-for check in generated-artifact-check backend-test flutter-test static-analysis lambda-test terraform-validate web-build playwright-smoke; do
+for check in generated-artifact-check release-test backend-test flutter-test static-analysis terraform-validate lambda-test web-build playwright-smoke; do
   if ! "$repo_root/scripts/ci/$check"; then
     failed=1
   fi

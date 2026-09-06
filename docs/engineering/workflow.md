@@ -25,6 +25,29 @@ Scaffolding, an isolated domain model, a mock screen, or a narrow passing test d
 not complete an issue: the acceptance criteria must be verified through every
 applicable layer.
 
+### Owner-approved AFK / stacked-PR policy (#110)
+
+The current owner authorization is **PR-only**. Agents must not merge, deploy,
+dispatch production workflows, or close issues. Implement one issue, finish
+local public-seam verification, open a non-closing PR, and post the exact owner
+production-observation checklist on the issue. Never use automatic-closing
+keywords in PR descriptions.
+
+Base the next implementation on the last opened PR's branch and target that
+branch in its PR; record the predecessor PR and dependent code/issues in each
+handoff. If the predecessor merged, fetch `main` and reconcile deliberately.
+An open prerequisite can be implementation-ready only when its necessary code
+is already present and verified in the preceding stack, not merely promised.
+Runtime-only gates such as #94 remain owner-blocked without authorizing agent
+deployment. This does not change any issue's acceptance or open state.
+
+Keep one active implementation and a durable issue comment naming its branch,
+PR, prerequisites and remaining work. Stop for genuinely missing prerequisites,
+irreconcilable conflicts, missing credentials, or unsafe/destructive requirements.
+The owner observes production and closes accepted issues; inconsistencies become
+sub-issues. This policy supersedes waiting for every prerequisite's closure,
+not production's merged-current-main requirement.
+
 ## Agent opening sequence
 
 Every agent starts in this order:
@@ -41,7 +64,7 @@ read workflow
 → wait for clean-checkout CI
 ```
 
-Create the worktree and branch from `origin/main`, for example:
+Create the first worktree and branch from `origin/main`, for example:
 
 ```bash
 git fetch origin main
@@ -49,17 +72,21 @@ git worktree add -b codex/issue-123-description ../expense-issue-123 origin/main
 git -C ../expense-issue-123 status --short
 ```
 
-Agents must never share a mutable checkout. Before opening or updating a PR,
-fetch and compare the branch with `origin/main`. If it is behind, rebase only in
-the isolated worktree and re-run the candidate's verification. Do not use an
-uncommitted workspace as an input to a deployment, a test claim, or a PR.
+Agents must never share a mutable checkout. Under the approved stacked workflow,
+use the predecessor branch as the explicit base for subsequent issues. Before
+opening or updating a PR, fetch and compare against its declared base and current
+`origin/main`; reconcile a merged predecessor without discarding its changes.
+Rebase only in the isolated worktree and rerun candidate verification. Development
+RED/GREEN runs may use uncommitted edits; release/PR claims must identify the
+exact candidate commit, not conflate that with preliminary workspace evidence.
 
 ## Implementation and verification
 
 Start with one failing test at the public seam described by the issue—such as a
 use case, handler, repository port, or UI interaction. Make the smallest change
-that makes it pass, then run the relevant suite. Tests must run against the exact
-candidate commit, not against an older checkout or a workspace with extra files.
+that makes it pass, then run the relevant suite. Final PR verification must run
+against the exact candidate commit, not against an older checkout or a workspace
+with extra files.
 
 Run the smallest relevant script during development. Before opening a PR, run:
 
@@ -95,20 +122,34 @@ the issue rather than closing speculatively.
 
 ## Deployment contract
 
-Production deployment is a separate, protected workflow. It may deploy only a
-SHA contained in `main`, built from a clean checkout. It must use GitHub Actions
-OIDC for AWS rather than persistent credentials, target a protected production
-environment, prevent concurrent deployments, record the deployed SHA, execute
-post-deployment smoke checks, and preserve a known-good SHA for rollback.
+The owner-local hatch and the protected OIDC workflow call the same executable
+`scripts/manual_production_deploy.sh`. Both require explicit owner approval and
+the exact current `origin/main` SHA from a clean checkout. Local credentials
+must be short-lived sessions for the configured least-privilege deployment role;
+Actions uses OIDC and required reviewers on the `production` environment.
+An Actions billing outage permits neither agent deployment nor a guard bypass.
 
-Do not deploy from a pull request or a dirty workspace. A rollback deploys a
-known-good commit SHA through the same protected workflow and records the
-resulting production verification.
+The shared command runs all readiness gates on the candidate, binds saved-plan
+and Lambda/web hashes to reviewed source and compiled endpoints, rejects unsafe
+plans, and holds a conditional cross-host release lease alongside Terraform's
+native state locks. Only the saved plan is applied. Exact live Lambda code hashes,
+CloudFront version identity, and health must pass before recording `verified`.
+Preparations and partial failures are recorded separately; no new alarms are a
+requirement. The historically named `dev` stack in `ap-south-2` is preserved.
 
-## Current baseline dependency
+Do not deploy a PR/stack branch, dirty workspace, or arbitrary historical SHA.
+Rollback uses a reviewed revert PR that restores known-good source on current
+`main`, then the same guarded release command and owner observations. Preserve
+the last owner-accepted manifest/SHA; do not overwrite it with a failed attempt.
+See the [production runbook](../operations/production-readiness-runbook.md) for
+exact inputs, private evidence, lease recovery, and the observation checklist.
 
-Until repository-baseline reconciliation is complete, workflows must report
-missing prerequisites honestly and must not be made required. In the current
-remote baseline, `backend/lambda/test` and `frontend/e2e_playwright_test.js` are
-absent, so their jobs fail with an explicit reconciliation message. Enable
-required checks only after the reconciled `main` is clean and green.
+## CI availability and baseline
+
+Node Lambda tests and the Playwright runner are tracked in the reconciled
+baseline. Release-contract tests are wired into `scripts/ci/verify` and CI.
+PR CI runs for all target branches, including approved stacked bases. Missing
+prerequisites still fail explicitly; never skip a failed gate to declare success.
+While Actions is account-blocked, report that operational limitation and record
+local candidate evidence honestly. Restore required checks only when the actual
+clean-checkout jobs are running and green; do not claim unavailable CI passed.

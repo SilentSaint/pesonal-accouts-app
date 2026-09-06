@@ -28,5 +28,11 @@ if [ -z "$browser" ]; then
 fi
 
 cd "$frontend_dir"
-npm install --no-save --no-package-lock playwright@1.47.2
+if ! node -e 'require.resolve("playwright")' >/dev/null 2>&1; then
+  npm install --no-save --no-package-lock playwright@1.47.2
+fi
+if [[ "${1:-}" == "--prepare" ]]; then
+  echo "Browser prerequisites ready: $browser"
+  exit 0
+fi
 E2E_BROWSER_EXECUTABLE="$browser" node e2e_playwright_test.js
