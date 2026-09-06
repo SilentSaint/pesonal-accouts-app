@@ -231,6 +231,9 @@ if (process.env.TEST_MUTATE_DURING_LIVE_CHECK === '1') {
   const directory = path.join(releases, fs.readdirSync(releases)[0]);
   fs.appendFileSync(path.join(directory, 'web/index.html'), 'unchecked later bytes');
 }
+if (process.env.TEST_REPLACE_LEASE_BEFORE_PUBLICATION === '1') {
+  fs.writeFileSync(process.env.TEST_RELEASE_LEASE, JSON.stringify({ owner: { S: 'replacement-owner' } }));
+}
 JS
     ;;
   "dynamodb put-item"|"dynamodb get-item"|"dynamodb delete-item")
@@ -896,6 +899,17 @@ test('a late ownership change cannot delete another release lease or report succ
   });
   assert.notEqual(result.status, 0);
   assert.doesNotMatch(result.stdout, /Completed Successfully/);
+  assert.equal(JSON.parse(fs.readFileSync(fixture.environment.TEST_RELEASE_LEASE)).owner.S, 'replacement-owner');
+});
+
+test('ownership loss after Lambda verification blocks publication', (t) => {
+  const fixture = createReleaseFixture(t);
+  const result = fixture.run('scripts/manual_production_deploy.sh', {
+    ...fixture.environment, TEST_REPLACE_LEASE_BEFORE_PUBLICATION: '1',
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /lease ownership changed/);
+  assert.equal(fs.existsSync(fixture.environment.TEST_RELEASE_CLOUD), false);
   assert.equal(JSON.parse(fs.readFileSync(fixture.environment.TEST_RELEASE_LEASE)).owner.S, 'replacement-owner');
 });
 

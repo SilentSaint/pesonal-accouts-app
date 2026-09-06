@@ -216,6 +216,7 @@ node "$SCRIPT_DIR/release_lease.js" check "$RELEASE_TOKEN"
 node "$SCRIPT_DIR/release_artifacts.js" verify-artifacts "$ROOT_DIR" "$RELEASE_DIR"
 check_seal
 node "$SCRIPT_DIR/release_lambdas.js" "$RELEASE_DIR"
+node "$SCRIPT_DIR/release_lease.js" check "$RELEASE_TOKEN"
 record_phase publication
 node "$SCRIPT_DIR/release_artifacts.js" verify-artifacts "$ROOT_DIR" "$RELEASE_DIR"
 check_seal
