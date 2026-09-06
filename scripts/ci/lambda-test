@@ -12,4 +12,6 @@ test -d "$test_dir" || {
 
 command -v node >/dev/null || { echo "Node.js must be installed for Lambda tests." >&2; exit 1; }
 "$repo_root/scripts/ci/build-lambda-artifacts"
+node "$repo_root/scripts/release_artifacts.js" snapshot "$repo_root" lambda
 node --test "$test_dir"/*.test.js
+node "$repo_root/scripts/release_artifacts.js" check-readiness "$repo_root" lambda

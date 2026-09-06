@@ -66,21 +66,16 @@ jobs:
           java-version: '21'
           distribution: temurin
 
-      - name: Build deployment Lambda archives from gated source
-        run: |
-          backend/lambda/build.sh --check
-          ./backend/gradlew -p backend lambdaZip --no-daemon
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.16.0
-
-      - name: Apply reviewed infrastructure
-        working-directory: terraform
-        run: |
-          terraform init -input=false
-          terraform apply -auto-approve -input=false
+          terraform_wrapper: false
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -88,24 +83,29 @@ jobs:
           flutter-version: 3.24.x
           channel: stable
 
-      - name: Build the gated web release and publish a version marker
-        working-directory: frontend
-        run: |
-          flutter pub get
-          flutter build web --release
-          printf '{"commit":"%s","run_id":"%s"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > build/web/deployment-version.json
+      - name: Set up Android SDK for the retained debug APK deliverable
+        uses: android-actions/setup-android@v3
 
-      - name: Publish release, invalidate CloudFront, and verify the live version
-        working-directory: terraform
-        run: |
-          bucket="$(terraform output -raw s3_web_bucket_name)"
-          distribution_id="$(terraform output -raw cloudfront_distribution_id)"
-          cloudfront_url="$(terraform output -raw cloudfront_web_url)"
-          api_url="$(terraform output -raw api_gateway_url)"
-          websocket_url="$(terraform output -raw websocket_sync_url)"
-          (cd ../frontend && flutter build web --release --dart-define=API_BASE_URL="$api_url/api" --dart-define=WEBSOCKET_SYNC_URL="$websocket_url")
-          aws s3 sync ../frontend/build/web "s3://$bucket" --delete --cache-control 'no-cache, no-store, must-revalidate'
-          invalidation_id="$(aws cloudfront create-invalidation --distribution-id "$distribution_id" --paths '/*' --query 'Invalidation.Id' --output text)"
-          aws cloudfront wait invalidation-completed --distribution-id "$distribution_id" --id "$invalidation_id"
-          curl --fail --retry 5 --retry-all-errors --retry-delay 5 "$cloudfront_url/deployment-version.json?release=$GITHUB_SHA" | grep -F "\"commit\":\"$GITHUB_SHA\""
-          curl --fail --retry 5 --retry-all-errors --retry-delay 5 "$api_url/api/health"
+      - name: Prepare pinned Playwright client and system Chromium
+        run: scripts/run-browser-e2e.sh --prepare
+
+      - name: Run the shared guarded release with all candidate readiness gates
+        env:
+          PRODUCTION_DEPLOY_APPROVED: 'YES'
+        run: scripts/manual_production_deploy.sh
+
+      - name: Retain non-sensitive release identity and outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ github.sha }}-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            dev_builds/releases/*/manifest.json
+            dev_builds/releases/*/source.json
+            dev_builds/releases/*/provenance.json
+            dev_builds/releases/*/plan-review.json
+            dev_builds/releases/*/verified-lambdas.json
+            dev_builds/releases/*/status.json
+            dev_builds/releases/*/events.jsonl

@@ -11,4 +11,6 @@ test -f "$runner" || {
 }
 
 command -v node >/dev/null || { echo "Node.js must be installed for Playwright smoke tests." >&2; exit 1; }
-node "$runner"
+node "$repo_root/scripts/release_artifacts.js" check-readiness "$repo_root" web
+"$repo_root/scripts/run-browser-e2e.sh"
+node "$repo_root/scripts/release_artifacts.js" check-readiness "$repo_root" web
