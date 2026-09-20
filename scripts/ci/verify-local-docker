@@ -8,8 +8,8 @@ IMAGE_NAME="${LOCAL_VERIFICATION_IMAGE:-automatic-expense-tracker-ci:local}"
 BUILD_IMAGE=1
 PULL_IMAGE=0
 PRINT_CONFIG=0
-GIT_DIR=""
-GIT_COMMON_DIR=""
+GIT_DIR="${GIT_DIR:-}"
+GIT_COMMON_DIR="${GIT_COMMON_DIR:-}"
 
 usage() {
   cat <<'USAGE'
