@@ -49,8 +49,32 @@ for candidate in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/c
   fi
 done
 if [[ -z "$browser_executable" ]]; then
-  (cd frontend && npx --no-install playwright install --with-deps chromium)
-  browser_executable="$(cd frontend && node -e "process.stdout.write(require('playwright').chromium.executablePath())")"
+  browser_executable="$({
+    cd frontend
+    node -e '
+      const fs = require("node:fs");
+      const { chromium } = require("playwright");
+      const candidate = chromium.executablePath();
+      if (fs.existsSync(candidate)) process.stdout.write(candidate);
+    '
+  })"
+  if [[ -n "$browser_executable" ]]; then
+    echo "Using Playwright-managed Chromium at $browser_executable"
+  fi
+fi
+if [[ -z "$browser_executable" ]]; then
+  if [[ "$(id -u)" == "0" ]]; then
+    (cd frontend && npx --no-install playwright install --with-deps chromium)
+  else
+    fallback_browser_path="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+    export PLAYWRIGHT_BROWSERS_PATH="$fallback_browser_path"
+    mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+    (cd frontend && npx --no-install playwright install chromium)
+  fi
+  browser_executable="$({
+    cd frontend
+    node -e "process.stdout.write(require('playwright').chromium.executablePath())"
+  })"
 fi
 (cd frontend && E2E_BROWSER_EXECUTABLE="$browser_executable" node e2e_playwright_test.js)
 

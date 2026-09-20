@@ -62,6 +62,25 @@ test('local Docker verification delegates to every hosted validation lane', () =
   assert.doesNotMatch(wrapper, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
 });
 
+test('browser verification reuses the image-provided Playwright browser', () => {
+  const hostedVerifier = fs.readFileSync(
+    path.join(root, 'scripts', 'ci', 'verify'),
+    'utf8',
+  );
+
+  const managedBrowserLookup = hostedVerifier.indexOf('chromium.executablePath()');
+  const browserInstallFallback = hostedVerifier.indexOf(
+    'playwright install --with-deps chromium',
+  );
+
+  assert.ok(managedBrowserLookup >= 0);
+  assert.ok(browserInstallFallback >= 0);
+  assert.ok(
+    managedBrowserLookup < browserInstallFallback,
+    'the managed Playwright browser must be checked before installing dependencies',
+  );
+});
+
 test('local Docker verification preserves Git worktree metadata in the container', () => {
   const wrapper = fs.readFileSync(verifier, 'utf8');
   const result = spawnSync(verifier, ['--print-config'], {
