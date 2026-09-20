@@ -60,6 +60,23 @@ test('local Docker verification delegates to every hosted validation lane', () =
   assert.doesNotMatch(wrapper, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
 });
 
+test('local Docker verification preserves Git worktree metadata in the container', () => {
+  const wrapper = fs.readFileSync(verifier, 'utf8');
+  const result = spawnSync(verifier, ['--print-config'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Git directory:/);
+  assert.match(result.stdout, /Git common directory:/);
+  assert.match(wrapper, /rev-parse --absolute-git-dir/);
+  assert.match(wrapper, /rev-parse --path-format=absolute --git-common-dir/);
+  assert.match(wrapper, /--volume "\$GIT_COMMON_DIR:\$GIT_COMMON_DIR:ro"/);
+  assert.match(wrapper, /--env GIT_DIR="\$GIT_DIR"/);
+  assert.match(wrapper, /--env GIT_WORK_TREE=\/workspace/);
+});
+
 test('the runbook records the D1 parity boundary and failure behavior', () => {
   const runbook = fs.readFileSync(
     path.join(root, 'docs', 'operations', 'local-verification.md'),
@@ -71,5 +88,7 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /D3/);
   assert.match(runbook, /DynamoDB local/);
   assert.match(runbook, /AWS credential/);
+  assert.match(runbook, /Git worktree/);
+  assert.match(runbook, /common directory/);
   assert.match(runbook, /non-zero/);
 });

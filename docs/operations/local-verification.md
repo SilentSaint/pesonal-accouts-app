@@ -30,6 +30,12 @@ commands such as `./backend/gradlew -p backend test`, `flutter test`, and
 `terraform validate` remain appropriate for fast inner-loop iteration; the
 Docker command is the clean-environment gate before a push or release.
 
+The wrapper is Git worktree-safe. Before starting the container, it resolves the
+worktree's Git directory and common directory, mounts the common directory
+read-only at its original absolute path, and sets `GIT_DIR` plus
+`GIT_WORK_TREE=/workspace`. This keeps `git rev-parse HEAD` working when the
+checkout is an isolated worktree rather than a plain clone.
+
 `--pull` is intentionally opt-in so normal local runs reuse the cached base
 image. `--no-build` fails if the named image is not already available. A
 Docker build failure or a verifier failure exits non-zero and prevents the
