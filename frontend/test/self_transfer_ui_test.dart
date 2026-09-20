@@ -77,6 +77,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
 
     // 1. Assert that the self-transfer badge displays the complete route: •••• 1277 → •••• 9343
     expect(find.text('•••• 1277 → •••• 9343'), findsWidgets);
