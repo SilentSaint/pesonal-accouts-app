@@ -36,7 +36,11 @@ echo "== Flutter =="
 (cd frontend && flutter build web --release --no-wasm-dry-run)
 
 echo "== Browser =="
-(cd frontend && npm install --no-save --no-package-lock playwright@1.47.2)
+if (cd frontend && node -e "require.resolve('playwright')" >/dev/null 2>&1); then
+  echo "Using preinstalled Playwright."
+else
+  (cd frontend && npm install --no-save --no-package-lock playwright@1.47.2)
+fi
 browser_executable=""
 for candidate in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser /snap/bin/chromium; do
   if [[ -x "$candidate" ]]; then
