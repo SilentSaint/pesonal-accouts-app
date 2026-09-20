@@ -19,6 +19,7 @@ echo "== Java =="
 ./backend/gradlew -p backend lambdaZip --no-daemon
 
 echo "== Node Lambda =="
+backend/lambda/build.sh
 backend/lambda/build.sh --check
 node --test backend/lambda/test/*.test.js
 node --test scripts/test/*.test.js

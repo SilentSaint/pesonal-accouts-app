@@ -81,6 +81,22 @@ test('browser verification reuses the image-provided Playwright browser', () => 
   );
 });
 
+test('validation builds the ignored Lambda archive before checking parity', () => {
+  const hostedVerifier = fs.readFileSync(
+    path.join(root, 'scripts', 'ci', 'verify'),
+    'utf8',
+  );
+  const buildArchive = hostedVerifier.indexOf('backend/lambda/build.sh\n');
+  const checkArchive = hostedVerifier.indexOf('backend/lambda/build.sh --check');
+
+  assert.ok(buildArchive >= 0);
+  assert.ok(checkArchive >= 0);
+  assert.ok(
+    buildArchive < checkArchive,
+    'the ignored Lambda archive must be built before its parity check',
+  );
+});
+
 test('local Docker verification preserves Git worktree metadata in the container', () => {
   const wrapper = fs.readFileSync(verifier, 'utf8');
   const result = spawnSync(verifier, ['--print-config'], {
