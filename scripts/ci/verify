@@ -1,17 +1,82 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" == "--help" ]]; then
-  echo "Run every repository verification command from a clean candidate checkout."
-  exit 0
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT_DIR"
+
+echo "Validating source revision: $(git rev-parse HEAD)"
+if [[ -n "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" ]]; then
+  actual_revision="$(git rev-parse HEAD)"
+  expected_revision="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+  if [[ "$actual_revision" != "$expected_revision" ]]; then
+    echo "Source revision mismatch: expected $expected_revision, got $actual_revision" >&2
+    exit 1
+  fi
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-failed=0
-for check in generated-artifact-check backend-test flutter-test static-analysis lambda-test terraform-validate web-build playwright-smoke; do
-  if ! "$repo_root/scripts/ci/$check"; then
-    failed=1
+echo "== Java =="
+./backend/gradlew -p backend test --no-daemon
+./backend/gradlew -p backend lambdaZip --no-daemon
+
+echo "== Node Lambda =="
+backend/lambda/build.sh
+backend/lambda/build.sh --check
+node --test backend/lambda/test/*.test.js
+node --test scripts/test/*.test.js
+
+echo "== Terraform =="
+terraform -chdir=terraform fmt -check -recursive
+terraform -chdir=terraform init -backend=false -input=false
+terraform -chdir=terraform validate
+
+echo "== Flutter =="
+(cd frontend && flutter --version)
+(cd frontend && flutter pub get)
+(cd frontend && flutter analyze --no-fatal-warnings --no-fatal-infos)
+(cd frontend && flutter test)
+(cd frontend && flutter build web --release --no-wasm-dry-run)
+
+echo "== Browser =="
+if (cd frontend && node -e "require.resolve('playwright')" >/dev/null 2>&1); then
+  echo "Using preinstalled Playwright."
+else
+  (cd frontend && npm install --no-save --no-package-lock playwright@1.47.2)
+fi
+browser_executable=""
+for candidate in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser /snap/bin/chromium; do
+  if [[ -x "$candidate" ]]; then
+    browser_executable="$candidate"
+    break
   fi
 done
+if [[ -z "$browser_executable" ]]; then
+  browser_executable="$({
+    cd frontend
+    node -e '
+      const fs = require("node:fs");
+      const { chromium } = require("playwright");
+      const candidate = chromium.executablePath();
+      if (fs.existsSync(candidate)) process.stdout.write(candidate);
+    '
+  })"
+  if [[ -n "$browser_executable" ]]; then
+    echo "Using Playwright-managed Chromium at $browser_executable"
+  fi
+fi
+if [[ -z "$browser_executable" ]]; then
+  if [[ "$(id -u)" == "0" ]]; then
+    (cd frontend && npx --no-install playwright install --with-deps chromium)
+  else
+    fallback_browser_path="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+    export PLAYWRIGHT_BROWSERS_PATH="$fallback_browser_path"
+    mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+    (cd frontend && npx --no-install playwright install chromium)
+  fi
+  browser_executable="$({
+    cd frontend
+    node -e "process.stdout.write(require('playwright').chromium.executablePath())"
+  })"
+fi
+(cd frontend && E2E_BROWSER_EXECUTABLE="$browser_executable" node e2e_playwright_test.js)
 
-exit "$failed"
+echo "All AWS validation gates passed for $(git rev-parse HEAD)."

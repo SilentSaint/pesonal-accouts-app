@@ -6,11 +6,19 @@ import 'package:automatic_expense_tracker/domain/merchant_entity.dart';
 import 'package:automatic_expense_tracker/services/entity_service.dart';
 import 'package:automatic_expense_tracker/services/auth_service.dart';
 import 'package:automatic_expense_tracker/services/auto_scan_scheduler_service.dart';
+import 'package:automatic_expense_tracker/services/auth_service.dart';
 import 'package:automatic_expense_tracker/ui/dashboard_screen.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  SharedPreferences.setMockInitialValues({});
+  SharedPreferences.setMockInitialValues({
+    'auth_email': 'entity@example.test',
+    'auth_scope_id': 'entity-scope',
+  });
+
+  setUpAll(() async {
+    await AuthService().ensureInitialized();
+  });
 
   group('SubCategory and Entity Tests', () {
     test('TransactionItem holds and serializes subCategory', () {

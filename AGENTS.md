@@ -61,6 +61,44 @@ To prevent this failure mode, **ALL AI AGENTS MUST ADHERE TO THE FOLLOWING RULES
 * **Use Installed Chromium First**: Prefer a system Chrome/Chromium executable for `frontend/e2e_playwright_test.js`; the runner detects standard Linux paths, including `/snap/bin/chromium`.
 * **Avoid Unnecessary Browser Downloads**: When Playwright is not installed, add only its pinned client with `cd frontend && npm install --no-save --no-package-lock playwright@1.47.2`. Do not run `npx playwright install chromium` while a compatible system browser is available; use a managed browser only when no Chrome/Chromium executable exists.
 
+## AWS Agent Collaboration Workflow
+
+This repository uses the AWS CodeCommit repository in `ap-south-2` as the
+canonical integration surface:
+
+`arn:aws:codecommit:ap-south-2:727118420276:pesonal-accouts-app`
+
+All agents working on the backlog MUST follow these rules:
+
+1. **One issue, one branch, one PR**: claim a single issue for each change and
+   keep unrelated fixes out of the branch.
+2. **Branch first**: push agent work to a dedicated branch; never push directly
+   to `main`.
+3. **PR validation**: open a pull request against canonical `main` and allow
+   CodeBuild to validate the exact revision under review.
+4. **Owner-controlled merge**: agents may prepare commits and PRs, but only
+   the repository owner reviews and merges them. Agents must not bypass merge
+   protection or the guarded release path.
+5. **Least-privilege access**: agent credentials should be limited to the
+   required CodeCommit read/write and pull-request operations. Do not grant
+   production deployment, Terraform apply, IAM administration, or account
+   administration access to backlog agents.
+6. **Issue completion**: keep the issue open until its acceptance criteria,
+   automated tests, required Playwright checks, and deployment/evidence gates
+   are verified individually.
+
+When multiple agents work concurrently, use isolated worktrees or clones and
+coordinate ownership by issue and branch name. The canonical `main` branch is
+the only shared integration target.
+
+### AWS credential recovery
+
+When an AWS command reports invalid or expired credentials, follow
+[docs/agents/aws-credentials.md](docs/agents/aws-credentials.md). Agents should
+use the refreshable `agent-login` profile, remove only stale credential
+environment variables, and ask the user before invoking `aws_dev_login` for a
+new browser login.
+
 ## Agent skills
 
 ### Issue tracker

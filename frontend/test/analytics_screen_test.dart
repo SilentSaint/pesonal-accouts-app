@@ -11,6 +11,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: AnalyticsScreen(
+          initialMonth: _report.month,
           loadReport: (_) async => _report,
           exportReport: (month, format) async => exports.add('$month:$format'),
           now: () => DateTime(2026, 8, 15),

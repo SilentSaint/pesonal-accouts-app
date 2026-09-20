@@ -76,6 +76,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   SmsCaptureStatus? _smsCaptureStatus;
   Timer? _smsRetryTimer;
   Future<void>? _persistentStateLoad;
+  bool _hadAuthenticatedSession = false;
 
   @override
   void initState() {
@@ -93,7 +94,9 @@ class _DashboardScreenState extends State<DashboardScreen>
       _reconcileSelfTransfers();
     }
     peerDebtState.addListener(_onStateChange);
-    AuthService().addListener(_onAuthStateChanged);
+    final auth = AuthService();
+    _hadAuthenticatedSession = auth.isAuthenticated;
+    auth.addListener(_onAuthStateChanged);
     syncService.addListener(_onSyncStateChanged);
     syncService.onSyncEvent = (_) => _recoverFromSync();
     syncService.onReconnected = _recoverFromSync;
@@ -111,18 +114,20 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _onAuthStateChanged() {
+    final auth = AuthService();
     if (mounted) {
-      final auth = AuthService();
       if (!auth.isInitialized) {
         setState(() {});
         return;
       }
       setState(() {});
       if (auth.isAuthenticated) {
+        _hadAuthenticatedSession = true;
         _loadPersistentState();
         _initAutoScanScheduler();
         unawaited(syncService.connect());
-      } else {
+      } else if (_hadAuthenticatedSession) {
+        _hadAuthenticatedSession = false;
         AutoScanSchedulerService().stop();
         unawaited(syncService.disconnect());
         // Preserve explicit fixture data supplied through the widget seam.
