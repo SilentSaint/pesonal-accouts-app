@@ -52,5 +52,6 @@ RUN set -eux; \
     java -version; \
     terraform version; \
     flutter --version; \
+    chmod -R a+rwX /opt/flutter/packages/flutter_tools /opt/flutter/bin/cache; \
     node --version; \
     playwright --version

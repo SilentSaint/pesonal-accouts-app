@@ -36,6 +36,11 @@ read-only at its original absolute path, and sets `GIT_DIR` plus
 `GIT_WORK_TREE=/workspace`. This keeps `git rev-parse HEAD` working when the
 checkout is an isolated worktree rather than a plain clone.
 
+The image makes only Flutter's SDK tool and cache directories writable during
+the image build. Flutter may lazily rebuild its tool on the first validation
+run, while the verifier itself runs as the invoking host user; repository files
+remain owned by that user and the rest of the SDK stays unchanged at runtime.
+
 `--pull` is intentionally opt-in so normal local runs reuse the cached base
 image. `--no-build` fails if the named image is not already available. A
 Docker build failure or a verifier failure exits non-zero and prevents the

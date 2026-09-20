@@ -30,6 +30,8 @@ test('local verification pins the canonical toolchain', () => {
   assert.match(dockerfile, /FLUTTER_VERSION=3\.44\.0/);
   assert.match(dockerfile, /TERRAFORM_VERSION=1\.5\.7/);
   assert.match(dockerfile, /PLAYWRIGHT_VERSION=1\.47\.2/);
+  assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/packages\/flutter_tools/);
+  assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/bin\/cache/);
 });
 
 test('local Docker verification delegates to every hosted validation lane', () => {
