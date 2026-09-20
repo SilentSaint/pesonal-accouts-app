@@ -9,12 +9,14 @@ import '../services/report_download.dart';
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({
     super.key,
+    this.initialMonth,
     this.loadReport,
     this.exportReport,
     this.loadEvidence,
     DateTime Function()? now,
   }) : _now = now ?? DateTime.now;
 
+  final String? initialMonth;
   final Future<AnalyticsReport> Function(String month)? loadReport;
   final Future<void> Function(String month, String format)? exportReport;
   final Future<AnalyticsEvidencePage> Function(
@@ -42,7 +44,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedMonth = DateFormat('yyyy-MM').format(widget._now());
+    _selectedMonth = widget.initialMonth ??
+        DateFormat('yyyy-MM').format(widget._now());
     _loadAnalytics();
   }
 
