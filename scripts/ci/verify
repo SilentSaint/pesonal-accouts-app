@@ -23,6 +23,7 @@ backend/lambda/build.sh
 backend/lambda/build.sh --check
 node --test backend/lambda/test/*.test.js
 node --test scripts/test/*.test.js
+bash scripts/test_production_deploy_guard.sh
 
 echo "== Terraform =="
 terraform -chdir=terraform fmt -check -recursive
@@ -79,4 +80,4 @@ if [[ -z "$browser_executable" ]]; then
 fi
 (cd frontend && E2E_BROWSER_EXECUTABLE="$browser_executable" node e2e_playwright_test.js)
 
-echo "All AWS validation gates passed for $(git rev-parse HEAD)."
+echo "All validation gates passed for $(git rev-parse HEAD)."
