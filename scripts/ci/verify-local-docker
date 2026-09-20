@@ -115,8 +115,6 @@ docker run --rm --init \
   --workdir /workspace \
   --volume "$ROOT_DIR:/workspace" \
   --volume "$GIT_COMMON_DIR:$GIT_COMMON_DIR:ro" \
-  --env GIT_DIR="$GIT_DIR" \
-  --env GIT_WORK_TREE=/workspace \
   --env CI=1 \
   --env HOME=/tmp/aet-ci-home \
   --env AWS_ACCESS_KEY_ID= \

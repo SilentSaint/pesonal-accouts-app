@@ -75,8 +75,8 @@ test('local Docker verification preserves Git worktree metadata in the container
   assert.match(wrapper, /rev-parse --absolute-git-dir/);
   assert.match(wrapper, /rev-parse --path-format=absolute --git-common-dir/);
   assert.match(wrapper, /--volume "\$GIT_COMMON_DIR:\$GIT_COMMON_DIR:ro"/);
-  assert.match(wrapper, /--env GIT_DIR="\$GIT_DIR"/);
-  assert.match(wrapper, /--env GIT_WORK_TREE=\/workspace/);
+  assert.doesNotMatch(wrapper, /--env GIT_DIR=/);
+  assert.doesNotMatch(wrapper, /--env GIT_WORK_TREE=/);
 });
 
 test('the runbook records the D1 parity boundary and failure behavior', () => {

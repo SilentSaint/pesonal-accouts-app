@@ -32,9 +32,10 @@ Docker command is the clean-environment gate before a push or release.
 
 The wrapper is Git worktree-safe. Before starting the container, it resolves the
 worktree's Git directory and common directory, mounts the common directory
-read-only at its original absolute path, and sets `GIT_DIR` plus
-`GIT_WORK_TREE=/workspace`. This keeps `git rev-parse HEAD` working when the
-checkout is an isolated worktree rather than a plain clone.
+read-only at its original absolute path. The container keeps Git's normal
+checkout discovery instead of exporting a global `GIT_DIR`, so project Git
+commands work while tools that inspect their own Git checkout (such as Flutter)
+continue to see their own repository metadata.
 
 The image makes only Flutter's SDK tool and cache directories writable during
 the image build. Flutter may lazily rebuild its tool on the first validation
