@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+ORIGINAL_ARGS=("$@")
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)"
 DOCKERFILE_RELATIVE="ci/local-verification/Dockerfile"
 DOCKERFILE_PATH="$ROOT_DIR/$DOCKERFILE_RELATIVE"
 IMAGE_NAME="${LOCAL_VERIFICATION_IMAGE:-automatic-expense-tracker-ci:local}"
@@ -36,6 +38,7 @@ Toolchain: Java 21, Node 20.20.2, Flutter 3.44.0, Terraform 1.5.7, Playwright 1.
 AWS credential injection: disabled
 AWS metadata access: disabled
 Terraform mutation: validation only
+Docker group recovery: automatic when account membership is present
 Verification command: scripts/ci/verify
 Git directory: ${GIT_DIR:-unresolved}
 Git common directory: ${GIT_COMMON_DIR:-unresolved}
@@ -94,6 +97,25 @@ fi
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is required for local container verification." >&2
   exit 127
+fi
+
+if [[ "${LOCAL_VERIFIER_DOCKER_GROUP_REEXEC:-}" != "1" ]]; then
+  account_groups="$(id -nG "$(id -un)" 2>/dev/null || true)"
+  process_groups="$(id -nG 2>/dev/null || true)"
+  if [[ " $account_groups " == *" docker "* ]] &&
+    [[ " $process_groups " != *" docker "* ]] &&
+    command -v sg >/dev/null 2>&1; then
+    command_line=""
+    printf -v quoted_script '%q' "$SCRIPT_PATH"
+    command_line="$quoted_script"
+    for arg in "${ORIGINAL_ARGS[@]}"; do
+      printf -v quoted_arg '%q' "$arg"
+      command_line+=" $quoted_arg"
+    done
+    echo "Current process lacks the Docker group; re-running under the account's Docker membership." >&2
+    export LOCAL_VERIFIER_DOCKER_GROUP_REEXEC=1
+    exec sg docker -c "$command_line"
+  fi
 fi
 
 if [[ ! -f "$DOCKERFILE_PATH" ]]; then

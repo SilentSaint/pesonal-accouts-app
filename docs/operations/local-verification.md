@@ -61,6 +61,15 @@ The container needs ordinary outbound network access for dependency resolution
 when a project cache is cold. That is dependency access, not authenticated
 access to the project’s AWS resources. No host credential directory is mounted.
 
+The wrapper also handles a common long-lived-session problem after Docker is
+installed. It compares the account's supplementary groups with the current
+process groups. When the account is already a member of `docker` but the
+process predates that membership, it re-executes itself once through `sg docker`
+with the original arguments preserved. This does not grant privileges or add a
+user to the group; the one-time host setup remains `sudo usermod -aG docker
+"$USER"`, followed by a new login session when needed. The recovery path is
+reported by `--print-config` and is guarded against recursion.
+
 ## D1 hosted baseline parity
 
 D1 found that the active hosted validation projects in `ap-south-2` converge on

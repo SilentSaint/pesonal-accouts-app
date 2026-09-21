@@ -17,6 +17,7 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(result.stdout, /Dockerfile: ci\/local-verification\/Dockerfile/);
   assert.match(result.stdout, /AWS credential injection: disabled/);
   assert.match(result.stdout, /Terraform mutation: validation only/);
+  assert.match(result.stdout, /Docker group recovery: automatic/);
 });
 
 test('local verification pins the canonical toolchain', () => {
@@ -113,6 +114,16 @@ test('local Docker verification preserves Git worktree metadata in the container
   assert.match(wrapper, /--volume "\$GIT_COMMON_DIR:\$GIT_COMMON_DIR:ro"/);
   assert.doesNotMatch(wrapper, /--env GIT_DIR=/);
   assert.doesNotMatch(wrapper, /--env GIT_WORK_TREE=/);
+});
+
+test('local Docker verification recovers a stale Docker supplementary group', () => {
+  const wrapper = fs.readFileSync(verifier, 'utf8');
+
+  assert.match(wrapper, /LOCAL_VERIFIER_DOCKER_GROUP_REEXEC/);
+  assert.match(wrapper, /id -nG "\$\(id -un\)"/);
+  assert.match(wrapper, /sg docker -c/);
+  assert.match(wrapper, /printf -v quoted_arg '%q'/);
+  assert.match(wrapper, /exec sg docker -c/);
 });
 
 test('the runbook records the D1 parity boundary and failure behavior', () => {
