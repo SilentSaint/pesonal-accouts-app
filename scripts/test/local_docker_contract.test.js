@@ -57,6 +57,7 @@ test('local Docker verification delegates to every hosted validation lane', () =
   assert.match(hostedVerifier, /flutter test/);
   assert.match(hostedVerifier, /flutter build web/);
   assert.match(hostedVerifier, /e2e_playwright_test\.js/);
+  assert.match(hostedVerifier, /bash scripts\/test_production_deploy_guard\.sh/);
   assert.match(hostedVerifier, /require\.resolve\('playwright'\)/);
   assert.match(hostedVerifier, /npm install --no-save --no-package-lock playwright@1\.47\.2/);
   assert.doesNotMatch(wrapper, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);

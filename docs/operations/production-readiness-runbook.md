@@ -40,11 +40,10 @@ billing outage. It is deliberately narrow:
 4. Repository branch protection must require changes to arrive through a merged PR.
 5. The reusable CI workflow must pass before the publish job can begin.
 
-This means the hatch deploys only the reviewed contents of `main`, and does not provide
-a branch-based or local-workstation production bypass. If GitHub Actions is unavailable
-because of account billing restrictions, this hatch cannot run until Actions is restored;
-use the local validation commands in the repository runbook, but do not treat them as
-production deployment approval.
+This means the hosted hatch deploys only the reviewed contents of `main`, and does not
+provide a branch-based production bypass. If GitHub Actions is unavailable because of
+account restrictions, use the owner-approved local release sequence below. Ordinary local
+validation is not production deployment approval.
 
 After approval, the publish job verifies the assumed AWS account before applying Terraform.
 It builds a deployment marker containing the immutable Git SHA, waits for CloudFront
@@ -59,14 +58,48 @@ re-check Actions availability before relying on this hatch.
 When GitHub Actions is unavailable, the owner-approved local fallback is:
 
 ```bash
+export AWS_REGION=ap-south-2
+export AWS_ACCOUNT_ID='<expected-production-account-id>'
 PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
 ```
 
-The wrapper refuses to proceed unless the checkout is on `main`, exactly matches
-`origin/main`, has no uncommitted changes, passes the local backend and Flutter gates,
-and has valid AWS credentials. Repository branch protection remains the control that
-ensures the `main` revision arrived through a merged PR. The command requires the owner
-to set the approval variable deliberately; do not export it in a shell profile.
+Before using the fallback, load the refreshable local AWS profile described in
+`docs/operations/aws-development-auth.md` and confirm the identity with
+`aws sts get-caller-identity`. Do not place credentials in the repository or export
+short-lived access-key values into a shell profile.
+
+The local release has these fail-closed stages:
+
+1. The wrapper requires explicit `PRODUCTION_DEPLOY_APPROVED=YES`, a clean `main` checkout
+   exactly matching `origin/main`, and the expected `AWS_REGION` and `AWS_ACCOUNT_ID`.
+2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
+   production AWS credentials disabled. A failed gate stops before the AWS identity check
+   or any AWS mutation; the working tree is checked again after validation.
+3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
+   guarded deployment script only after the comparison succeeds.
+4. The deployment script builds Lambda artifacts, runs `terraform apply`, builds the web
+   release with the live endpoints, and writes `deployment-version.json` containing the
+   reviewed Git SHA. Terraform failure stops the sequence; it is never converted into a
+   best-effort deployment.
+5. The web artifact is published, CloudFront invalidation is awaited, and the deployed
+   marker plus `${api_url}/api/health` are fetched with retries. A failed publication,
+   invalidation, marker check, or health check exits non-zero.
+
+Repository branch protection remains the control that ensures the `main` revision arrived
+through a merged PR. The command requires the owner to set the approval variable
+deliberately; do not export it in a shell profile.
+
+For ordinary development validation, use the non-mutating gate instead:
+
+```bash
+scripts/ci/verify-local-docker --no-build
+```
+
+Retain the reviewed commit SHA, the complete local verifier log, the AWS account ID (not
+credentials), Terraform output, CloudFront invalidation ID, deployment-marker response,
+and API health response as release evidence. If a stage fails after Terraform has applied,
+stop and inspect the Terraform plan and service state before retrying; this path does not
+attempt an automatic rollback or publish financial records in logs.
 
 Terraform state is stored in the encrypted, versioned S3 backend at
 `automatic-expense-tracker-terraform-state-727118420276`, under

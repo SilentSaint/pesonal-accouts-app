@@ -79,8 +79,9 @@ The following differences are deliberate and belong to later roadmap issues:
   revision comparison remains D4’s same-revision comparator.
 - Local execution does not emit CodeBuild reports or invoke EventBridge,
   auto-merge, failure-notification, or post-merge release consumers.
-- The guarded post-merge release project remains hosted until D3 proves local
-  release parity; this issue does not alter that release path.
+- The D3 owner-approved local release wrapper now runs this complete contract before
+  any Terraform apply or artifact publication. The hosted release workflow remains
+  available as a separate path until the D4/D5 hosted-comparator decisions.
 - D1 found no DynamoDB local lane in the active CodeBuild baseline. If a
   disposable DynamoDB local integration lane is introduced, it must be added
   to `scripts/ci/verify` first so this Docker contract inherits it.
