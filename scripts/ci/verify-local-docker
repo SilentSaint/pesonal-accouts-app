@@ -10,6 +10,7 @@ IMAGE_NAME="${LOCAL_VERIFICATION_IMAGE:-automatic-expense-tracker-ci:local}"
 BUILD_IMAGE=1
 PULL_IMAGE=0
 PRINT_CONFIG=0
+LOG_FILE=""
 GIT_DIR="${GIT_DIR:-}"
 GIT_COMMON_DIR="${GIT_COMMON_DIR:-}"
 
@@ -25,6 +26,7 @@ Options:
   --no-build       Reuse the local image instead of building it.
   --pull           Ask Docker to pull a newer base image during the build.
   --image NAME     Use NAME instead of automatic-expense-tracker-ci:local.
+  --log-file FILE  Copy container output to FILE.
   --print-config   Print the safety and reproducibility contract, then exit.
   -h, --help       Show this help.
 USAGE
@@ -39,7 +41,7 @@ AWS credential injection: disabled
 AWS metadata access: disabled
 Terraform mutation: validation only
 Docker group recovery: automatic when account membership is present
-Verification command: scripts/ci/verify
+Verification command: scripts/ci/verify-local
 Git directory: ${GIT_DIR:-unresolved}
 Git common directory: ${GIT_COMMON_DIR:-unresolved}
 Git metadata mount: read-only
@@ -64,6 +66,14 @@ while (($# > 0)); do
       IMAGE_NAME="$2"
       shift 2
       ;;
+    --log-file)
+      if (($# < 2)); then
+        echo "--log-file requires a path" >&2
+        exit 64
+      fi
+      LOG_FILE="$2"
+      shift 2
+      ;;
     --print-config)
       PRINT_CONFIG=1
       shift
@@ -80,13 +90,18 @@ while (($# > 0)); do
   esac
 done
 
-if ! GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
+if ! GIT_DIR="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
   echo "The local verification path must run from a Git checkout or worktree." >&2
   exit 1
 fi
-if ! GIT_COMMON_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+if ! GIT_COMMON_DIR="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
   echo "Unable to resolve the Git common directory for the local checkout." >&2
   exit 1
+fi
+
+if [[ -n "$LOG_FILE" ]]; then
+  mkdir -p "$(dirname "$LOG_FILE")"
+  exec > >(tee "$LOG_FILE") 2>&1
 fi
 
 if ((PRINT_CONFIG)); then
@@ -135,10 +150,12 @@ docker run --rm --init \
   --security-opt no-new-privileges:true \
   --user "$(id -u):$(id -g)" \
   --workdir /workspace \
+  --tmpfs /tmp:exec \
   --volume "$ROOT_DIR:/workspace" \
   --volume "$GIT_COMMON_DIR:$GIT_COMMON_DIR:ro" \
   --env CI=1 \
   --env HOME=/tmp/aet-ci-home \
+  --env PUB_CACHE=/tmp/aet-ci-home/.pub-cache \
   --env AWS_ACCESS_KEY_ID= \
   --env AWS_SECRET_ACCESS_KEY= \
   --env AWS_SESSION_TOKEN= \
@@ -149,7 +166,7 @@ docker run --rm --init \
   --env AWS_EC2_METADATA_DISABLED=true \
   "$IMAGE_NAME" \
   bash -euo pipefail -c '
-    mkdir -p "$HOME"
+    mkdir -p "$HOME" "$PUB_CACHE"
     git config --global --add safe.directory /workspace
-    exec ./scripts/ci/verify
+    exec ./scripts/ci/verify-local
   '

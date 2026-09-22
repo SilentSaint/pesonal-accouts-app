@@ -35,14 +35,14 @@ test('local verification pins the canonical toolchain', () => {
   assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/bin\/cache/);
 });
 
-test('local Docker verification delegates to every hosted validation lane', () => {
+test('local Docker verification delegates to every local validation lane', () => {
   const wrapper = fs.readFileSync(verifier, 'utf8');
   const hostedVerifier = fs.readFileSync(
-    path.join(root, 'scripts', 'ci', 'verify'),
+    path.join(root, 'scripts', 'ci', 'verify-local'),
     'utf8',
   );
 
-  assert.match(wrapper, /exec \.\/scripts\/ci\/verify/);
+  assert.match(wrapper, /exec \.\/scripts\/ci\/verify-local\b/);
   assert.match(wrapper, /--env AWS_ACCESS_KEY_ID=/);
   assert.match(wrapper, /--env AWS_SECRET_ACCESS_KEY=/);
   assert.match(wrapper, /--env AWS_SESSION_TOKEN=/);
@@ -66,7 +66,7 @@ test('local Docker verification delegates to every hosted validation lane', () =
 
 test('browser verification reuses the image-provided Playwright browser', () => {
   const hostedVerifier = fs.readFileSync(
-    path.join(root, 'scripts', 'ci', 'verify'),
+    path.join(root, 'scripts', 'ci', 'verify-local'),
     'utf8',
   );
 
@@ -85,7 +85,7 @@ test('browser verification reuses the image-provided Playwright browser', () => 
 
 test('validation builds the ignored Lambda archive before checking parity', () => {
   const hostedVerifier = fs.readFileSync(
-    path.join(root, 'scripts', 'ci', 'verify'),
+    path.join(root, 'scripts', 'ci', 'verify-local'),
     'utf8',
   );
   const buildArchive = hostedVerifier.indexOf('backend/lambda/build.sh\n');
@@ -132,10 +132,10 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
     'utf8',
   );
 
-  assert.match(runbook, /D1 hosted baseline/);
+  assert.match(runbook, /D1 (hosted baseline|comparison)/);
   assert.match(runbook, /post-merge release/);
   assert.match(runbook, /D3/);
-  assert.match(runbook, /DynamoDB local/);
+  assert.match(runbook, /DynamoDB local/i);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /Git worktree/);
   assert.match(runbook, /common directory/);

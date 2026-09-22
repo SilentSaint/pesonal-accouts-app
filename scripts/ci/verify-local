@@ -4,15 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "Validating source revision: $(git rev-parse HEAD)"
-if [[ -n "${CODEBUILD_RESOLVED_SOURCE_VERSION:-}" ]]; then
-  actual_revision="$(git rev-parse HEAD)"
-  expected_revision="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-  if [[ "$actual_revision" != "$expected_revision" ]]; then
-    echo "Source revision mismatch: expected $expected_revision, got $actual_revision" >&2
-    exit 1
-  fi
-fi
+echo "Validating local source revision: $(git rev-parse HEAD)"
 
 echo "== Java =="
 ./backend/gradlew -p backend test --no-daemon
@@ -43,6 +35,7 @@ if (cd frontend && node -e "require.resolve('playwright')" >/dev/null 2>&1); the
 else
   (cd frontend && npm install --no-save --no-package-lock playwright@1.47.2)
 fi
+
 browser_executable=""
 for candidate in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser /snap/bin/chromium; do
   if [[ -x "$candidate" ]]; then
@@ -50,6 +43,7 @@ for candidate in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/c
     break
   fi
 done
+
 if [[ -z "$browser_executable" ]]; then
   browser_executable="$({
     cd frontend
@@ -64,6 +58,7 @@ if [[ -z "$browser_executable" ]]; then
     echo "Using Playwright-managed Chromium at $browser_executable"
   fi
 fi
+
 if [[ -z "$browser_executable" ]]; then
   if [[ "$(id -u)" == "0" ]]; then
     (cd frontend && npx --no-install playwright install --with-deps chromium)
@@ -78,6 +73,7 @@ if [[ -z "$browser_executable" ]]; then
     node -e "process.stdout.write(require('playwright').chromium.executablePath())"
   })"
 fi
+
 (cd frontend && E2E_BROWSER_EXECUTABLE="$browser_executable" node e2e_playwright_test.js)
 
-echo "All validation gates passed for $(git rev-parse HEAD)."
+echo "All local validation gates passed for $(git rev-parse HEAD)."

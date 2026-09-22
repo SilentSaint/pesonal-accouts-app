@@ -99,6 +99,12 @@ use the refreshable `agent-login` profile, remove only stale credential
 environment variables, and ask the user before invoking `aws_dev_login` for a
 new browser login.
 
+### 5. Local Verification and AWS Deployment Boundary
+* **Canonical validation**: Run `scripts/ci/verify-local-docker` for the reproducible full gate, or `scripts/ci/verify-local` when the pinned toolchain is installed directly.
+* **No hosted validation dependency**: CodeBuild, CodeCommit, and GitHub Actions are not required for validation. Do not restore a hosted buildspec or workflow as a prerequisite for a change.
+* **Non-mutating gate**: Local verification must not receive AWS credentials or run Terraform apply, S3 publication, Lambda updates, or CloudFront invalidation.
+* **Explicit deployment**: Production deployment is a separate owner-approved operation. Keep deployment credentials and release commands outside the local verification scripts.
+
 ## Agent skills
 
 ### Issue tracker
