@@ -45,6 +45,7 @@ test('hosted validation entry points are retired', () => {
   const retiredPaths = [
     'buildspec.yml',
     '.github/workflows/ci.yml',
+    '.github/workflows/pull-request.yml',
     '.github/workflows/production-deploy.yml',
     '.github/workflows/verify-dynamodb-restore.yml',
     'scripts/ci/verify',
