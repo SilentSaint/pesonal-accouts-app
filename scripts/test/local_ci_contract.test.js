@@ -23,7 +23,7 @@ test('local verification is independent of hosted CI and AWS credentials', () =>
   assert.doesNotMatch(verifier, /CODEBUILD_|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN/);
   assert.doesNotMatch(verifier, /AWS validation gates/);
 
-  assert.match(dockerRunner, /docker build/);
+  assert.match(dockerRunner, /build_args=\(build/);
   assert.match(dockerRunner, /docker run/);
   assert.match(dockerRunner, /sg docker/);
   assert.match(dockerRunner, /ci\/local-verification\/Dockerfile/);
@@ -31,6 +31,7 @@ test('local verification is independent of hosted CI and AWS credentials', () =>
   assert.match(dockerRunner, /--log-file/);
   assert.match(dockerRunner, /--env AWS_ACCESS_KEY_ID=/);
   assert.match(dockerRunner, /--env AWS_CONFIG_FILE=\/dev\/null/);
+  assert.match(dockerRunner, /--tmpfs \/tmp:exec/);
   assert.doesNotMatch(dockerRunner, /CODEBUILD_/);
   assert.doesNotMatch(dockerRunner, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
 

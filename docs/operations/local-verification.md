@@ -33,6 +33,7 @@ directory and common directory, mounts the common directory read-only at its
 original absolute path, and leaves build/test output in the checkout. It does
 not export a global `GIT_DIR`, so tools that inspect their own checkout retain
 normal Git discovery.
+The wrapper is Git worktree-safe.
 
 The wrapper handles a stale Docker supplementary-group session. If the account
 belongs to `docker` but the current process does not yet have that membership,

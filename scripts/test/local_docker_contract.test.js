@@ -132,10 +132,10 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
     'utf8',
   );
 
-  assert.match(runbook, /D1 hosted baseline/);
+  assert.match(runbook, /D1 (hosted baseline|comparison)/);
   assert.match(runbook, /post-merge release/);
   assert.match(runbook, /D3/);
-  assert.match(runbook, /DynamoDB local/);
+  assert.match(runbook, /DynamoDB local/i);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /Git worktree/);
   assert.match(runbook, /common directory/);

@@ -90,11 +90,11 @@ while (($# > 0)); do
   esac
 done
 
-if ! GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
+if ! GIT_DIR="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
   echo "The local verification path must run from a Git checkout or worktree." >&2
   exit 1
 fi
-if ! GIT_COMMON_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+if ! GIT_COMMON_DIR="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
   echo "Unable to resolve the Git common directory for the local checkout." >&2
   exit 1
 fi
@@ -150,6 +150,7 @@ docker run --rm --init \
   --security-opt no-new-privileges:true \
   --user "$(id -u):$(id -g)" \
   --workdir /workspace \
+  --tmpfs /tmp:exec \
   --volume "$ROOT_DIR:/workspace" \
   --volume "$GIT_COMMON_DIR:$GIT_COMMON_DIR:ro" \
   --env CI=1 \

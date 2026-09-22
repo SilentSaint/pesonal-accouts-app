@@ -20,7 +20,12 @@ test('local validation is the canonical non-mutating verification seam', () => {
   assert.match(verifier, /terraform (init|validate)/);
   assert.match(verifier, /e2e_playwright_test\.js/);
   assert.doesNotMatch(verifier, /CODEBUILD_|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN/);
-  assert.doesNotMatch(dockerVerifier, /CODEBUILD_|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN/);
+  assert.doesNotMatch(dockerVerifier, /CODEBUILD_/);
+  assert.match(dockerVerifier, /--env AWS_ACCESS_KEY_ID=/);
+  assert.match(dockerVerifier, /--env AWS_SECRET_ACCESS_KEY=/);
+  assert.match(dockerVerifier, /--env AWS_SESSION_TOKEN=/);
+  assert.match(dockerVerifier, /--env AWS_CONFIG_FILE=\/dev\/null/);
+  assert.match(dockerVerifier, /--env AWS_EC2_METADATA_DISABLED=true/);
 });
 
 test('hosted validation entry points are retired', () => {
