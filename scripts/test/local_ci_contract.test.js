@@ -60,3 +60,20 @@ test('hosted validation entry points are retired', () => {
     );
   }
 });
+
+test('developer build instructions use the local verifier', () => {
+  const agents = read('AGENTS.md');
+  const workflow = read('docs/engineering/workflow.md');
+  const verifierContract = read('scripts/ci/test-verify-contract.sh');
+  const deletedVerifierReference = /scripts\/ci\/verify(?:[^-A-Za-z]|$)/;
+
+  assert.match(agents, /scripts\/ci\/verify-local-docker/);
+  assert.doesNotMatch(agents, /allow\s+CodeBuild\s+to\s+validate/);
+  assert.doesNotMatch(agents, deletedVerifierReference);
+
+  assert.match(workflow, /scripts\/ci\/verify-local-docker/);
+  assert.doesNotMatch(workflow, deletedVerifierReference);
+
+  assert.match(verifierContract, /scripts\/ci\/verify-local\b/);
+  assert.doesNotMatch(verifierContract, deletedVerifierReference);
+});

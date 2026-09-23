@@ -74,8 +74,8 @@ All agents working on the backlog MUST follow these rules:
    keep unrelated fixes out of the branch.
 2. **Branch first**: push agent work to a dedicated branch; never push directly
    to `main`.
-3. **PR validation**: open a pull request against canonical `main` and allow
-   CodeBuild to validate the exact revision under review.
+3. **PR validation**: open a pull request against canonical `main` after the
+   local Docker verifier validates the exact revision under review.
 4. **Owner-controlled merge**: agents may prepare commits and PRs, but only
    the repository owner reviews and merges them. Agents must not bypass merge
    protection or the guarded release path.
