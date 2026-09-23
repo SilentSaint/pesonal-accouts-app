@@ -64,7 +64,7 @@ candidate commit, not against an older checkout or a workspace with extra files.
 Run the smallest relevant script during development. Before opening a PR, run:
 
 ```bash
-scripts/ci/verify
+scripts/ci/verify-local-docker --no-build
 ```
 
 The scripts are intentionally fail-closed: a missing runtime, test suite, or
