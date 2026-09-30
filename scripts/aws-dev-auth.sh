@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
+
+# Do not change shell options in a caller that sources this helper. In
+# particular, enabling errexit here would close an interactive terminal when
+# aws_dev_login returns a non-zero status.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  set -euo pipefail
+fi
 
 # Bridge the refreshable `aws login` session to SDKs and tools that only understand
 # the standard AWS credential_process profile setting.
@@ -7,6 +13,7 @@ set -euo pipefail
 AWS_DEV_AUTH_SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 AWS_DEV_AUTH_LOGIN_PROFILE="${AWS_LOGIN_PROFILE:-default}"
 AWS_DEV_AUTH_PROCESS_PROFILE="${AWS_PROCESS_PROFILE:-agent-login}"
+AWS_DEV_AUTH_LOGIN_REGION="${AWS_LOGIN_REGION:-us-east-1}"
 
 die() {
   printf 'aws-dev-auth: %s\n' "$1" >&2
@@ -30,8 +37,13 @@ resolve_aws_cli() {
   fi
 }
 
-AWS_DEV_AUTH_CLI="$(resolve_aws_cli)"
-AWS_DEV_AUTH_CREDENTIAL_PROCESS="$AWS_DEV_AUTH_CLI configure export-credentials --profile $AWS_DEV_AUTH_LOGIN_PROFILE --format process"
+if ! AWS_DEV_AUTH_CLI="$(resolve_aws_cli)"; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 1
+  fi
+  exit 1
+fi
+AWS_DEV_AUTH_CREDENTIAL_PROCESS="$AWS_DEV_AUTH_CLI configure export-credentials --profile $AWS_DEV_AUTH_LOGIN_PROFILE --format process --region $AWS_DEV_AUTH_LOGIN_REGION"
 
 setup_profile() {
   [[ "$AWS_DEV_AUTH_LOGIN_PROFILE" != "$AWS_DEV_AUTH_PROCESS_PROFILE" ]] \
@@ -55,7 +67,30 @@ source_environment() {
   # Keep the login source profile intact even though AWS_PROFILE points at the
   # process profile for normal CLI, SDK, Terraform, and test commands.
   aws_dev_login() {
-    env -u AWS_PROFILE "$AWS_DEV_AUTH_CLI" login --profile "$AWS_DEV_AUTH_LOGIN_PROFILE" "$@"
+    local login_args=()
+    local skip_next=0
+    local arg
+    for arg in "$@"; do
+      if (( skip_next )); then
+        skip_next=0
+        continue
+      fi
+      case "$arg" in
+        --region)
+          skip_next=1
+          ;;
+        --region=*)
+          ;;
+        *)
+          login_args+=("$arg")
+          ;;
+      esac
+    done
+
+    env -u AWS_PROFILE "$AWS_DEV_AUTH_CLI" login \
+      --profile "$AWS_DEV_AUTH_LOGIN_PROFILE" \
+      "${login_args[@]}" \
+      --region "$AWS_DEV_AUTH_LOGIN_REGION"
   }
 }
 
