@@ -77,13 +77,16 @@ The local release has these fail-closed stages:
    or any AWS mutation; the working tree is checked again after validation.
 3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
    guarded deployment script only after the comparison succeeds.
-4. The deployment script builds Lambda artifacts, runs `terraform apply`, builds the web
-   release with the live endpoints, and writes `deployment-version.json` containing the
-   reviewed Git SHA. Terraform failure stops the sequence; it is never converted into a
-   best-effort deployment.
-5. The web artifact is published, CloudFront invalidation is awaited, and the deployed
-   marker plus `${api_url}/api/health` are fetched with retries. A failed publication,
-   invalidation, marker check, or health check exits non-zero.
+4. The deployment script builds Lambda artifacts, creates a saved Terraform plan, and
+   reads the planned endpoint and publication outputs before any AWS mutation. It then
+   builds the web and Android artifacts using those planned endpoints. A failed artifact
+   build stops before Terraform apply.
+5. The script applies that exact saved plan, verifies that the applied Terraform outputs
+   still equal the values used to build the artifacts, then publishes the web artifact.
+   Terraform failure or output drift stops the sequence before publication.
+6. CloudFront invalidation is awaited, and the deployed marker plus `${api_url}/api/health`
+   are fetched with retries. A failed publication, invalidation, marker check, or health
+   check exits non-zero.
 
 Repository branch protection remains the control that ensures the `main` revision arrived
 through a merged PR. The command requires the owner to set the approval variable

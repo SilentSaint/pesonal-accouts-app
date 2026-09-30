@@ -32,29 +32,49 @@ if [[ "$actual_account" != "$AWS_ACCOUNT_ID" ]]; then
 fi
 
 release_commit="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+umask 077
+plan_file="$(mktemp "${TMPDIR:-/tmp}/automatic-expense-tracker-release-plan.XXXXXX")"
+plan_json="${plan_file}.json"
+rm -f "$plan_file"
+cleanup_plan_files() {
+  rm -f "$plan_file" "$plan_json"
+}
+trap cleanup_plan_files EXIT
 
 echo "=========================================================="
 echo " Starting guarded production deployment for $release_commit"
 echo "=========================================================="
 
-echo "[1/5] Building reviewed Lambda artifacts..."
+echo "[1/6] Building reviewed Lambda artifacts..."
 "$ROOT_DIR/backend/lambda/build.sh"
 "$ROOT_DIR/backend/gradlew" -p "$ROOT_DIR/backend" lambdaZip --no-daemon
 
-echo "[2/5] Applying reviewed Terraform infrastructure..."
+echo "[2/6] Planning reviewed Terraform infrastructure..."
 terraform -chdir="$TERRAFORM_DIR" init -input=false
-terraform -chdir="$TERRAFORM_DIR" apply \
-  -auto-approve \
+terraform -chdir="$TERRAFORM_DIR" plan \
   -input=false \
+  -out="$plan_file" \
   -var="aws_region=$AWS_REGION"
+terraform -chdir="$TERRAFORM_DIR" show -json "$plan_file" > "$plan_json"
 
-api_url="$(terraform -chdir="$TERRAFORM_DIR" output -raw api_gateway_url)"
-websocket_url="$(terraform -chdir="$TERRAFORM_DIR" output -raw websocket_sync_url)"
-bucket="$(terraform -chdir="$TERRAFORM_DIR" output -raw s3_web_bucket_name)"
-distribution_id="$(terraform -chdir="$TERRAFORM_DIR" output -raw cloudfront_distribution_id)"
-cloudfront_url="$(terraform -chdir="$TERRAFORM_DIR" output -raw cloudfront_web_url)"
+command -v jq >/dev/null || {
+  echo "Refusing deployment: jq is required to read the reviewed Terraform plan." >&2
+  exit 1
+}
 
-echo "[3/5] Building the reviewed web and Android artifacts..."
+planned_output() {
+  local output_name="$1"
+  jq -er --arg output_name "$output_name" \
+    '.planned_values.outputs[$output_name].value // empty' "$plan_json"
+}
+
+api_url="$(planned_output api_gateway_url)"
+websocket_url="$(planned_output websocket_sync_url)"
+bucket="$(planned_output s3_web_bucket_name)"
+distribution_id="$(planned_output cloudfront_distribution_id)"
+cloudfront_url="$(planned_output cloudfront_web_url)"
+
+echo "[3/6] Building the reviewed web and Android artifacts before AWS mutation..."
 api_base_url="${api_url%/}/api"
 (
   cd "$ROOT_DIR/frontend"
@@ -68,7 +88,32 @@ api_base_url="${api_url%/}/api"
     --dart-define=WEBSOCKET_SYNC_URL="$websocket_url"
 )
 
-echo "[4/5] Publishing the web artifact and invalidating CloudFront..."
+echo "[4/6] Applying the exact reviewed Terraform plan..."
+terraform -chdir="$TERRAFORM_DIR" apply \
+  -auto-approve \
+  -input=false \
+  "$plan_file"
+
+assert_output_matches_plan() {
+  local output_name="$1"
+  local expected_value="$2"
+  local actual_value
+  actual_value="$(terraform -chdir="$TERRAFORM_DIR" output -raw "$output_name")"
+  if [[ "$actual_value" != "$expected_value" ]]; then
+    echo "Refusing publication: Terraform output $output_name changed after applying the saved plan." >&2
+    echo "Expected: $expected_value" >&2
+    echo "Actual:   $actual_value" >&2
+    exit 1
+  fi
+}
+
+assert_output_matches_plan api_gateway_url "$api_url"
+assert_output_matches_plan websocket_sync_url "$websocket_url"
+assert_output_matches_plan s3_web_bucket_name "$bucket"
+assert_output_matches_plan cloudfront_distribution_id "$distribution_id"
+assert_output_matches_plan cloudfront_web_url "$cloudfront_url"
+
+echo "[5/6] Publishing the web artifact and invalidating CloudFront..."
 aws s3 sync "$ROOT_DIR/frontend/build/web" "s3://$bucket" \
   --delete \
   --cache-control 'no-cache, no-store, must-revalidate' \
@@ -82,7 +127,7 @@ aws cloudfront wait invalidation-completed \
   --distribution-id "$distribution_id" \
   --id "$invalidation_id"
 
-echo "[5/5] Verifying the live deployment..."
+echo "[6/6] Verifying the live deployment..."
 release_marker_url="${cloudfront_url%/}/deployment-version.json?release=$release_commit"
 curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
   "$release_marker_url" | grep -F "\"commit\":\"$release_commit\""
