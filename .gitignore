@@ -35,6 +35,10 @@ frontend/linux/flutter/generated_plugin_registrant.cc
 frontend/linux/flutter/generated_plugin_registrant.h
 frontend/linux/flutter/generated_plugins.cmake
 
+# Local agent worktrees
+/.codex-worktrees/
+/.copilot-worktrees/
+
 # OS / IDE
 .DS_Store
 *.log
