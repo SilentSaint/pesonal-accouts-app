@@ -37,7 +37,12 @@ resolve_aws_cli() {
   fi
 }
 
-AWS_DEV_AUTH_CLI="$(resolve_aws_cli)"
+if ! AWS_DEV_AUTH_CLI="$(resolve_aws_cli)"; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 1
+  fi
+  exit 1
+fi
 AWS_DEV_AUTH_CREDENTIAL_PROCESS="$AWS_DEV_AUTH_CLI configure export-credentials --profile $AWS_DEV_AUTH_LOGIN_PROFILE --format process --region $AWS_DEV_AUTH_LOGIN_REGION"
 
 setup_profile() {
