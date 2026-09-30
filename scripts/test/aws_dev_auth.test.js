@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { chmodSync, mkdtempSync, readFileSync, writeFileSync } = require('node:fs');
+const { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -76,6 +76,38 @@ test('sourcing exports the process profile and preserves the login profile', () 
   assert.match(result.stdout, /process=.*configure export-credentials --profile default --format process/);
   assert.match(result.stdout, /login --profile default --remote --region us-east-1/);
   assert.doesNotMatch(result.stdout, /login .*ap-south-2/);
+});
+
+test('sourcing returns nonzero when the AWS CLI cannot be resolved', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'aws-dev-auth-missing-cli-'));
+  const binDirectory = path.join(directory, 'bin');
+  mkdirSync(binDirectory);
+  symlinkSync('/usr/bin/basename', path.join(binDirectory, 'basename'));
+  symlinkSync('/usr/bin/dirname', path.join(binDirectory, 'dirname'));
+
+  const result = spawnSync(
+    '/bin/bash',
+    [
+      '-c',
+      'set +e; source "$1"; status=$?; printf "shell-alive=%s\\nprofile=%s\\n" "$status" "${AWS_PROFILE-unset}"',
+      'bash',
+      helper,
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        AWS_CLI_COMMAND: '',
+        AWS_PROFILE: undefined,
+        AWS_CREDENTIAL_PROCESS: undefined,
+        PATH: binDirectory,
+      },
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'shell-alive=1\nprofile=unset\n');
+  assert.match(result.stderr, /aws CLI was not found on PATH/);
 });
 
 test('sourcing does not enable errexit and failed login returns to the caller', () => {
