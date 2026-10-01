@@ -108,7 +108,9 @@ watcher must:
    final automated response: if it contains actionable feedback, leave the PR
    unchanged, do not start cycle 11, and notify the owner with the cycle count
    and blocker. The owner decides whether to continue manually. A clean cycle 10
-   may proceed to the merge gate.
+   may proceed to the merge gate. If the head changes after cycle 10, do not reset
+   the cap or start another automated cycle: invalidate the prior approval, leave
+   the PR unchanged, and hand it to the owner for a fresh manual decision.
 4. Treat a Codex `+1`/thumbs-up reaction on the PR itself as the technical
    approval signal only for the head SHA that Codex reviewed. The watcher must
    record the reviewed head SHA and compare it with the current head before
