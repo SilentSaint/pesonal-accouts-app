@@ -85,8 +85,49 @@ must validate the candidate SHA shown in the workflow log.
 
 Reviewers require all configured checks, resolved conversations, and a branch
 current with `main` before merge. Use serialized merges or a merge queue when
-available. Force pushes and branch deletion on `main` are prohibited. The
-repository owner retains an explicitly documented emergency bypass only.
+available. Force pushes and branch deletion on `main` are prohibited. Every
+change reaches `main` through a pull request; no direct commit or automation
+write to `main` is permitted.
+
+The repository owner controls the merge boundary. The owner may explicitly
+authorize autonomous merging for a particular pull request as part of a
+dark-factory task; that task-scoped authorization is not a general bypass. The
+watcher must still use the protected pull-request merge path and satisfy every
+review and check gate.
+
+### Dark-factory review loop
+
+Creating an issue-scoped PR is the trigger to start the review watcher. The
+watcher must:
+
+1. Request an `@codex` review as soon as the PR is created.
+2. For cycles 1 through 9, inspect every actionable request, implement the fixes
+   on the PR branch, run focused validation, reply to the review, resolve the
+   addressed conversations, and request another review.
+3. Count one request-and-response sequence as one review cycle. Cycle 10 is the
+   final automated response: if it contains actionable feedback, leave the PR
+   unchanged, do not start cycle 11, and notify the owner with the cycle count
+   and blocker. The owner decides whether to continue manually. A clean cycle 10
+   may proceed to the merge gate. If the head changes after cycle 10, do not reset
+   the cap or start another automated cycle: invalidate the prior approval, leave
+   the PR unchanged, and hand it to the owner for a fresh manual decision.
+4. Treat a Codex `+1`/thumbs-up reaction on the PR itself as the technical
+   approval signal only for the head SHA that Codex reviewed. The watcher must
+   record the reviewed head SHA and compare it with the current head before
+   merging; any new commit invalidates the prior approval and requires another
+   review. Reactions on review comments, our own comments, or text-only comments
+   do not satisfy this gate.
+5. Merge only when the PR-level Codex approval is present, no actionable review
+   conversations remain unresolved, the PR is mergeable, and required checks are
+   acceptable. If the owner explicitly authorizes autonomous merging for this
+   PR, the watcher may merge through the pull-request path; otherwise it stops
+   and hands off to the owner. This never authorizes a direct write to `main`.
+6. After merge, perform a read-only verification against the exact merged SHA.
+   Never apply infrastructure automatically as a post-merge step.
+
+The watcher stays quiet while the PR and review state are unchanged and reports
+only meaningful review changes, completed fixes, cycle-limit stops, merge or
+verification results, failures, or required owner action.
 
 Close an issue only after the merged commit is deployed and production behavior
 has been verified, or when the issue has no deployment impact and every listed
