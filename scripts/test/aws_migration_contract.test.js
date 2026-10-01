@@ -9,6 +9,20 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
 
+function readTerraformModule() {
+  const terraformRoot = path.join(root, 'terraform');
+  const terraformFiles = fs.readdirSync(terraformRoot, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.tf'))
+    .map((entry) => entry.name)
+    .sort();
+
+  assert.notEqual(terraformFiles.length, 0, 'the Terraform root module must contain .tf files');
+
+  return terraformFiles
+    .map((fileName) => fs.readFileSync(path.join(terraformRoot, fileName), 'utf8'))
+    .join('\n');
+}
+
 test('local validation is the canonical non-mutating verification seam', () => {
   const verifier = read('scripts/ci/verify-local');
   const dockerVerifier = read('scripts/ci/verify-local-docker');
@@ -46,7 +60,7 @@ test('hosted validation entry points are retired', () => {
   }
 });
 test('Terraform no longer manages the retired zero-spend budget', () => {
-  const terraform = read('terraform/main.tf');
+  const terraform = readTerraformModule();
 
   assert.doesNotMatch(terraform, /resource\s+"aws_budgets_budget"\s+"free_tier_zero_budget"/);
   assert.doesNotMatch(terraform, /Zero-Spend-Free-Tier-Budget/);
