@@ -45,3 +45,9 @@ test('hosted validation entry points are retired', () => {
     );
   }
 });
+test('Terraform no longer manages the retired zero-spend budget', () => {
+  const terraform = read('terraform/main.tf');
+
+  assert.doesNotMatch(terraform, /resource\s+"aws_budgets_budget"\s+"free_tier_zero_budget"/);
+  assert.doesNotMatch(terraform, /Zero-Spend-Free-Tier-Budget/);
+});
