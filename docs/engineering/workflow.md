@@ -85,8 +85,15 @@ must validate the candidate SHA shown in the workflow log.
 
 Reviewers require all configured checks, resolved conversations, and a branch
 current with `main` before merge. Use serialized merges or a merge queue when
-available. Force pushes and branch deletion on `main` are prohibited. The
-repository owner retains an explicitly documented emergency bypass only.
+available. Force pushes and branch deletion on `main` are prohibited. Every
+change reaches `main` through a pull request; no direct commit or automation
+write to `main` is permitted.
+
+The repository owner controls the merge boundary. The owner may explicitly
+authorize autonomous merging for a particular pull request as part of a
+dark-factory task; that task-scoped authorization is not a general bypass. The
+watcher must still use the protected pull-request merge path and satisfy every
+review and check gate.
 
 ### Dark-factory review loop
 
@@ -94,19 +101,22 @@ Creating an issue-scoped PR is the trigger to start the review watcher. The
 watcher must:
 
 1. Request an `@codex` review as soon as the PR is created.
-2. On each new Codex review or follow-up, inspect every actionable request,
-   implement the fixes on the PR branch, run focused validation, reply to the
-   review, resolve the addressed conversations, and request another review.
-3. Count one request-and-response sequence as one review cycle. Stop before
-   cycle 11, leave the PR unchanged, and notify the owner with the cycle count
-   and blocker.
+2. For cycles 1 through 9, inspect every actionable request, implement the fixes
+   on the PR branch, run focused validation, reply to the review, resolve the
+   addressed conversations, and request another review.
+3. Count one request-and-response sequence as one review cycle. Cycle 10 is the
+   final automated response: if it contains actionable feedback, leave the PR
+   unchanged, do not start cycle 11, and notify the owner with the cycle count
+   and blocker. The owner decides whether to continue manually. A clean cycle 10
+   may proceed to the merge gate.
 4. Treat a Codex `+1`/thumbs-up reaction on the PR itself as the technical
    approval signal. Reactions on review comments, our own comments, or
    text-only comments do not satisfy this gate.
 5. Merge only when the PR-level Codex approval is present, no actionable review
    conversations remain unresolved, the PR is mergeable, and required checks are
-   acceptable. Automatic merging is opt-in per task; otherwise the owner controls
-   the merge.
+   acceptable. If the owner explicitly authorizes autonomous merging for this
+   PR, the watcher may merge through the pull-request path; otherwise it stops
+   and hands off to the owner. This never authorizes a direct write to `main`.
 6. After merge, perform a read-only verification against the exact merged SHA.
    Never apply infrastructure automatically as a post-merge step.
 
