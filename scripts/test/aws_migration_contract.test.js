@@ -12,14 +12,36 @@ function read(relativePath) {
 function readTerraformModule() {
   const terraformRoot = path.join(root, 'terraform');
   const terraformFiles = fs.readdirSync(terraformRoot, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.tf'))
+    .filter((entry) => (
+      entry.isFile()
+      && (entry.name.endsWith('.tf') || entry.name.endsWith('.tf.json'))
+    ))
     .map((entry) => entry.name)
     .sort();
 
-  assert.notEqual(terraformFiles.length, 0, 'the Terraform root module must contain .tf files');
+  assert.notEqual(terraformFiles.length, 0, 'the Terraform root module must contain configuration files');
 
   return terraformFiles
-    .map((fileName) => fs.readFileSync(path.join(terraformRoot, fileName), 'utf8'))
+    .map((fileName) => {
+      const content = fs.readFileSync(path.join(terraformRoot, fileName), 'utf8');
+
+      if (fileName.endsWith('.tf.json')) {
+        let document;
+        assert.doesNotThrow(
+          () => {
+            document = JSON.parse(content);
+          },
+          `${fileName} must contain valid Terraform JSON`,
+        );
+        assert.equal(
+          document.resource?.aws_budgets_budget?.free_tier_zero_budget,
+          undefined,
+          `${fileName} must not declare the retired zero-spend budget`,
+        );
+      }
+
+      return content;
+    })
     .join('\n');
 }
 
