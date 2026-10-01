@@ -48,23 +48,6 @@ resource "aws_dynamodb_table" "expense_tracker_data" {
   }
 }
 
-resource "aws_budgets_budget" "free_tier_zero_budget" {
-  name              = "Zero-Spend-Free-Tier-Budget-${var.environment}"
-  budget_type       = "COST"
-  limit_amount      = "0.01"
-  limit_unit        = "USD"
-  time_unit         = "MONTHLY"
-  time_period_start = "2026-01-01_00:00"
-
-  notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 100
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_email_addresses = [var.alert_email_address]
-  }
-}
-
 resource "aws_apigatewayv2_api" "backend_api" {
   name          = "expense-tracker-api-${var.environment}"
   protocol_type = "HTTP"
