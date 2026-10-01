@@ -110,8 +110,11 @@ watcher must:
    and blocker. The owner decides whether to continue manually. A clean cycle 10
    may proceed to the merge gate.
 4. Treat a Codex `+1`/thumbs-up reaction on the PR itself as the technical
-   approval signal. Reactions on review comments, our own comments, or
-   text-only comments do not satisfy this gate.
+   approval signal only for the head SHA that Codex reviewed. The watcher must
+   record the reviewed head SHA and compare it with the current head before
+   merging; any new commit invalidates the prior approval and requires another
+   review. Reactions on review comments, our own comments, or text-only comments
+   do not satisfy this gate.
 5. Merge only when the PR-level Codex approval is present, no actionable review
    conversations remain unresolved, the PR is mergeable, and required checks are
    acceptable. If the owner explicitly authorizes autonomous merging for this
