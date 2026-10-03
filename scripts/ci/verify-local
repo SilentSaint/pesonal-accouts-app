@@ -21,7 +21,13 @@ bash scripts/test_production_deploy_guard.sh
 
 echo "== Terraform =="
 terraform -chdir=terraform fmt -check -recursive
-./scripts/ci/retry-command "Terraform provider initialization" terraform -chdir=terraform init -backend=false -input=false
+if [[ -n "${TF_PLUGIN_CACHE_LOCK_FILE:-}" ]]; then
+  echo "Waiting for Terraform provider-cache lock: $TF_PLUGIN_CACHE_LOCK_FILE"
+  flock "$TF_PLUGIN_CACHE_LOCK_FILE" \
+    ./scripts/ci/retry-command "Terraform provider initialization" terraform -chdir=terraform init -backend=false -input=false
+else
+  ./scripts/ci/retry-command "Terraform provider initialization" terraform -chdir=terraform init -backend=false -input=false
+fi
 terraform -chdir=terraform validate
 
 echo "== Flutter =="

@@ -59,7 +59,7 @@ Toolchain: Java 21, Node 20.20.2, Flutter 3.44.0, Terraform 1.5.7, Playwright 1.
 Cache directory: $CACHE_DIR
 Minimum cache free space: ${MIN_CACHE_FREE_MB} MB
 Dependency cache mounts: Gradle, Terraform, Flutter pub, npm
-Terraform cache policy: per-run data and serialized provider-cache access
+Terraform cache policy: per-run data and provider-cache lock during init only
 Retry policy: ${RETRY_ATTEMPTS} attempt(s), ${RETRY_DELAY_SECONDS}s linear backoff
 AWS credential injection: disabled
 AWS metadata access: disabled
@@ -214,6 +214,34 @@ prepare_cache() {
     echo "Choose a writable path with --cache-dir PATH." >&2
     exit 1
   fi
+  local cache_path
+  local -a mounted_cache_paths=(
+    "$CACHE_DIR/gradle"
+    "$CACHE_DIR/terraform"
+    "$CACHE_DIR/terraform/plugin-cache"
+    "$CACHE_DIR/flutter"
+    "$CACHE_DIR/flutter/pub-cache"
+    "$CACHE_DIR/npm"
+  )
+  for cache_path in "${mounted_cache_paths[@]}"; do
+    if ! mkdir -p "$cache_path"; then
+      echo "Unable to create a local verification cache directory: $cache_path" >&2
+      echo "Choose a writable path with --cache-dir PATH." >&2
+      exit 1
+    fi
+    if [[ ! -d "$cache_path" || ! -w "$cache_path" ]]; then
+      echo "Local verification cache subdirectory is not writable: $cache_path" >&2
+      echo "Choose a writable path with --cache-dir PATH." >&2
+      exit 1
+    fi
+  done
+  local terraform_lock_file="$CACHE_DIR/terraform/plugin-cache.lock"
+  if ! { : >> "$terraform_lock_file"; } 2>/dev/null ||
+    [[ ! -f "$terraform_lock_file" || ! -w "$terraform_lock_file" ]]; then
+    echo "Terraform provider-cache lock file is not writable: $terraform_lock_file" >&2
+    echo "Choose a writable path with --cache-dir PATH." >&2
+    exit 1
+  fi
   local available_mb
   available_mb="$(cache_free_mb || true)"
   if [[ -z "$available_mb" ]]; then
@@ -286,11 +314,6 @@ preflight() {
   fi
   prepare_cache
   docker_access_preflight
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "Terraform provider-cache serialization requires the host 'flock' command." >&2
-    echo "Install util-linux or use a host that provides flock before retrying." >&2
-    exit 126
-  fi
   echo "Verification revision: $(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse HEAD)"
 }
 
@@ -350,6 +373,7 @@ run_container() {
   --env PUB_CACHE=/cache/flutter/pub-cache \
   --env TF_DATA_DIR=/tmp/aet-terraform-data \
   --env TF_PLUGIN_CACHE_DIR=/cache/terraform/plugin-cache \
+  --env TF_PLUGIN_CACHE_LOCK_FILE=/cache/terraform/plugin-cache.lock \
   --env npm_config_cache=/cache/npm \
   --env AWS_ACCESS_KEY_ID= \
   --env AWS_SECRET_ACCESS_KEY= \
@@ -367,9 +391,4 @@ run_container() {
   '
 }
 
-mkdir -p "$CACHE_DIR/terraform"
-exec 9>"$CACHE_DIR/terraform/plugin-cache.lock"
-echo "Waiting for Terraform provider-cache lock: $CACHE_DIR/terraform/plugin-cache.lock"
-flock 9
-echo "Terraform provider-cache lock acquired."
 run_container

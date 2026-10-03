@@ -68,9 +68,11 @@ relative cache paths resolve beside the checkout, never inside it; an absolute
 path inside the checkout is rejected before the cache is created. The wrapper
 reports the selected path and free space in its log. Terraform working
 directory data is kept in the container's per-run `/tmp`, while the persistent
-provider cache is protected by a host `flock`; concurrent verifier runs wait
-for that lock instead of racing on Terraform's non-concurrency-safe provider
-cache.
+provider cache is protected by a lock held only during `terraform init`;
+concurrent verifier runs can execute the other validation lanes in parallel
+without racing on Terraform's non-concurrency-safe provider cache. Preflight
+creates and checks each mounted cache directory and the lock file before Docker
+builds or starts a container.
 
 Dependency acquisition has three bounded attempts with a two-second linear
 backoff by default. The retry helper normalizes decimal environment values,

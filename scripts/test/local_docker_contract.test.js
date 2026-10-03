@@ -13,10 +13,12 @@ function runWithFakeDocker(
   args,
   envOverrides = {},
   fakeGitContents = null,
+  fakeMkdirContents = null,
 ) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
   const fakeDocker = path.join(tempRoot, 'docker');
   const fakeGit = path.join(tempRoot, 'git');
+  const fakeMkdir = path.join(tempRoot, 'mkdir');
   const cacheDir = path.join(tempRoot, 'cache');
   fs.mkdirSync(cacheDir);
   fs.writeFileSync(fakeDocker, `#!/usr/bin/env bash\n${fakeDockerContents}\n`);
@@ -27,6 +29,10 @@ function runWithFakeDocker(
   );
   fs.chmodSync(fakeDocker, 0o755);
   fs.chmodSync(fakeGit, 0o755);
+  if (fakeMkdirContents !== null) {
+    fs.writeFileSync(fakeMkdir, fakeMkdirContents);
+    fs.chmodSync(fakeMkdir, 0o755);
+  }
 
   try {
     const resolvedArgs = args.map((arg) => (
@@ -48,6 +54,7 @@ function runWithFakeDocker(
         LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '1',
         LOCAL_VERIFIER_DOCKER_BIN: fakeDocker,
         LOCAL_VERIFIER_DOCKER_GROUP_REEXEC: '1',
+        LOCAL_VERIFIER_TEST_CACHE_DIR: cacheDir,
         PATH: `${tempRoot}:${process.env.PATH}`,
         ...envOverrides,
       },
@@ -80,6 +87,30 @@ test('preflight accepts a persistent cache directory and checks Docker before th
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Docker preflight passed/);
   assert.match(result.stdout, /Cache directory:/);
+});
+
+test('preflight creates every mounted cache directory and Terraform lock before Docker access', () => {
+  const result = runWithFakeDocker(
+    'for cache_path in gradle terraform/plugin-cache flutter/pub-cache npm; do\n  [[ -d "$LOCAL_VERIFIER_TEST_CACHE_DIR/$cache_path" ]] || exit 9\ndone\n[[ -f "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" && -w "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" ]] || exit 10\nexit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Docker access preflight passed/);
+});
+
+test('preflight checks mounted cache subdirectories before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    null,
+    '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == */gradle ]] && { echo "simulated cache permission failure" >&2; exit 1; }\ndone\nexec /usr/bin/mkdir "$@"\n',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache.*not writable|unable to create.*cache/i);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
 });
 
 test('Docker access failures stop before an image build with actionable output', () => {
@@ -186,6 +217,7 @@ test('local verification pins the canonical toolchain', () => {
   assert.match(dockerfile, /FLUTTER_VERSION=3\.44\.0/);
   assert.match(dockerfile, /TERRAFORM_VERSION=1\.5\.7/);
   assert.match(dockerfile, /PLAYWRIGHT_VERSION=1\.47\.2/);
+  assert.match(dockerfile, /util-linux/);
   assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/packages\/flutter_tools/);
   assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/bin\/cache/);
 });
@@ -227,13 +259,22 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(hostedVerifier, /scripts\/ci\/retry-command/);
 });
 
-test('Terraform working data is per-run and provider-cache access is serialized', () => {
+test('Terraform provider-cache lock is scoped to initialization', () => {
   const wrapper = fs.readFileSync(verifier, 'utf8');
+  const hostedVerifier = fs.readFileSync(
+    path.join(root, 'scripts', 'ci', 'verify-local'),
+    'utf8',
+  );
 
   assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
   assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
+  assert.match(wrapper, /TF_PLUGIN_CACHE_LOCK_FILE=\/cache\/terraform\/plugin-cache\.lock/);
   assert.match(wrapper, /plugin-cache\.lock/);
-  assert.match(wrapper, /flock/);
+  assert.doesNotMatch(wrapper, /flock/);
+  assert.match(
+    hostedVerifier,
+    /flock "\$TF_PLUGIN_CACHE_LOCK_FILE" \\\n\s*\.\/scripts\/ci\/retry-command "Terraform provider initialization" terraform -chdir=terraform init/,
+  );
 });
 
 test('browser verification reuses the image-provided Playwright browser', () => {
