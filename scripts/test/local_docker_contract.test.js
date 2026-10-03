@@ -90,11 +90,14 @@ test('preflight accepts a persistent cache directory and checks Docker before th
   assert.match(result.stdout, /Cache directory:/);
 });
 
-test('Docker gate validates an immutable committed snapshot when checkout changes during image build', () => {
+test('Docker gate uses immutable source and helper snapshots when checkout changes during image build', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-snapshot-'));
   const checkout = path.join(tempRoot, 'checkout');
   const cacheDir = path.join(tempRoot, 'cache');
   const fakeDocker = path.join(tempRoot, 'docker');
+  const fakeId = path.join(tempRoot, 'id');
+  const buildCountFile = path.join(tempRoot, 'build-attempts');
+  const idMarker = path.join(tempRoot, 'id-marker');
   const trackedFiles = [
     'scripts/ci/verify-local-docker',
     'scripts/ci/retry-command',
@@ -128,7 +131,12 @@ test('Docker gate validates an immutable committed snapshot when checkout change
         'set -u',
         'if [[ "$1" == "info" ]]; then exit 0; fi',
         'if [[ "$1" == "build" ]]; then',
+        '  count=0',
+        '  [[ -f "$LOCAL_VERIFIER_TEST_BUILD_COUNT" ]] && count=$(<"$LOCAL_VERIFIER_TEST_BUILD_COUNT")',
+        '  count=$((count + 1))',
+        '  printf "%s" "$count" > "$LOCAL_VERIFIER_TEST_BUILD_COUNT"',
         '  printf "changed during image build\\n" > "$LOCAL_VERIFIER_TEST_CHECKOUT/revision.txt"',
+        '  if ((count < 2)); then exit 1; fi',
         '  exit 0',
         'fi',
         'if [[ "$1" == "run" ]]; then',
@@ -152,6 +160,18 @@ test('Docker gate validates an immutable committed snapshot when checkout change
       ].join('\n'),
     );
     fs.chmodSync(fakeDocker, 0o755);
+    fs.writeFileSync(
+      fakeId,
+      [
+        '#!/usr/bin/env bash',
+        'if [[ ! -e "$LOCAL_VERIFIER_TEST_ID_MARKER" ]]; then',
+        '  : > "$LOCAL_VERIFIER_TEST_ID_MARKER"',
+        '  printf "#!/usr/bin/env bash\\necho live checkout retry helper executed >&2\\nexit 77\\n" > "$LOCAL_VERIFIER_TEST_CHECKOUT/scripts/ci/retry-command"',
+        'fi',
+        'exec /usr/bin/id "$@"',
+      ].join('\n'),
+    );
+    fs.chmodSync(fakeId, 0o755);
 
     const result = spawnSync(
       path.join(checkout, 'scripts', 'ci', 'verify-local-docker'),
@@ -172,12 +192,19 @@ test('Docker gate validates an immutable committed snapshot when checkout change
           LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '1',
           LOCAL_VERIFIER_DOCKER_BIN: fakeDocker,
           LOCAL_VERIFIER_DOCKER_GROUP_REEXEC: '1',
+          LOCAL_VERIFIER_RETRY_ATTEMPTS: '2',
+          LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
           LOCAL_VERIFIER_TEST_CHECKOUT: checkout,
+          LOCAL_VERIFIER_TEST_BUILD_COUNT: buildCountFile,
+          LOCAL_VERIFIER_TEST_ID_MARKER: idMarker,
+          PATH: `${tempRoot}:${process.env.PATH}`,
         },
       },
     );
 
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(buildCountFile, 'utf8'), '2');
+    assert.match(result.stderr, /retrying in 0s/);
     assert.equal(fs.readFileSync(path.join(checkout, 'revision.txt'), 'utf8'), 'changed during image build\n');
     assert.deepEqual(fs.readdirSync(path.join(cacheDir, 'worktrees')), []);
   } finally {

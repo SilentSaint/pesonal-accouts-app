@@ -419,7 +419,7 @@ if ((BUILD_IMAGE)); then
   if ((PULL_IMAGE)); then
     build_args+=(--pull)
   fi
-  "$ROOT_DIR/scripts/ci/retry-command" "Docker image build" "$DOCKER_BIN" "${build_args[@]}" "$SNAPSHOT_DIR"
+  "$SNAPSHOT_DIR/scripts/ci/retry-command" "Docker image build" "$DOCKER_BIN" "${build_args[@]}" "$SNAPSHOT_DIR"
 fi
 
 run_container() {
