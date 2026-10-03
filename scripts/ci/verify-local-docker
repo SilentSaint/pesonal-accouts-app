@@ -58,6 +58,7 @@ Toolchain: Java 21, Node 20.20.2, Flutter 3.44.0, Terraform 1.5.7, Playwright 1.
 Cache directory: $CACHE_DIR
 Minimum cache free space: ${MIN_CACHE_FREE_MB} MB
 Dependency cache mounts: Gradle, Terraform, Flutter pub, npm
+Terraform cache policy: per-run data and serialized provider-cache access
 Retry policy: ${RETRY_ATTEMPTS} attempt(s), ${RETRY_DELAY_SECONDS}s linear backoff
 AWS credential injection: disabled
 AWS metadata access: disabled
@@ -224,9 +225,14 @@ docker_access_preflight() {
 }
 
 preflight() {
-  if ! git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" diff --quiet --no-ext-diff ||
-    ! git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" diff --cached --quiet --no-ext-diff; then
-    echo "The local verification checkout has tracked changes; use a clean checkout of the target revision." >&2
+  local worktree_status
+  if ! worktree_status="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all --ignore-submodules=all)"; then
+    echo "Unable to inspect the local verification checkout; use a clean Git checkout of the target revision." >&2
+    exit 1
+  fi
+  if [[ -n "$worktree_status" ]]; then
+    echo "The local verification checkout has tracked changes or non-ignored untracked files; use a clean checkout of the target revision." >&2
+    printf '%s\n' "$worktree_status" >&2
     exit 1
   fi
   if [[ ! -f "$DOCKERFILE_PATH" ]]; then
@@ -235,6 +241,11 @@ preflight() {
   fi
   prepare_cache
   docker_access_preflight
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "Terraform provider-cache serialization requires the host 'flock' command." >&2
+    echo "Install util-linux or use a host that provides flock before retrying." >&2
+    exit 126
+  fi
   echo "Verification revision: $(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse HEAD)"
 }
 
@@ -263,7 +274,8 @@ if ((BUILD_IMAGE)); then
   "$ROOT_DIR/scripts/ci/retry-command" "Docker image build" "$DOCKER_BIN" "${build_args[@]}" "$ROOT_DIR"
 fi
 
-"$DOCKER_BIN" run --rm --init \
+run_container() {
+  "$DOCKER_BIN" run --rm --init \
   --security-opt no-new-privileges:true \
   --user "$(id -u):$(id -g)" \
   --workdir /workspace \
@@ -277,7 +289,7 @@ fi
   --env LOCAL_VERIFIER_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
   --env GRADLE_USER_HOME=/cache/gradle \
   --env PUB_CACHE=/cache/flutter/pub-cache \
-  --env TF_DATA_DIR=/cache/terraform/data \
+  --env TF_DATA_DIR=/tmp/aet-terraform-data \
   --env TF_PLUGIN_CACHE_DIR=/cache/terraform/plugin-cache \
   --env npm_config_cache=/cache/npm \
   --env AWS_ACCESS_KEY_ID= \
@@ -294,3 +306,11 @@ fi
     git config --global --add safe.directory /workspace
     exec ./scripts/ci/verify-local
   '
+}
+
+mkdir -p "$CACHE_DIR/terraform"
+exec 9>"$CACHE_DIR/terraform/plugin-cache.lock"
+echo "Waiting for Terraform provider-cache lock: $CACHE_DIR/terraform/plugin-cache.lock"
+flock 9
+echo "Terraform provider-cache lock acquired."
+run_container

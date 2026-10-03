@@ -8,7 +8,12 @@ const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
 const verifier = path.join(root, 'scripts', 'ci', 'verify-local-docker');
 
-function runWithFakeDocker(fakeDockerContents, args, envOverrides = {}) {
+function runWithFakeDocker(
+  fakeDockerContents,
+  args,
+  envOverrides = {},
+  fakeGitContents = null,
+) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
   const fakeDocker = path.join(tempRoot, 'docker');
   const fakeGit = path.join(tempRoot, 'git');
@@ -17,7 +22,8 @@ function runWithFakeDocker(fakeDockerContents, args, envOverrides = {}) {
   fs.writeFileSync(fakeDocker, `#!/usr/bin/env bash\n${fakeDockerContents}\n`);
   fs.writeFileSync(
     fakeGit,
-    '#!/usr/bin/env bash\nfor arg in "$@"; do [[ "$arg" == diff ]] && exit 0; done\nexec /usr/bin/git "$@"\n',
+    fakeGitContents ??
+      '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == diff || "$arg" == status ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n',
   );
   fs.chmodSync(fakeDocker, 0o755);
   fs.chmodSync(fakeGit, 0o755);
@@ -99,6 +105,19 @@ test('insufficient cache space stops before Docker starts', () => {
   assert.match(result.stderr, /cache has only .* required before starting/i);
 });
 
+test('non-ignored untracked files stop preflight before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == status ]] && { printf "?? untracked.tf\\n"; exit 0; }\n  [[ "$arg" == diff ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /tracked changes or non-ignored untracked files|clean checkout/i);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
 test('local verification pins the canonical toolchain', () => {
   const dockerfile = fs.readFileSync(
     path.join(root, 'ci', 'local-verification', 'Dockerfile'),
@@ -127,7 +146,7 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(wrapper, /--env AWS_SESSION_TOKEN=/);
   assert.match(wrapper, /--env AWS_SHARED_CREDENTIALS_FILE=\/dev\/null/);
   assert.match(wrapper, /--env AWS_EC2_METADATA_DISABLED=true/);
-  assert.match(wrapper, /TF_DATA_DIR=\/cache\/terraform\/data/);
+  assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
   assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
   assert.match(wrapper, /GRADLE_USER_HOME=\/cache\/gradle/);
   assert.match(wrapper, /PUB_CACHE=\/cache\/flutter\/pub-cache/);
@@ -147,6 +166,15 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(hostedVerifier, /npm install --no-save --no-package-lock playwright@1\.47\.2/);
   assert.doesNotMatch(wrapper, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
   assert.match(hostedVerifier, /scripts\/ci\/retry-command/);
+});
+
+test('Terraform working data is per-run and provider-cache access is serialized', () => {
+  const wrapper = fs.readFileSync(verifier, 'utf8');
+
+  assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
+  assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
+  assert.match(wrapper, /plugin-cache\.lock/);
+  assert.match(wrapper, /flock/);
 });
 
 test('browser verification reuses the image-provided Playwright browser', () => {
