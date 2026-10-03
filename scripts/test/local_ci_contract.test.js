@@ -64,6 +64,39 @@ test('dependency retry helper rejects retry counts outside its safe bound', () =
   assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and 10/);
 });
 
+test('dependency retry helper normalizes zero-padded retry counts as decimal', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-padded-attempts-'));
+  const stateFile = path.join(tempRoot, 'attempts');
+  const command = path.join(tempRoot, 'transient-command');
+  fs.writeFileSync(
+    command,
+    '#!/usr/bin/env bash\ncount=0\n[[ -f "$1" ]] && count=$(<"$1")\ncount=$((count + 1))\nprintf "%s" "$count" > "$1"\n((count >= 8))\n',
+  );
+  fs.chmodSync(command, 0o755);
+
+  try {
+    const result = spawnSync(
+      path.join(root, 'scripts', 'ci', 'retry-command'),
+      ['Zero-padded retry count', command, stateFile],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCAL_VERIFIER_RETRY_ATTEMPTS: '08',
+          LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /attempt 7\/8/);
+    assert.equal(fs.readFileSync(stateFile, 'utf8'), '8');
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('dependency retry helper normalizes decimal delays and bounds backoff', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-delay-'));
   const stateFile = path.join(tempRoot, 'attempts');

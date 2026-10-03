@@ -36,10 +36,13 @@ scripts/ci/verify-local-docker --preflight-only \
   --cache-dir /path/to/persistent/aet-local-verification-cache
 ```
 
-The wrapper uses `ci/local-verification/Dockerfile`, mounts the checkout at
-`/workspace`, and runs as the invoking user. It resolves the worktree Git
-directory and common directory, mounts the common directory read-only at its
-original absolute path, and leaves build/test output in the checkout. It does
+The wrapper uses `ci/local-verification/Dockerfile` and runs as the invoking
+user. After preflight it captures `HEAD` and creates a detached Git worktree at
+that exact revision. Docker builds from this snapshot and mounts it at
+`/workspace`; the invoking checkout itself is never mounted. Build/test output
+is isolated in the temporary snapshot, which is removed when the verifier
+exits. The wrapper resolves the snapshot's Git directory and common directory,
+mounts the common directory read-only at its original absolute path, and does
 not export a global `GIT_DIR`, so tools that inspect their own checkout retain
 normal Git discovery.
 The wrapper is Git worktree-safe and forwards the invoking user's
@@ -57,8 +60,11 @@ yet have that membership, it attempts one `sg docker` re-exec; if that cannot
 be acquired, it stops before any image build and tells the operator to start a
 new login session or use a process with Docker group membership. This does not
 add a user to the group or grant a new account privilege.
-Log destinations must also resolve outside the checkout so opening a log cannot
-make the checkout dirty before the clean-worktree check.
+The gate reports the captured `HEAD` revision. Changes to the invoking checkout
+after preflight cannot change the bytes being validated, because the image build
+and container use the detached snapshot. Log destinations must also resolve
+outside the checkout so opening a log cannot make the checkout dirty before the
+clean-worktree check.
 
 The default cache is a sibling directory next to the checkout, rather than
 the small `/tmp` filesystem. The cache volume persists Gradle, Terraform

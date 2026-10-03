@@ -75,6 +75,7 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(result.stdout, /AWS credential injection: disabled/);
   assert.match(result.stdout, /Terraform mutation: validation only/);
   assert.match(result.stdout, /Docker access: preflighted/);
+  assert.match(result.stdout, /Verification source: detached worktree snapshot of HEAD/);
 });
 
 test('preflight accepts a persistent cache directory and checks Docker before the gate', () => {
@@ -87,6 +88,101 @@ test('preflight accepts a persistent cache directory and checks Docker before th
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Docker preflight passed/);
   assert.match(result.stdout, /Cache directory:/);
+});
+
+test('Docker gate validates an immutable committed snapshot when checkout changes during image build', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-snapshot-'));
+  const checkout = path.join(tempRoot, 'checkout');
+  const cacheDir = path.join(tempRoot, 'cache');
+  const fakeDocker = path.join(tempRoot, 'docker');
+  const trackedFiles = [
+    'scripts/ci/verify-local-docker',
+    'scripts/ci/retry-command',
+    'ci/local-verification/Dockerfile',
+  ];
+
+  try {
+    for (const relativePath of trackedFiles) {
+      const destination = path.join(checkout, relativePath);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(root, relativePath), destination);
+    }
+    fs.writeFileSync(path.join(checkout, 'revision.txt'), 'original committed source\n');
+    fs.mkdirSync(cacheDir);
+
+    for (const args of [
+      ['init', '--quiet', checkout],
+      ['-C', checkout, 'config', 'user.name', 'Local verifier contract'],
+      ['-C', checkout, 'config', 'user.email', 'local-verifier@example.invalid'],
+      ['-C', checkout, 'add', '--', '.'],
+      ['-C', checkout, 'commit', '--quiet', '-m', 'snapshot fixture'],
+    ]) {
+      const result = spawnSync('git', args, { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    fs.writeFileSync(
+      fakeDocker,
+      [
+        '#!/usr/bin/env bash',
+        'set -u',
+        'if [[ "$1" == "info" ]]; then exit 0; fi',
+        'if [[ "$1" == "build" ]]; then',
+        '  printf "changed during image build\\n" > "$LOCAL_VERIFIER_TEST_CHECKOUT/revision.txt"',
+        '  exit 0',
+        'fi',
+        'if [[ "$1" == "run" ]]; then',
+        '  workspace_source=""',
+        '  while (($#)); do',
+        '    if [[ "$1" == "--volume" ]]; then',
+        '      case "$2" in',
+        '        *:/workspace) workspace_source="${2%:/workspace}" ;;',
+        '      esac',
+        '      shift 2',
+        '    else',
+        '      shift',
+        '    fi',
+        '  done',
+        '  [[ -n "$workspace_source" ]] || { echo "workspace mount missing" >&2; exit 23; }',
+        '  [[ "$workspace_source" != "$LOCAL_VERIFIER_TEST_CHECKOUT" ]] || { echo "live checkout was mounted" >&2; exit 24; }',
+        '  [[ "$(cat "$workspace_source/revision.txt")" == "original committed source" ]] || { echo "snapshot content changed" >&2; exit 25; }',
+        '  exit 0',
+        'fi',
+        'exit 0',
+      ].join('\n'),
+    );
+    fs.chmodSync(fakeDocker, 0o755);
+
+    const result = spawnSync(
+      path.join(checkout, 'scripts', 'ci', 'verify-local-docker'),
+      ['--cache-dir', cacheDir],
+      {
+        cwd: checkout,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          AWS_ACCESS_KEY_ID: '',
+          AWS_SECRET_ACCESS_KEY: '',
+          AWS_SESSION_TOKEN: '',
+          AWS_SECURITY_TOKEN: '',
+          AWS_PROFILE: '',
+          AWS_CONFIG_FILE: '/dev/null',
+          AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+          AWS_EC2_METADATA_DISABLED: 'true',
+          LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '1',
+          LOCAL_VERIFIER_DOCKER_BIN: fakeDocker,
+          LOCAL_VERIFIER_DOCKER_GROUP_REEXEC: '1',
+          LOCAL_VERIFIER_TEST_CHECKOUT: checkout,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(checkout, 'revision.txt'), 'utf8'), 'changed during image build\n');
+    assert.deepEqual(fs.readdirSync(path.join(cacheDir, 'worktrees')), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('preflight creates every mounted cache directory and Terraform lock before Docker access', () => {
@@ -185,6 +281,20 @@ test('retry attempts above the helper limit stop preflight before Docker starts'
   assert.equal(result.status, 64);
   assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and 10/);
   assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('zero-padded retry attempts pass Docker preflight as decimal values', () => {
+  const result = runWithFakeDocker(
+    'exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '08',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Docker preflight passed/);
 });
 
 test('retry delays above the helper limit stop preflight before Docker starts', () => {
@@ -393,6 +503,8 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /DynamoDB local/i);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /Git worktree/);
+  assert.match(runbook, /detached Git worktree at/);
+  assert.match(runbook, /invoking checkout itself is never mounted/);
   assert.match(runbook, /common directory/);
   assert.match(runbook, /non-zero/);
 });

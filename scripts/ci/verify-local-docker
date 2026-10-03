@@ -20,14 +20,16 @@ PREFLIGHT_ONLY=0
 LOG_FILE=""
 GIT_DIR="${GIT_DIR:-}"
 GIT_COMMON_DIR="${GIT_COMMON_DIR:-}"
+SOURCE_REVISION=""
+SNAPSHOT_DIR=""
 
 usage() {
   cat <<'USAGE'
 Usage: scripts/ci/verify-local-docker [options]
 
 Build the pinned local validation image and run the complete verification lane
-inside it. The repository is mounted read-write so build and test artifacts
-remain available locally.
+inside it. A detached worktree snapshot of HEAD is mounted read-write so build
+and test artifacts remain isolated from the invoking checkout.
 
 Options:
   --no-build       Reuse the local image instead of building it.
@@ -56,6 +58,7 @@ print_config() {
 Dockerfile: $DOCKERFILE_RELATIVE
 Image: $IMAGE_NAME
 Toolchain: Java 21, Node 20.20.2, Flutter 3.44.0, Terraform 1.5.7, Playwright 1.47.2
+Verification source: detached worktree snapshot of HEAD
 Cache directory: $CACHE_DIR
 Minimum cache free space: ${MIN_CACHE_FREE_MB} MB
 Dependency cache mounts: Gradle, Terraform, Flutter pub, npm
@@ -146,9 +149,18 @@ if (( min_cache_free_exceeds_max )); then
   echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and $MAX_CACHE_FREE_MB." >&2
   exit 64
 fi
-if ! [[ "$RETRY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] ||
+if ! [[ "$RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] ||
   ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
+  exit 64
+fi
+normalized_retry_attempts="${RETRY_ATTEMPTS#"${RETRY_ATTEMPTS%%[!0]*}"}"
+if [[ -z "$normalized_retry_attempts" ]]; then
+  normalized_retry_attempts=0
+fi
+RETRY_ATTEMPTS="$normalized_retry_attempts"
+if ! [[ "$RETRY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be a positive decimal integer." >&2
   exit 64
 fi
 
@@ -317,7 +329,8 @@ preflight() {
   fi
   prepare_cache
   docker_access_preflight
-  echo "Verification revision: $(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse HEAD)"
+  SOURCE_REVISION="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse HEAD)"
+  echo "Verification revision: $SOURCE_REVISION"
 }
 
 preflight
@@ -328,14 +341,65 @@ if ((PREFLIGHT_ONLY)); then
 fi
 
 START_SECONDS="$(date +%s)"
+remove_verification_snapshot() {
+  if [[ -z "$SNAPSHOT_DIR" ]]; then
+    return 0
+  fi
+
+  if ! git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" worktree remove --force "$SNAPSHOT_DIR" >/dev/null 2>&1; then
+    echo "Unable to remove local verification snapshot: $SNAPSHOT_DIR" >&2
+    return 1
+  fi
+  SNAPSHOT_DIR=""
+}
+
 report_duration() {
   local status=$?
-  local elapsed=$(( $(date +%s) - START_SECONDS ))
   trap - EXIT
+  if ! remove_verification_snapshot; then
+    status=1
+  fi
+  local elapsed=$(( $(date +%s) - START_SECONDS ))
   echo "Local Docker verification finished with status $status after ${elapsed}s."
   exit "$status"
 }
 trap report_duration EXIT
+
+create_verification_snapshot() {
+  local snapshot_parent="$CACHE_DIR/worktrees"
+  local snapshot_path
+  local snapshot_revision
+
+  if ! mkdir -p "$snapshot_parent"; then
+    echo "Unable to create the local verification snapshot directory: $snapshot_parent" >&2
+    return 1
+  fi
+  if ! snapshot_path="$(mktemp -d "$snapshot_parent/local-verifier.XXXXXX")"; then
+    echo "Unable to allocate a local verification snapshot directory under: $snapshot_parent" >&2
+    return 1
+  fi
+  if ! rmdir "$snapshot_path"; then
+    echo "Unable to prepare the local verification snapshot path: $snapshot_path" >&2
+    return 1
+  fi
+  if ! git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" worktree add --quiet --detach "$snapshot_path" "$SOURCE_REVISION"; then
+    rmdir "$snapshot_path" 2>/dev/null || true
+    echo "Unable to create an immutable worktree snapshot for revision $SOURCE_REVISION." >&2
+    return 1
+  fi
+  SNAPSHOT_DIR="$snapshot_path"
+
+  if ! snapshot_revision="$(git -c "safe.directory=$SNAPSHOT_DIR" -C "$SNAPSHOT_DIR" rev-parse HEAD)" ||
+    [[ "$snapshot_revision" != "$SOURCE_REVISION" ]]; then
+    echo "The local verification snapshot does not match revision $SOURCE_REVISION." >&2
+    return 1
+  fi
+  echo "Verification snapshot: $SNAPSHOT_DIR ($snapshot_revision)"
+}
+
+if ! create_verification_snapshot; then
+  exit 1
+fi
 
 if ! HOST_GROUP_IDS="$(id -G)"; then
   echo "Unable to resolve the invoking user's supplementary groups for the Docker container." >&2
@@ -351,11 +415,11 @@ for group_id in "${HOST_GROUP_ID_ARRAY[@]}"; do
 done
 
 if ((BUILD_IMAGE)); then
-  build_args=(build --tag "$IMAGE_NAME" --file "$DOCKERFILE_PATH")
+  build_args=(build --tag "$IMAGE_NAME" --file "$SNAPSHOT_DIR/$DOCKERFILE_RELATIVE")
   if ((PULL_IMAGE)); then
     build_args+=(--pull)
   fi
-  "$ROOT_DIR/scripts/ci/retry-command" "Docker image build" "$DOCKER_BIN" "${build_args[@]}" "$ROOT_DIR"
+  "$ROOT_DIR/scripts/ci/retry-command" "Docker image build" "$DOCKER_BIN" "${build_args[@]}" "$SNAPSHOT_DIR"
 fi
 
 run_container() {
@@ -365,8 +429,11 @@ run_container() {
   "${SUPPLEMENTARY_GROUP_ARGS[@]}" \
   --workdir /workspace \
   --tmpfs /tmp:exec \
-  --volume "$ROOT_DIR:/workspace" \
-  --volume "$CACHE_DIR:/cache:rw" \
+  --volume "$SNAPSHOT_DIR:/workspace" \
+  --volume "$CACHE_DIR/gradle:/cache/gradle:rw" \
+  --volume "$CACHE_DIR/terraform:/cache/terraform:rw" \
+  --volume "$CACHE_DIR/flutter:/cache/flutter:rw" \
+  --volume "$CACHE_DIR/npm:/cache/npm:rw" \
   --volume "$GIT_COMMON_DIR:$GIT_COMMON_DIR:ro" \
   --env CI=1 \
   --env HOME=/tmp/aet-ci-home \
