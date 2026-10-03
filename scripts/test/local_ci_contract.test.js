@@ -45,6 +45,25 @@ test('dependency retry helper retries transient commands with bounded backoff', 
   }
 });
 
+test('dependency retry helper rejects retry counts outside its safe bound', () => {
+  const result = spawnSync(
+    path.join(root, 'scripts', 'ci', 'retry-command'),
+    ['Overflowing retry', 'true'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        LOCAL_VERIFIER_RETRY_ATTEMPTS: '9223372036854775808',
+        LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+      },
+    },
+  );
+
+  assert.equal(result.status, 64, result.stderr);
+  assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and 10/);
+});
+
 test('local verification is independent of hosted CI and AWS credentials', () => {
   const verifier = read('scripts/ci/verify-local');
   const dockerRunner = read('scripts/ci/verify-local-docker');

@@ -10,10 +10,21 @@ label="$1"
 shift
 attempts="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
 delay_seconds="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
+MAX_RETRY_ATTEMPTS=10
 
 if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "$delay_seconds" =~ ^[0-9]+$ ]]; then
   echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
+  exit 64
+fi
+
+attempts_exceed_max=0
+if (( ${#attempts} > ${#MAX_RETRY_ATTEMPTS} )) ||
+  (( ${#attempts} == ${#MAX_RETRY_ATTEMPTS} )) && [[ "$attempts" > "$MAX_RETRY_ATTEMPTS" ]]; then
+  attempts_exceed_max=1
+fi
+if (( attempts_exceed_max )); then
+  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and $MAX_RETRY_ATTEMPTS." >&2
   exit 64
 fi
 
