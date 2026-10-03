@@ -172,6 +172,36 @@ test('zero-padded cache thresholds are parsed as decimal', () => {
   assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
 });
 
+test('retry attempts above the helper limit stop preflight before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '11',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+    },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and 10/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('retry delays above the helper limit stop preflight before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '10',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '2000000000000000000',
+    },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and 922337203685477580/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
 test('log files inside the checkout are rejected before they are opened', () => {
   const logFile = path.join(root, '.local-verifier-contract.log');
 
