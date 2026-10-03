@@ -10,6 +10,7 @@ IMAGE_NAME="${LOCAL_VERIFICATION_IMAGE:-automatic-expense-tracker-ci:local}"
 CACHE_DIR="${LOCAL_VERIFIER_CACHE_DIR:-$(dirname "$ROOT_DIR")/.automatic-expense-tracker-local-verification-cache}"
 DOCKER_BIN="${LOCAL_VERIFIER_DOCKER_BIN:-docker}"
 MIN_CACHE_FREE_MB="${LOCAL_VERIFIER_MIN_CACHE_FREE_MB:-2048}"
+MAX_CACHE_FREE_MB=9223372036854775807
 RETRY_ATTEMPTS="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
 RETRY_DELAY_SECONDS="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
 BUILD_IMAGE=1
@@ -129,6 +130,15 @@ if ! [[ "$MIN_CACHE_FREE_MB" =~ ^[0-9]+$ ]]; then
   echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be a non-negative integer." >&2
   exit 64
 fi
+min_cache_free_exceeds_max=0
+if (( ${#MIN_CACHE_FREE_MB} > ${#MAX_CACHE_FREE_MB} )) ||
+  (( ${#MIN_CACHE_FREE_MB} == ${#MAX_CACHE_FREE_MB} )) && [[ "$MIN_CACHE_FREE_MB" > "$MAX_CACHE_FREE_MB" ]]; then
+  min_cache_free_exceeds_max=1
+fi
+if (( min_cache_free_exceeds_max )); then
+  echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and $MAX_CACHE_FREE_MB." >&2
+  exit 64
+fi
 if ! [[ "$RETRY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
@@ -155,6 +165,19 @@ case "$CACHE_DIR" in
     exit 1
     ;;
 esac
+if [[ -n "$LOG_FILE" ]]; then
+  if ! LOG_FILE="$(realpath -m -- "$LOG_FILE")"; then
+    echo "Unable to resolve the local verification log path: $LOG_FILE" >&2
+    exit 1
+  fi
+  case "$LOG_FILE" in
+    "$ROOT_REAL_DIR"|"$ROOT_REAL_DIR"/*)
+      echo "The local verification log must be outside the checkout: $LOG_FILE" >&2
+      echo "Use --log-file PATH outside $ROOT_REAL_DIR." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if ! GIT_DIR="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
   echo "The local verification path must run from a Git checkout or worktree." >&2

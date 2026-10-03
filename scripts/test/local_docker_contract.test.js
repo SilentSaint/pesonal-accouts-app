@@ -105,6 +105,35 @@ test('insufficient cache space stops before Docker starts', () => {
   assert.match(result.stderr, /cache has only .* required before starting/i);
 });
 
+test('oversized cache thresholds are rejected before arithmetic', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '9223372036854775808' },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and 9223372036854775807/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('log files inside the checkout are rejected before they are opened', () => {
+  const logFile = path.join(root, '.local-verifier-contract.log');
+
+  try {
+    const result = runWithFakeDocker(
+      'echo docker should not run >&2; exit 0',
+      ['--preflight-only', '--cache-dir', '__CACHE_DIR__', '--log-file', logFile],
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /log.*outside.*checkout|checkout.*log/i);
+    assert.equal(fs.existsSync(logFile), false);
+  } finally {
+    fs.rmSync(logFile, { force: true });
+  }
+});
+
 test('non-ignored untracked files stop preflight before Docker starts', () => {
   const result = runWithFakeDocker(
     'echo docker should not run >&2; exit 0',
@@ -270,3 +299,5 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /common directory/);
   assert.match(runbook, /non-zero/);
 });
+
+// Contract tests intentionally exercise the public script seams.
