@@ -130,6 +130,11 @@ if ! [[ "$MIN_CACHE_FREE_MB" =~ ^[0-9]+$ ]]; then
   echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be a non-negative integer." >&2
   exit 64
 fi
+normalized_min_cache_free_mb="${MIN_CACHE_FREE_MB#"${MIN_CACHE_FREE_MB%%[!0]*}"}"
+if [[ -z "$normalized_min_cache_free_mb" ]]; then
+  normalized_min_cache_free_mb=0
+fi
+MIN_CACHE_FREE_MB="$normalized_min_cache_free_mb"
 min_cache_free_exceeds_max=0
 if (( ${#MIN_CACHE_FREE_MB} > ${#MAX_CACHE_FREE_MB} )) ||
   (( ${#MIN_CACHE_FREE_MB} == ${#MAX_CACHE_FREE_MB} )) && [[ "$MIN_CACHE_FREE_MB" > "$MAX_CACHE_FREE_MB" ]]; then

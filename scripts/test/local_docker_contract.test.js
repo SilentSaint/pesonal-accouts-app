@@ -117,6 +117,18 @@ test('oversized cache thresholds are rejected before arithmetic', () => {
   assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
 });
 
+test('zero-padded cache thresholds are parsed as decimal', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '0999999999' },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache has only .* required before starting/i);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
 test('log files inside the checkout are rejected before they are opened', () => {
   const logFile = path.join(root, '.local-verifier-contract.log');
 

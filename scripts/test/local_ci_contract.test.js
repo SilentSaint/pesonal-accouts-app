@@ -64,6 +64,59 @@ test('dependency retry helper rejects retry counts outside its safe bound', () =
   assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and 10/);
 });
 
+test('dependency retry helper normalizes decimal delays and bounds backoff', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-delay-'));
+  const stateFile = path.join(tempRoot, 'attempts');
+  const command = path.join(tempRoot, 'transient-command');
+  const fakeSleep = path.join(tempRoot, 'sleep');
+  fs.writeFileSync(
+    command,
+    '#!/usr/bin/env bash\ncount=0\n[[ -f "$1" ]] && count=$(<"$1")\ncount=$((count + 1))\nprintf "%s" "$count" > "$1"\n((count >= 2))\n',
+  );
+  fs.writeFileSync(fakeSleep, '#!/usr/bin/env bash\nexit 0\n');
+  fs.chmodSync(command, 0o755);
+  fs.chmodSync(fakeSleep, 0o755);
+
+  try {
+    const result = spawnSync(
+      path.join(root, 'scripts', 'ci', 'retry-command'),
+      ['Padded delay', command, stateFile],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCAL_VERIFIER_RETRY_ATTEMPTS: '2',
+          LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '08',
+          PATH: `${tempRoot}:${process.env.PATH}`,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(stateFile, 'utf8'), '2');
+
+    const tooLarge = spawnSync(
+      path.join(root, 'scripts', 'ci', 'retry-command'),
+      ['Oversized delay', 'true'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCAL_VERIFIER_RETRY_ATTEMPTS: '2',
+          LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '922337203685477581',
+        },
+      },
+    );
+
+    assert.equal(tooLarge.status, 64, tooLarge.stderr);
+    assert.match(tooLarge.stderr, /LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and 922337203685477580/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('local verification is independent of hosted CI and AWS credentials', () => {
   const verifier = read('scripts/ci/verify-local');
   const dockerRunner = read('scripts/ci/verify-local-docker');
@@ -71,6 +124,7 @@ test('local verification is independent of hosted CI and AWS credentials', () =>
 
   assert.match(verifier, /backend\/gradlew -p backend test/);
   assert.match(verifier, /backend\/gradlew -p backend lambdaZip/);
+  assert.match(verifier, /scripts\/ci\/retry-command "Gradle dependency resolution" \.\/backend\/gradlew -p backend testClasses --no-daemon/);
   assert.match(verifier, /backend\/lambda\/build\.sh --check/);
   assert.match(verifier, /terraform -chdir=terraform validate/);
   assert.match(verifier, /flutter test/);

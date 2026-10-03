@@ -11,12 +11,22 @@ shift
 attempts="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
 delay_seconds="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
 MAX_RETRY_ATTEMPTS=10
+MAX_RETRY_DELAY_SECONDS=922337203685477580
 
-if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]] ||
-  ! [[ "$delay_seconds" =~ ^[0-9]+$ ]]; then
-  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
+if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]]; then
+  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be a positive decimal integer." >&2
   exit 64
 fi
+if ! [[ "$delay_seconds" =~ ^[0-9]+$ ]]; then
+  echo "LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be a non-negative decimal integer." >&2
+  exit 64
+fi
+
+normalized_delay_seconds="${delay_seconds#"${delay_seconds%%[!0]*}"}"
+if [[ -z "$normalized_delay_seconds" ]]; then
+  normalized_delay_seconds=0
+fi
+delay_seconds="$normalized_delay_seconds"
 
 attempts_exceed_max=0
 if (( ${#attempts} > ${#MAX_RETRY_ATTEMPTS} )) ||
@@ -25,6 +35,16 @@ if (( ${#attempts} > ${#MAX_RETRY_ATTEMPTS} )) ||
 fi
 if (( attempts_exceed_max )); then
   echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and $MAX_RETRY_ATTEMPTS." >&2
+  exit 64
+fi
+
+delay_seconds_exceed_max=0
+if (( ${#delay_seconds} > ${#MAX_RETRY_DELAY_SECONDS} )) ||
+  (( ${#delay_seconds} == ${#MAX_RETRY_DELAY_SECONDS} )) && [[ "$delay_seconds" > "$MAX_RETRY_DELAY_SECONDS" ]]; then
+  delay_seconds_exceed_max=1
+fi
+if (( delay_seconds_exceed_max )); then
+  echo "LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and $MAX_RETRY_DELAY_SECONDS." >&2
   exit 64
 fi
 

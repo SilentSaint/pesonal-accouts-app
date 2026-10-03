@@ -55,12 +55,14 @@ yet have that membership, it attempts one `sg docker` re-exec; if that cannot
 be acquired, it stops before any image build and tells the operator to start a
 new login session or use a process with Docker group membership. This does not
 add a user to the group or grant a new account privilege.
+Log destinations must also resolve outside the checkout so opening a log cannot
+make the checkout dirty before the clean-worktree check.
 
 The default cache is a sibling directory next to the checkout, rather than
 the small `/tmp` filesystem. The cache volume persists Gradle, Terraform
 provider/data, Flutter pub, and npm downloads across clean-checkout runs. Use
 `--cache-dir` when the checkout is on a small or quota-limited filesystem. The
-Relative cache paths resolve beside the checkout, never inside it; an absolute
+relative cache paths resolve beside the checkout, never inside it; an absolute
 path inside the checkout is rejected before the cache is created. The wrapper
 reports the selected path and free space in its log. Terraform working
 directory data is kept in the container's per-run `/tmp`, while the persistent
@@ -69,8 +71,13 @@ for that lock instead of racing on Terraform's non-concurrency-safe provider
 cache.
 
 Dependency acquisition has three bounded attempts with a two-second linear
-backoff by default. Override these for a controlled diagnostic with
-`LOCAL_VERIFIER_RETRY_ATTEMPTS` and `LOCAL_VERIFIER_RETRY_DELAY_SECONDS`.
+backoff by default. The retry helper normalizes decimal environment values,
+allows at most 10 attempts, and caps the delay at
+`922337203685477580` seconds so backoff multiplication remains safe. Override
+these for a controlled diagnostic with `LOCAL_VERIFIER_RETRY_ATTEMPTS` and
+`LOCAL_VERIFIER_RETRY_DELAY_SECONDS`. Gradle distribution and dependency
+resolution are retried before the test and packaging commands, while test
+execution remains single-shot.
 The wrapper also records the final verification status and duration.
 
 Use the direct verifier when the pinned tools are already installed locally:
