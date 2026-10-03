@@ -80,7 +80,8 @@ allows at most 10 attempts, and caps the delay at
 `922337203685477580` seconds so backoff multiplication remains safe. Override
 these for a controlled diagnostic with `LOCAL_VERIFIER_RETRY_ATTEMPTS` and
 `LOCAL_VERIFIER_RETRY_DELAY_SECONDS`. Gradle distribution and dependency
-resolution are retried before the test and packaging commands, while test
+resolution are retried before the test and packaging commands. A test dry run
+also resolves test runtime artifacts under the retry policy; actual test
 execution remains single-shot.
 The wrapper also records the final verification status and duration.
 

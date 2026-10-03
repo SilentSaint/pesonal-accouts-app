@@ -148,6 +148,18 @@ test('oversized cache thresholds are rejected before arithmetic', () => {
   assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
 });
 
+test('oversized cache thresholds that wrap negative are rejected', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '10000000000000000000' },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and 9223372036854775807/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
 test('zero-padded cache thresholds are parsed as decimal', () => {
   const result = runWithFakeDocker(
     'echo docker should not run >&2; exit 0',

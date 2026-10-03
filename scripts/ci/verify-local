@@ -9,6 +9,7 @@ echo "Validating local source revision: $(git rev-parse HEAD)"
 echo "== Java =="
 ./scripts/ci/retry-command "Gradle distribution bootstrap" ./backend/gradlew --version --no-daemon
 ./scripts/ci/retry-command "Gradle dependency resolution" ./backend/gradlew -p backend testClasses --no-daemon
+./scripts/ci/retry-command "Gradle test runtime dependency resolution" ./backend/gradlew -p backend test --test-dry-run --no-daemon
 ./backend/gradlew -p backend test --no-daemon
 ./backend/gradlew -p backend lambdaZip --no-daemon
 

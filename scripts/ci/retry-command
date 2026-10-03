@@ -39,8 +39,10 @@ if (( attempts_exceed_max )); then
 fi
 
 delay_seconds_exceed_max=0
-if (( ${#delay_seconds} > ${#MAX_RETRY_DELAY_SECONDS} )) ||
-  (( ${#delay_seconds} == ${#MAX_RETRY_DELAY_SECONDS} )) && [[ "$delay_seconds" > "$MAX_RETRY_DELAY_SECONDS" ]]; then
+if (( ${#delay_seconds} > ${#MAX_RETRY_DELAY_SECONDS} )); then
+  delay_seconds_exceed_max=1
+elif (( ${#delay_seconds} == ${#MAX_RETRY_DELAY_SECONDS} )) &&
+  [[ "$delay_seconds" > "$MAX_RETRY_DELAY_SECONDS" ]]; then
   delay_seconds_exceed_max=1
 fi
 if (( delay_seconds_exceed_max )); then

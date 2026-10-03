@@ -136,8 +136,10 @@ if [[ -z "$normalized_min_cache_free_mb" ]]; then
 fi
 MIN_CACHE_FREE_MB="$normalized_min_cache_free_mb"
 min_cache_free_exceeds_max=0
-if (( ${#MIN_CACHE_FREE_MB} > ${#MAX_CACHE_FREE_MB} )) ||
-  (( ${#MIN_CACHE_FREE_MB} == ${#MAX_CACHE_FREE_MB} )) && [[ "$MIN_CACHE_FREE_MB" > "$MAX_CACHE_FREE_MB" ]]; then
+if (( ${#MIN_CACHE_FREE_MB} > ${#MAX_CACHE_FREE_MB} )); then
+  min_cache_free_exceeds_max=1
+elif (( ${#MIN_CACHE_FREE_MB} == ${#MAX_CACHE_FREE_MB} )) &&
+  [[ "$MIN_CACHE_FREE_MB" > "$MAX_CACHE_FREE_MB" ]]; then
   min_cache_free_exceeds_max=1
 fi
 if (( min_cache_free_exceeds_max )); then

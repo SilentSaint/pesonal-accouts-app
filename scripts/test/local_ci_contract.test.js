@@ -112,6 +112,23 @@ test('dependency retry helper normalizes decimal delays and bounds backoff', () 
 
     assert.equal(tooLarge.status, 64, tooLarge.stderr);
     assert.match(tooLarge.stderr, /LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and 922337203685477580/);
+
+    const oversizedLexicallySmall = spawnSync(
+      path.join(root, 'scripts', 'ci', 'retry-command'),
+      ['Overflowing delay', 'true'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LOCAL_VERIFIER_RETRY_ATTEMPTS: '10',
+          LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '2000000000000000000',
+        },
+      },
+    );
+
+    assert.equal(oversizedLexicallySmall.status, 64, oversizedLexicallySmall.stderr);
+    assert.match(oversizedLexicallySmall.stderr, /LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and 922337203685477580/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -125,6 +142,8 @@ test('local verification is independent of hosted CI and AWS credentials', () =>
   assert.match(verifier, /backend\/gradlew -p backend test/);
   assert.match(verifier, /backend\/gradlew -p backend lambdaZip/);
   assert.match(verifier, /scripts\/ci\/retry-command "Gradle dependency resolution" \.\/backend\/gradlew -p backend testClasses --no-daemon/);
+  assert.match(verifier, /scripts\/ci\/retry-command "Gradle test runtime dependency resolution" \.\/backend\/gradlew -p backend test --test-dry-run --no-daemon/);
+  assert.match(verifier, /scripts\/ci\/retry-command "Gradle test runtime dependency resolution" \.\/backend\/gradlew -p backend test --test-dry-run --no-daemon/);
   assert.match(verifier, /backend\/lambda\/build\.sh --check/);
   assert.match(verifier, /terraform -chdir=terraform validate/);
   assert.match(verifier, /flutter test/);
