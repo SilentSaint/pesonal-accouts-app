@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
@@ -6,6 +7,62 @@ const assert = require('node:assert/strict');
 
 const root = path.resolve(__dirname, '../..');
 const verifier = path.join(root, 'scripts', 'ci', 'verify-local-docker');
+
+function runWithFakeDocker(
+  fakeDockerContents,
+  args,
+  envOverrides = {},
+  fakeGitContents = null,
+  fakeMkdirContents = null,
+) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
+  const fakeDocker = path.join(tempRoot, 'docker');
+  const fakeGit = path.join(tempRoot, 'git');
+  const fakeMkdir = path.join(tempRoot, 'mkdir');
+  const cacheDir = path.join(tempRoot, 'cache');
+  fs.mkdirSync(cacheDir);
+  fs.writeFileSync(fakeDocker, `#!/usr/bin/env bash\n${fakeDockerContents}\n`);
+  fs.writeFileSync(
+    fakeGit,
+    fakeGitContents ??
+      '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == diff || "$arg" == status ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n',
+  );
+  fs.chmodSync(fakeDocker, 0o755);
+  fs.chmodSync(fakeGit, 0o755);
+  if (fakeMkdirContents !== null) {
+    fs.writeFileSync(fakeMkdir, fakeMkdirContents);
+    fs.chmodSync(fakeMkdir, 0o755);
+  }
+
+  try {
+    const resolvedArgs = args.map((arg) => (
+      arg === '__CACHE_DIR__' ? cacheDir : arg
+    ));
+    return spawnSync(verifier, resolvedArgs, {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        AWS_ACCESS_KEY_ID: '',
+        AWS_SECRET_ACCESS_KEY: '',
+        AWS_SESSION_TOKEN: '',
+        AWS_SECURITY_TOKEN: '',
+        AWS_PROFILE: '',
+        AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+        AWS_EC2_METADATA_DISABLED: 'true',
+        LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '1',
+        LOCAL_VERIFIER_DOCKER_BIN: fakeDocker,
+        LOCAL_VERIFIER_DOCKER_GROUP_REEXEC: '1',
+        LOCAL_VERIFIER_TEST_CACHE_DIR: cacheDir,
+        PATH: `${tempRoot}:${process.env.PATH}`,
+        ...envOverrides,
+      },
+    });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
 
 test('local verification exposes a safe, reproducible Docker contract', () => {
   const result = spawnSync(verifier, ['--print-config'], {
@@ -17,7 +74,178 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(result.stdout, /Dockerfile: ci\/local-verification\/Dockerfile/);
   assert.match(result.stdout, /AWS credential injection: disabled/);
   assert.match(result.stdout, /Terraform mutation: validation only/);
-  assert.match(result.stdout, /Docker group recovery: automatic/);
+  assert.match(result.stdout, /Docker access: preflighted/);
+});
+
+test('preflight accepts a persistent cache directory and checks Docker before the gate', () => {
+  const result = runWithFakeDocker('exit 0', [
+    '--preflight-only',
+    '--cache-dir',
+    '__CACHE_DIR__',
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Docker preflight passed/);
+  assert.match(result.stdout, /Cache directory:/);
+});
+
+test('preflight creates every mounted cache directory and Terraform lock before Docker access', () => {
+  const result = runWithFakeDocker(
+    'for cache_path in gradle terraform/plugin-cache flutter/pub-cache npm; do\n  [[ -d "$LOCAL_VERIFIER_TEST_CACHE_DIR/$cache_path" ]] || exit 9\ndone\n[[ -f "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" && -w "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" ]] || exit 10\nexit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Docker access preflight passed/);
+});
+
+test('preflight checks mounted cache subdirectories before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    null,
+    '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == */gradle ]] && { echo "simulated cache permission failure" >&2; exit 1; }\ndone\nexec /usr/bin/mkdir "$@"\n',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache.*not writable|unable to create.*cache/i);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('Docker access failures stop before an image build with actionable output', () => {
+  const result = runWithFakeDocker('exit 1', [
+    '--preflight-only',
+    '--cache-dir',
+    '__CACHE_DIR__',
+  ]);
+
+  assert.equal(result.status, 126);
+  assert.match(result.stderr, /Docker access preflight failed/);
+  assert.match(result.stderr, /docker group|Docker daemon|permission/i);
+});
+
+test('insufficient cache space stops before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '999999999' },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache has only .* required before starting/i);
+});
+
+test('oversized cache thresholds are rejected before arithmetic', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '9223372036854775808' },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and 9223372036854775807/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('oversized cache thresholds that wrap negative are rejected', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '10000000000000000000' },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and 9223372036854775807/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('zero-padded cache thresholds are parsed as decimal', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '0999999999' },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache has only .* required before starting/i);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('retry attempts above the helper limit stop preflight before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '11',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+    },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and 10/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('retry delays above the helper limit stop preflight before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '10',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '2000000000000000000',
+    },
+  );
+
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and 922337203685477580/);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('log files inside the checkout are rejected before they are opened', () => {
+  const logFile = path.join(root, '.local-verifier-contract.log');
+
+  try {
+    const result = runWithFakeDocker(
+      'echo docker should not run >&2; exit 0',
+      ['--preflight-only', '--cache-dir', '__CACHE_DIR__', '--log-file', logFile],
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /log.*outside.*checkout|checkout.*log/i);
+    assert.equal(fs.existsSync(logFile), false);
+  } finally {
+    fs.rmSync(logFile, { force: true });
+  }
+});
+
+test('non-ignored untracked files stop preflight before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == status ]] && { printf "?? untracked.tf\\n"; exit 0; }\n  [[ "$arg" == diff ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /tracked changes or non-ignored untracked files|clean checkout/i);
+  assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
+});
+
+test('cache directories inside the checkout are rejected before Docker starts', () => {
+  const cacheDir = path.join(root, '.local-verifier-contract-cache');
+
+  try {
+    const result = runWithFakeDocker(
+      'echo docker should not run >&2; exit 0',
+      ['--preflight-only', '--cache-dir', cacheDir],
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /cache.*outside.*checkout|checkout.*cache/i);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
 });
 
 test('local verification pins the canonical toolchain', () => {
@@ -31,6 +259,7 @@ test('local verification pins the canonical toolchain', () => {
   assert.match(dockerfile, /FLUTTER_VERSION=3\.44\.0/);
   assert.match(dockerfile, /TERRAFORM_VERSION=1\.5\.7/);
   assert.match(dockerfile, /PLAYWRIGHT_VERSION=1\.47\.2/);
+  assert.match(dockerfile, /util-linux/);
   assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/packages\/flutter_tools/);
   assert.match(dockerfile, /chmod -R a\+rwX .*\/opt\/flutter\/bin\/cache/);
 });
@@ -48,6 +277,13 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(wrapper, /--env AWS_SESSION_TOKEN=/);
   assert.match(wrapper, /--env AWS_SHARED_CREDENTIALS_FILE=\/dev\/null/);
   assert.match(wrapper, /--env AWS_EC2_METADATA_DISABLED=true/);
+  assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
+  assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
+  assert.match(wrapper, /GRADLE_USER_HOME=\/cache\/gradle/);
+  assert.match(wrapper, /PUB_CACHE=\/cache\/flutter\/pub-cache/);
+  assert.match(wrapper, /npm_config_cache=\/cache\/npm/);
+  assert.match(wrapper, /id -G/);
+  assert.match(wrapper, /--group-add/);
   assert.match(hostedVerifier, /backend\/gradlew -p backend test/);
   assert.match(hostedVerifier, /backend\/gradlew -p backend lambdaZip/);
   assert.match(hostedVerifier, /backend\/lambda\/build\.sh --check/);
@@ -62,6 +298,25 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(hostedVerifier, /require\.resolve\('playwright'\)/);
   assert.match(hostedVerifier, /npm install --no-save --no-package-lock playwright@1\.47\.2/);
   assert.doesNotMatch(wrapper, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
+  assert.match(hostedVerifier, /scripts\/ci\/retry-command/);
+});
+
+test('Terraform provider-cache lock is scoped to initialization', () => {
+  const wrapper = fs.readFileSync(verifier, 'utf8');
+  const hostedVerifier = fs.readFileSync(
+    path.join(root, 'scripts', 'ci', 'verify-local'),
+    'utf8',
+  );
+
+  assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
+  assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
+  assert.match(wrapper, /TF_PLUGIN_CACHE_LOCK_FILE=\/cache\/terraform\/plugin-cache\.lock/);
+  assert.match(wrapper, /plugin-cache\.lock/);
+  assert.doesNotMatch(wrapper, /flock/);
+  assert.match(
+    hostedVerifier,
+    /flock "\$TF_PLUGIN_CACHE_LOCK_FILE" \\\n\s*\.\/scripts\/ci\/retry-command "Terraform provider initialization" terraform -chdir=terraform init/,
+  );
 });
 
 test('browser verification reuses the image-provided Playwright browser', () => {
@@ -141,3 +396,5 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /common directory/);
   assert.match(runbook, /non-zero/);
 });
+
+// Contract tests intentionally exercise the public script seams.

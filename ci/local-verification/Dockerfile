@@ -25,6 +25,7 @@ RUN set -eux; \
       python3 \
       tar \
       unzip \
+      util-linux \
       xz-utils; \
     curl --fail --silent --show-error --location https://apt.corretto.aws/corretto.key | gpg --dearmor -o /usr/share/keyrings/corretto-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/corretto-keyring.gpg] https://apt.corretto.aws stable main" > /etc/apt/sources.list.d/corretto.list; \

@@ -7,9 +7,16 @@ ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)"
 DOCKERFILE_RELATIVE="ci/local-verification/Dockerfile"
 DOCKERFILE_PATH="$ROOT_DIR/$DOCKERFILE_RELATIVE"
 IMAGE_NAME="${LOCAL_VERIFICATION_IMAGE:-automatic-expense-tracker-ci:local}"
+CACHE_DIR="${LOCAL_VERIFIER_CACHE_DIR:-$(dirname "$ROOT_DIR")/.automatic-expense-tracker-local-verification-cache}"
+DOCKER_BIN="${LOCAL_VERIFIER_DOCKER_BIN:-docker}"
+MIN_CACHE_FREE_MB="${LOCAL_VERIFIER_MIN_CACHE_FREE_MB:-2048}"
+MAX_CACHE_FREE_MB=9223372036854775807
+RETRY_ATTEMPTS="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
+RETRY_DELAY_SECONDS="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
 BUILD_IMAGE=1
 PULL_IMAGE=0
 PRINT_CONFIG=0
+PREFLIGHT_ONLY=0
 LOG_FILE=""
 GIT_DIR="${GIT_DIR:-}"
 GIT_COMMON_DIR="${GIT_COMMON_DIR:-}"
@@ -26,10 +33,22 @@ Options:
   --no-build       Reuse the local image instead of building it.
   --pull           Ask Docker to pull a newer base image during the build.
   --image NAME     Use NAME instead of automatic-expense-tracker-ci:local.
+  --cache-dir DIR  Store dependency caches on DIR instead of the default sibling cache.
   --log-file FILE  Copy container output to FILE.
+  --preflight-only Check Git, storage, and Docker access without building or running.
   --print-config   Print the safety and reproducibility contract, then exit.
   -h, --help       Show this help.
 USAGE
+}
+
+cache_free_mb() {
+  local available_kb
+  available_kb="$(df -Pk "$CACHE_DIR" 2>/dev/null | awk 'NR == 2 {print $4}')"
+  if [[ "$available_kb" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$((available_kb / 1024))"
+  else
+    return 1
+  fi
 }
 
 print_config() {
@@ -37,10 +56,15 @@ print_config() {
 Dockerfile: $DOCKERFILE_RELATIVE
 Image: $IMAGE_NAME
 Toolchain: Java 21, Node 20.20.2, Flutter 3.44.0, Terraform 1.5.7, Playwright 1.47.2
+Cache directory: $CACHE_DIR
+Minimum cache free space: ${MIN_CACHE_FREE_MB} MB
+Dependency cache mounts: Gradle, Terraform, Flutter pub, npm
+Terraform cache policy: per-run data and provider-cache lock during init only
+Retry policy: ${RETRY_ATTEMPTS} attempt(s), ${RETRY_DELAY_SECONDS}s linear backoff
 AWS credential injection: disabled
 AWS metadata access: disabled
 Terraform mutation: validation only
-Docker group recovery: automatic when account membership is present
+Docker access: preflighted before image build or container run
 Verification command: scripts/ci/verify-local
 Git directory: ${GIT_DIR:-unresolved}
 Git common directory: ${GIT_COMMON_DIR:-unresolved}
@@ -66,6 +90,14 @@ while (($# > 0)); do
       IMAGE_NAME="$2"
       shift 2
       ;;
+    --cache-dir)
+      if (($# < 2)); then
+        echo "--cache-dir requires a path" >&2
+        exit 64
+      fi
+      CACHE_DIR="$2"
+      shift 2
+      ;;
     --log-file)
       if (($# < 2)); then
         echo "--log-file requires a path" >&2
@@ -76,6 +108,10 @@ while (($# > 0)); do
       ;;
     --print-config)
       PRINT_CONFIG=1
+      shift
+      ;;
+    --preflight-only)
+      PREFLIGHT_ONLY=1
       shift
       ;;
     -h|--help)
@@ -89,6 +125,66 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+if ! [[ "$MIN_CACHE_FREE_MB" =~ ^[0-9]+$ ]]; then
+  echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be a non-negative integer." >&2
+  exit 64
+fi
+normalized_min_cache_free_mb="${MIN_CACHE_FREE_MB#"${MIN_CACHE_FREE_MB%%[!0]*}"}"
+if [[ -z "$normalized_min_cache_free_mb" ]]; then
+  normalized_min_cache_free_mb=0
+fi
+MIN_CACHE_FREE_MB="$normalized_min_cache_free_mb"
+min_cache_free_exceeds_max=0
+if (( ${#MIN_CACHE_FREE_MB} > ${#MAX_CACHE_FREE_MB} )); then
+  min_cache_free_exceeds_max=1
+elif (( ${#MIN_CACHE_FREE_MB} == ${#MAX_CACHE_FREE_MB} )) &&
+  [[ "$MIN_CACHE_FREE_MB" > "$MAX_CACHE_FREE_MB" ]]; then
+  min_cache_free_exceeds_max=1
+fi
+if (( min_cache_free_exceeds_max )); then
+  echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and $MAX_CACHE_FREE_MB." >&2
+  exit 64
+fi
+if ! [[ "$RETRY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] ||
+  ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
+  exit 64
+fi
+
+ROOT_REAL_DIR="$(cd "$ROOT_DIR" && pwd -P)"
+if [[ "$CACHE_DIR" != /* ]]; then
+  CACHE_DIR="$(dirname "$ROOT_REAL_DIR")/$CACHE_DIR"
+fi
+if ! command -v realpath >/dev/null 2>&1; then
+  echo "The local verification cache requires the host 'realpath' command." >&2
+  echo "Install coreutils or use a host that provides realpath before retrying." >&2
+  exit 126
+fi
+if ! CACHE_DIR="$(realpath -m -- "$CACHE_DIR")"; then
+  echo "Unable to resolve the local verification cache path: $CACHE_DIR" >&2
+  exit 1
+fi
+case "$CACHE_DIR" in
+  "$ROOT_REAL_DIR"|"$ROOT_REAL_DIR"/*)
+    echo "The local verification cache must be outside the checkout: $CACHE_DIR" >&2
+    echo "Use --cache-dir PATH outside $ROOT_REAL_DIR." >&2
+    exit 1
+    ;;
+esac
+if [[ -n "$LOG_FILE" ]]; then
+  if ! LOG_FILE="$(realpath -m -- "$LOG_FILE")"; then
+    echo "Unable to resolve the local verification log path: $LOG_FILE" >&2
+    exit 1
+  fi
+  case "$LOG_FILE" in
+    "$ROOT_REAL_DIR"|"$ROOT_REAL_DIR"/*)
+      echo "The local verification log must be outside the checkout: $LOG_FILE" >&2
+      echo "Use --log-file PATH outside $ROOT_REAL_DIR." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if ! GIT_DIR="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
   echo "The local verification path must run from a Git checkout or worktree." >&2
@@ -109,53 +205,179 @@ if ((PRINT_CONFIG)); then
   exit 0
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker is required for local container verification." >&2
-  exit 127
-fi
-
-if [[ "${LOCAL_VERIFIER_DOCKER_GROUP_REEXEC:-}" != "1" ]]; then
-  account_groups="$(id -nG "$(id -un)" 2>/dev/null || true)"
-  process_groups="$(id -nG 2>/dev/null || true)"
-  if [[ " $account_groups " == *" docker "* ]] &&
-    [[ " $process_groups " != *" docker "* ]] &&
-    command -v sg >/dev/null 2>&1; then
-    command_line=""
-    printf -v quoted_script '%q' "$SCRIPT_PATH"
-    command_line="$quoted_script"
-    for arg in "${ORIGINAL_ARGS[@]}"; do
-      printf -v quoted_arg '%q' "$arg"
-      command_line+=" $quoted_arg"
-    done
-    echo "Current process lacks the Docker group; re-running under the account's Docker membership." >&2
-    export LOCAL_VERIFIER_DOCKER_GROUP_REEXEC=1
-    exec sg docker -c "$command_line"
+prepare_cache() {
+  if ! mkdir -p "$CACHE_DIR"; then
+    echo "Unable to create the local verification cache directory: $CACHE_DIR" >&2
+    echo "Choose a writable path with --cache-dir PATH." >&2
+    exit 1
   fi
+  if [[ ! -d "$CACHE_DIR" || ! -w "$CACHE_DIR" ]]; then
+    echo "Local verification cache is not writable: $CACHE_DIR" >&2
+    echo "Choose a writable path with --cache-dir PATH." >&2
+    exit 1
+  fi
+  local cache_path
+  local -a mounted_cache_paths=(
+    "$CACHE_DIR/gradle"
+    "$CACHE_DIR/terraform"
+    "$CACHE_DIR/terraform/plugin-cache"
+    "$CACHE_DIR/flutter"
+    "$CACHE_DIR/flutter/pub-cache"
+    "$CACHE_DIR/npm"
+  )
+  for cache_path in "${mounted_cache_paths[@]}"; do
+    if ! mkdir -p "$cache_path"; then
+      echo "Unable to create a local verification cache directory: $cache_path" >&2
+      echo "Choose a writable path with --cache-dir PATH." >&2
+      exit 1
+    fi
+    if [[ ! -d "$cache_path" || ! -w "$cache_path" ]]; then
+      echo "Local verification cache subdirectory is not writable: $cache_path" >&2
+      echo "Choose a writable path with --cache-dir PATH." >&2
+      exit 1
+    fi
+  done
+  local terraform_lock_file="$CACHE_DIR/terraform/plugin-cache.lock"
+  if ! { : >> "$terraform_lock_file"; } 2>/dev/null ||
+    [[ ! -f "$terraform_lock_file" || ! -w "$terraform_lock_file" ]]; then
+    echo "Terraform provider-cache lock file is not writable: $terraform_lock_file" >&2
+    echo "Choose a writable path with --cache-dir PATH." >&2
+    exit 1
+  fi
+  local available_mb
+  available_mb="$(cache_free_mb || true)"
+  if [[ -z "$available_mb" ]]; then
+    echo "Unable to measure free space for the local verification cache: $CACHE_DIR" >&2
+    exit 1
+  fi
+  if ((available_mb < MIN_CACHE_FREE_MB)); then
+    echo "Local verification cache has only ${available_mb} MB free; ${MIN_CACHE_FREE_MB} MB is required before starting." >&2
+    echo "Use --cache-dir PATH on a filesystem with more free space." >&2
+    exit 1
+  fi
+  echo "Cache directory: $CACHE_DIR (${available_mb} MB free)"
+}
+
+docker_access_preflight() {
+  if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+    echo "Docker access preflight failed: '$DOCKER_BIN' is not available." >&2
+    echo "Install Docker or set LOCAL_VERIFIER_DOCKER_BIN to its executable path." >&2
+    exit 126
+  fi
+
+  if "$DOCKER_BIN" info >/dev/null 2>&1; then
+    echo "Docker access preflight passed."
+    return 0
+  fi
+
+  if [[ "${LOCAL_VERIFIER_DOCKER_GROUP_REEXEC:-}" != "1" ]]; then
+    account_groups="$(id -nG "$(id -un)" 2>/dev/null || true)"
+    process_groups="$(id -nG 2>/dev/null || true)"
+    if [[ " $account_groups " == *" docker "* ]] &&
+      [[ " $process_groups " != *" docker "* ]] &&
+      command -v sg >/dev/null 2>&1; then
+      if sg docker -c "$DOCKER_BIN info" >/dev/null 2>&1; then
+        command_line=""
+        printf -v quoted_script '%q' "$SCRIPT_PATH"
+        command_line="$quoted_script"
+        for arg in "${ORIGINAL_ARGS[@]}"; do
+          printf -v quoted_arg '%q' "$arg"
+          command_line+=" $quoted_arg"
+        done
+        echo "Current process lacks the Docker group; re-running under the account's Docker membership." >&2
+        export LOCAL_VERIFIER_DOCKER_GROUP_REEXEC=1
+        exec sg docker -c "$command_line"
+      fi
+      echo "Docker access preflight failed: the account is in the docker group, but this process cannot acquire it." >&2
+      echo "Start a new login session or run from a session with Docker group membership; do not retry the full gate blindly." >&2
+      exit 126
+    fi
+  fi
+
+  echo "Docker access preflight failed: the Docker daemon is unavailable or permission was denied." >&2
+  echo "Start Docker and ensure this process can run '$DOCKER_BIN info' before retrying." >&2
+  exit 126
+}
+
+preflight() {
+  "$ROOT_DIR/scripts/ci/retry-command" "Preflight retry policy" true
+  local worktree_status
+  if ! worktree_status="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all --ignore-submodules=all)"; then
+    echo "Unable to inspect the local verification checkout; use a clean Git checkout of the target revision." >&2
+    exit 1
+  fi
+  if [[ -n "$worktree_status" ]]; then
+    echo "The local verification checkout has tracked changes or non-ignored untracked files; use a clean checkout of the target revision." >&2
+    printf '%s\n' "$worktree_status" >&2
+    exit 1
+  fi
+  if [[ ! -f "$DOCKERFILE_PATH" ]]; then
+    echo "Missing local verification Dockerfile: $DOCKERFILE_PATH" >&2
+    exit 1
+  fi
+  prepare_cache
+  docker_access_preflight
+  echo "Verification revision: $(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse HEAD)"
+}
+
+preflight
+
+if ((PREFLIGHT_ONLY)); then
+  echo "Docker preflight passed; no image build or container run requested."
+  exit 0
 fi
 
-if [[ ! -f "$DOCKERFILE_PATH" ]]; then
-  echo "Missing local verification Dockerfile: $DOCKERFILE_PATH" >&2
+START_SECONDS="$(date +%s)"
+report_duration() {
+  local status=$?
+  local elapsed=$(( $(date +%s) - START_SECONDS ))
+  trap - EXIT
+  echo "Local Docker verification finished with status $status after ${elapsed}s."
+  exit "$status"
+}
+trap report_duration EXIT
+
+if ! HOST_GROUP_IDS="$(id -G)"; then
+  echo "Unable to resolve the invoking user's supplementary groups for the Docker container." >&2
   exit 1
 fi
+read -r -a HOST_GROUP_ID_ARRAY <<< "$HOST_GROUP_IDS"
+SUPPLEMENTARY_GROUP_ARGS=()
+PRIMARY_GID="$(id -g)"
+for group_id in "${HOST_GROUP_ID_ARRAY[@]}"; do
+  if [[ "$group_id" != "$PRIMARY_GID" ]]; then
+    SUPPLEMENTARY_GROUP_ARGS+=(--group-add "$group_id")
+  fi
+done
 
 if ((BUILD_IMAGE)); then
   build_args=(build --tag "$IMAGE_NAME" --file "$DOCKERFILE_PATH")
   if ((PULL_IMAGE)); then
     build_args+=(--pull)
   fi
-  docker "${build_args[@]}" "$ROOT_DIR"
+  "$ROOT_DIR/scripts/ci/retry-command" "Docker image build" "$DOCKER_BIN" "${build_args[@]}" "$ROOT_DIR"
 fi
 
-docker run --rm --init \
+run_container() {
+  "$DOCKER_BIN" run --rm --init \
   --security-opt no-new-privileges:true \
   --user "$(id -u):$(id -g)" \
+  "${SUPPLEMENTARY_GROUP_ARGS[@]}" \
   --workdir /workspace \
   --tmpfs /tmp:exec \
   --volume "$ROOT_DIR:/workspace" \
+  --volume "$CACHE_DIR:/cache:rw" \
   --volume "$GIT_COMMON_DIR:$GIT_COMMON_DIR:ro" \
   --env CI=1 \
   --env HOME=/tmp/aet-ci-home \
-  --env PUB_CACHE=/tmp/aet-ci-home/.pub-cache \
+  --env LOCAL_VERIFIER_RETRY_ATTEMPTS="$RETRY_ATTEMPTS" \
+  --env LOCAL_VERIFIER_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
+  --env GRADLE_USER_HOME=/cache/gradle \
+  --env PUB_CACHE=/cache/flutter/pub-cache \
+  --env TF_DATA_DIR=/tmp/aet-terraform-data \
+  --env TF_PLUGIN_CACHE_DIR=/cache/terraform/plugin-cache \
+  --env TF_PLUGIN_CACHE_LOCK_FILE=/cache/terraform/plugin-cache.lock \
+  --env npm_config_cache=/cache/npm \
   --env AWS_ACCESS_KEY_ID= \
   --env AWS_SECRET_ACCESS_KEY= \
   --env AWS_SESSION_TOKEN= \
@@ -166,7 +388,10 @@ docker run --rm --init \
   --env AWS_EC2_METADATA_DISABLED=true \
   "$IMAGE_NAME" \
   bash -euo pipefail -c '
-    mkdir -p "$HOME" "$PUB_CACHE"
+    mkdir -p "$HOME" "$GRADLE_USER_HOME" "$PUB_CACHE" "$TF_DATA_DIR" "$TF_PLUGIN_CACHE_DIR" "$npm_config_cache"
     git config --global --add safe.directory /workspace
     exec ./scripts/ci/verify-local
   '
+}
+
+run_container
