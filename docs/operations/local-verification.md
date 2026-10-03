@@ -42,7 +42,9 @@ directory and common directory, mounts the common directory read-only at its
 original absolute path, and leaves build/test output in the checkout. It does
 not export a global `GIT_DIR`, so tools that inspect their own checkout retain
 normal Git discovery.
-The wrapper is Git worktree-safe.
+The wrapper is Git worktree-safe and forwards the invoking user's
+non-primary supplementary groups so group-owned cache mounts remain writable
+inside the container.
 
 Before building or running a container, the wrapper verifies that the checkout
 has no tracked changes or non-ignored untracked files, the Dockerfile exists,

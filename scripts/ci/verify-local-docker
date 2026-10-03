@@ -311,6 +311,19 @@ report_duration() {
 }
 trap report_duration EXIT
 
+if ! HOST_GROUP_IDS="$(id -G)"; then
+  echo "Unable to resolve the invoking user's supplementary groups for the Docker container." >&2
+  exit 1
+fi
+read -r -a HOST_GROUP_ID_ARRAY <<< "$HOST_GROUP_IDS"
+SUPPLEMENTARY_GROUP_ARGS=()
+PRIMARY_GID="$(id -g)"
+for group_id in "${HOST_GROUP_ID_ARRAY[@]}"; do
+  if [[ "$group_id" != "$PRIMARY_GID" ]]; then
+    SUPPLEMENTARY_GROUP_ARGS+=(--group-add "$group_id")
+  fi
+done
+
 if ((BUILD_IMAGE)); then
   build_args=(build --tag "$IMAGE_NAME" --file "$DOCKERFILE_PATH")
   if ((PULL_IMAGE)); then
@@ -323,6 +336,7 @@ run_container() {
   "$DOCKER_BIN" run --rm --init \
   --security-opt no-new-privileges:true \
   --user "$(id -u):$(id -g)" \
+  "${SUPPLEMENTARY_GROUP_ARGS[@]}" \
   --workdir /workspace \
   --tmpfs /tmp:exec \
   --volume "$ROOT_DIR:/workspace" \

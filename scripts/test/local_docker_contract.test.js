@@ -208,6 +208,8 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(wrapper, /GRADLE_USER_HOME=\/cache\/gradle/);
   assert.match(wrapper, /PUB_CACHE=\/cache\/flutter\/pub-cache/);
   assert.match(wrapper, /npm_config_cache=\/cache\/npm/);
+  assert.match(wrapper, /id -G/);
+  assert.match(wrapper, /--group-add/);
   assert.match(hostedVerifier, /backend\/gradlew -p backend test/);
   assert.match(hostedVerifier, /backend\/gradlew -p backend lambdaZip/);
   assert.match(hostedVerifier, /backend\/lambda\/build\.sh --check/);
