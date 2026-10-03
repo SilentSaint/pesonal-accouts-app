@@ -73,6 +73,10 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Dockerfile: ci\/local-verification\/Dockerfile/);
   assert.match(result.stdout, /AWS credential injection: disabled/);
+  assert.match(
+    result.stdout,
+    /AWS IMDS credential lookup: disabled \(no network-level block\)/,
+  );
   assert.match(result.stdout, /Terraform mutation: validation only/);
   assert.match(result.stdout, /Docker access: preflighted/);
   assert.match(result.stdout, /Verification source: detached worktree snapshot of HEAD/);
@@ -529,6 +533,13 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /D3/);
   assert.match(runbook, /DynamoDB local/i);
   assert.match(runbook, /AWS credential/);
+  assert.match(runbook, /AWS_EC2_METADATA_DISABLED=true/);
+  assert.match(runbook, /AWS SDK\/CLI/);
+  assert.match(runbook, /raw HTTP requests\s+to IMDS are not filtered/);
+  assert.match(
+    runbook,
+    /not treat the container as an isolation boundary\s+for untrusted code/,
+  );
   assert.match(runbook, /Git worktree/);
   assert.match(runbook, /detached Git worktree at/);
   assert.match(runbook, /invoking checkout itself is never mounted/);

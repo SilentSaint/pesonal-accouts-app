@@ -114,7 +114,12 @@ reported test before treating the revision as validated.
 
 The Docker wrapper explicitly supplies empty AWS credential variables, points
 the AWS config and credential files at `/dev/null`, and disables EC2 metadata
-lookup. No host credential directory is mounted. Terraform is limited to
+lookup by AWS SDK/CLI credential providers using
+AWS_EC2_METADATA_DISABLED=true. No host credential directory is mounted.
+The Docker environment does not add a network-level block: raw HTTP requests
+to IMDS are not filtered, and outbound network access remains available for
+dependency acquisition. Do not treat the container as an isolation boundary
+for untrusted code. Terraform is limited to
 `fmt`, `init -backend=false`, and `validate`; the local gate never runs
 `terraform apply`, publishes S3 objects, updates Lambda code, or invalidates
 CloudFront.

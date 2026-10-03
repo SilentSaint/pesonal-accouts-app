@@ -65,7 +65,7 @@ Dependency cache mounts: Gradle, Terraform, Flutter pub, npm
 Terraform cache policy: per-run data and provider-cache lock during init only
 Retry policy: ${RETRY_ATTEMPTS} attempt(s), ${RETRY_DELAY_SECONDS}s linear backoff
 AWS credential injection: disabled
-AWS metadata access: disabled
+AWS IMDS credential lookup: disabled (no network-level block)
 Terraform mutation: validation only
 Docker access: preflighted before image build or container run
 Verification command: scripts/ci/verify-local
