@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 echo "Validating local source revision: $(git rev-parse HEAD)"
 
 echo "== Java =="
+./scripts/ci/retry-command "Gradle distribution bootstrap" ./backend/gradlew --version --no-daemon
 ./backend/gradlew -p backend test --no-daemon
 ./backend/gradlew -p backend lambdaZip --no-daemon
 
@@ -19,12 +20,12 @@ bash scripts/test_production_deploy_guard.sh
 
 echo "== Terraform =="
 terraform -chdir=terraform fmt -check -recursive
-terraform -chdir=terraform init -backend=false -input=false
+./scripts/ci/retry-command "Terraform provider initialization" terraform -chdir=terraform init -backend=false -input=false
 terraform -chdir=terraform validate
 
 echo "== Flutter =="
 (cd frontend && flutter --version)
-(cd frontend && flutter pub get)
+./scripts/ci/retry-command "Flutter dependency resolution" bash -c 'cd frontend && flutter pub get'
 (cd frontend && flutter analyze --no-fatal-warnings --no-fatal-infos)
 (cd frontend && flutter test)
 (cd frontend && flutter build web --release --no-wasm-dry-run)
@@ -33,7 +34,7 @@ echo "== Browser =="
 if (cd frontend && node -e "require.resolve('playwright')" >/dev/null 2>&1); then
   echo "Using preinstalled Playwright."
 else
-  (cd frontend && npm install --no-save --no-package-lock playwright@1.47.2)
+  ./scripts/ci/retry-command "Playwright package installation" bash -c 'cd frontend && npm install --no-save --no-package-lock playwright@1.47.2'
 fi
 
 browser_executable=""
@@ -61,12 +62,12 @@ fi
 
 if [[ -z "$browser_executable" ]]; then
   if [[ "$(id -u)" == "0" ]]; then
-    (cd frontend && npx --no-install playwright install --with-deps chromium)
+    ./scripts/ci/retry-command "Playwright browser installation" bash -c 'cd frontend && npx --no-install playwright install --with-deps chromium'
   else
     fallback_browser_path="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
     export PLAYWRIGHT_BROWSERS_PATH="$fallback_browser_path"
     mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
-    (cd frontend && npx --no-install playwright install chromium)
+    ./scripts/ci/retry-command "Playwright browser installation" bash -c 'cd frontend && npx --no-install playwright install chromium'
   fi
   browser_executable="$({
     cd frontend

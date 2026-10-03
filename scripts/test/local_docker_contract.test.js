@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
@@ -6,6 +7,49 @@ const assert = require('node:assert/strict');
 
 const root = path.resolve(__dirname, '../..');
 const verifier = path.join(root, 'scripts', 'ci', 'verify-local-docker');
+
+function runWithFakeDocker(fakeDockerContents, args, envOverrides = {}) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
+  const fakeDocker = path.join(tempRoot, 'docker');
+  const fakeGit = path.join(tempRoot, 'git');
+  const cacheDir = path.join(tempRoot, 'cache');
+  fs.mkdirSync(cacheDir);
+  fs.writeFileSync(fakeDocker, `#!/usr/bin/env bash\n${fakeDockerContents}\n`);
+  fs.writeFileSync(
+    fakeGit,
+    '#!/usr/bin/env bash\nfor arg in "$@"; do [[ "$arg" == diff ]] && exit 0; done\nexec /usr/bin/git "$@"\n',
+  );
+  fs.chmodSync(fakeDocker, 0o755);
+  fs.chmodSync(fakeGit, 0o755);
+
+  try {
+    const resolvedArgs = args.map((arg) => (
+      arg === '__CACHE_DIR__' ? cacheDir : arg
+    ));
+    return spawnSync(verifier, resolvedArgs, {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        AWS_ACCESS_KEY_ID: '',
+        AWS_SECRET_ACCESS_KEY: '',
+        AWS_SESSION_TOKEN: '',
+        AWS_SECURITY_TOKEN: '',
+        AWS_PROFILE: '',
+        AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+        AWS_EC2_METADATA_DISABLED: 'true',
+        LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '1',
+        LOCAL_VERIFIER_DOCKER_BIN: fakeDocker,
+        LOCAL_VERIFIER_DOCKER_GROUP_REEXEC: '1',
+        PATH: `${tempRoot}:${process.env.PATH}`,
+        ...envOverrides,
+      },
+    });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
 
 test('local verification exposes a safe, reproducible Docker contract', () => {
   const result = spawnSync(verifier, ['--print-config'], {
@@ -17,7 +61,42 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(result.stdout, /Dockerfile: ci\/local-verification\/Dockerfile/);
   assert.match(result.stdout, /AWS credential injection: disabled/);
   assert.match(result.stdout, /Terraform mutation: validation only/);
-  assert.match(result.stdout, /Docker group recovery: automatic/);
+  assert.match(result.stdout, /Docker access: preflighted/);
+});
+
+test('preflight accepts a persistent cache directory and checks Docker before the gate', () => {
+  const result = runWithFakeDocker('exit 0', [
+    '--preflight-only',
+    '--cache-dir',
+    '__CACHE_DIR__',
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Docker preflight passed/);
+  assert.match(result.stdout, /Cache directory:/);
+});
+
+test('Docker access failures stop before an image build with actionable output', () => {
+  const result = runWithFakeDocker('exit 1', [
+    '--preflight-only',
+    '--cache-dir',
+    '__CACHE_DIR__',
+  ]);
+
+  assert.equal(result.status, 126);
+  assert.match(result.stderr, /Docker access preflight failed/);
+  assert.match(result.stderr, /docker group|Docker daemon|permission/i);
+});
+
+test('insufficient cache space stops before Docker starts', () => {
+  const result = runWithFakeDocker(
+    'exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '999999999' },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache has only .* required before starting/i);
 });
 
 test('local verification pins the canonical toolchain', () => {
@@ -48,6 +127,11 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(wrapper, /--env AWS_SESSION_TOKEN=/);
   assert.match(wrapper, /--env AWS_SHARED_CREDENTIALS_FILE=\/dev\/null/);
   assert.match(wrapper, /--env AWS_EC2_METADATA_DISABLED=true/);
+  assert.match(wrapper, /TF_DATA_DIR=\/cache\/terraform\/data/);
+  assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
+  assert.match(wrapper, /GRADLE_USER_HOME=\/cache\/gradle/);
+  assert.match(wrapper, /PUB_CACHE=\/cache\/flutter\/pub-cache/);
+  assert.match(wrapper, /npm_config_cache=\/cache\/npm/);
   assert.match(hostedVerifier, /backend\/gradlew -p backend test/);
   assert.match(hostedVerifier, /backend\/gradlew -p backend lambdaZip/);
   assert.match(hostedVerifier, /backend\/lambda\/build\.sh --check/);
@@ -62,6 +146,7 @@ test('local Docker verification delegates to every local validation lane', () =>
   assert.match(hostedVerifier, /require\.resolve\('playwright'\)/);
   assert.match(hostedVerifier, /npm install --no-save --no-package-lock playwright@1\.47\.2/);
   assert.doesNotMatch(wrapper, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
+  assert.match(hostedVerifier, /scripts\/ci\/retry-command/);
 });
 
 test('browser verification reuses the image-provided Playwright browser', () => {

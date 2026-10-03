@@ -17,14 +17,23 @@ The image contains:
 From the repository root, build the image and run the complete lane:
 
 ```bash
-scripts/ci/verify-local-docker --pull
+scripts/ci/verify-local-docker --pull \
+  --cache-dir /path/to/persistent/aet-local-verification-cache
 ```
 
 After the first successful build, reuse the image during iteration:
 
 ```bash
 scripts/ci/verify-local-docker --no-build \
-  --log-file /tmp/aet-local-ci-verify.log
+  --cache-dir /path/to/persistent/aet-local-verification-cache \
+  --log-file /path/to/aet-local-ci-verify.log
+```
+
+Run the cheap preflight before an expensive lane when setting up a new host:
+
+```bash
+scripts/ci/verify-local-docker --preflight-only \
+  --cache-dir /path/to/persistent/aet-local-verification-cache
 ```
 
 The wrapper uses `ci/local-verification/Dockerfile`, mounts the checkout at
@@ -35,10 +44,25 @@ not export a global `GIT_DIR`, so tools that inspect their own checkout retain
 normal Git discovery.
 The wrapper is Git worktree-safe.
 
-The wrapper handles a stale Docker supplementary-group session. If the account
-belongs to `docker` but the current process does not yet have that membership,
-it re-executes itself once through `sg docker` with the original arguments.
-This does not add a user to the group or grant a new account privilege.
+Before building or running a container, the wrapper verifies that the checkout
+has no tracked changes, the Dockerfile exists, the cache directory is writable,
+the cache filesystem has at least 2 GB free by default, and `docker info`
+succeeds. If the account belongs to `docker` but the current process does not
+yet have that membership, it attempts one `sg docker` re-exec; if that cannot
+be acquired, it stops before any image build and tells the operator to start a
+new login session or use a process with Docker group membership. This does not
+add a user to the group or grant a new account privilege.
+
+The default cache is a sibling directory next to the checkout, rather than
+the small `/tmp` filesystem. The cache volume persists Gradle, Terraform
+provider/data, Flutter pub, and npm downloads across clean-checkout runs. Use
+`--cache-dir` when the checkout is on a small or quota-limited filesystem. The
+wrapper reports the selected path and free space in its log.
+
+Dependency acquisition has three bounded attempts with a two-second linear
+backoff by default. Override these for a controlled diagnostic with
+`LOCAL_VERIFIER_RETRY_ATTEMPTS` and `LOCAL_VERIFIER_RETRY_DELAY_SECONDS`.
+The wrapper also records the final verification status and duration.
 
 Use the direct verifier when the pinned tools are already installed locally:
 

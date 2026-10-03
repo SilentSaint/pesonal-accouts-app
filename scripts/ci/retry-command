@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# < 2)); then
+  echo "Usage: scripts/ci/retry-command LABEL COMMAND [ARGUMENT ...]" >&2
+  exit 64
+fi
+
+label="$1"
+shift
+attempts="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
+delay_seconds="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
+
+if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]] ||
+  ! [[ "$delay_seconds" =~ ^[0-9]+$ ]]; then
+  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
+  exit 64
+fi
+
+attempt=1
+status=0
+while ((attempt <= attempts)); do
+  if "$@"; then
+    exit 0
+  else
+    status=$?
+  fi
+  if ((attempt == attempts)); then
+    echo "$label failed after $attempt attempt(s)." >&2
+    exit "$status"
+  fi
+  backoff=$((delay_seconds * attempt))
+  echo "$label failed on attempt $attempt/$attempts; retrying in ${backoff}s." >&2
+  sleep "$backoff"
+  attempt=$((attempt + 1))
+done
