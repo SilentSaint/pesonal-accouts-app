@@ -149,20 +149,8 @@ if (( min_cache_free_exceeds_max )); then
   echo "LOCAL_VERIFIER_MIN_CACHE_FREE_MB must be between 0 and $MAX_CACHE_FREE_MB." >&2
   exit 64
 fi
-if ! [[ "$RETRY_ATTEMPTS" =~ ^[0-9]+$ ]] ||
-  ! [[ "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
-  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be positive and LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be non-negative." >&2
-  exit 64
-fi
-normalized_retry_attempts="${RETRY_ATTEMPTS#"${RETRY_ATTEMPTS%%[!0]*}"}"
-if [[ -z "$normalized_retry_attempts" ]]; then
-  normalized_retry_attempts=0
-fi
-RETRY_ATTEMPTS="$normalized_retry_attempts"
-if ! [[ "$RETRY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be a positive decimal integer." >&2
-  exit 64
-fi
+source "$ROOT_DIR/scripts/ci/retry-policy.sh"
+retry_policy_normalize
 
 ROOT_REAL_DIR="$(cd "$ROOT_DIR" && pwd -P)"
 if [[ "$CACHE_DIR" != /* ]]; then
@@ -521,4 +509,19 @@ run_container() {
   '
 }
 
+verify_snapshot_unchanged() {
+  local worktree_status
+  if ! worktree_status="$(git -c "safe.directory=$SNAPSHOT_DIR" -C "$SNAPSHOT_DIR" status --porcelain=v1 --untracked-files=all --ignore-submodules=all)"; then
+    echo "Unable to verify the Docker source snapshot after the container run; refusing to certify revision $SOURCE_REVISION." >&2
+    return 1
+  fi
+  if [[ -n "$worktree_status" ]]; then
+    echo "Docker verification modified the detached source snapshot; refusing to certify revision $SOURCE_REVISION." >&2
+    printf '%s\n' "$worktree_status" >&2
+    return 1
+  fi
+  return 0
+}
+
 run_container
+verify_snapshot_unchanged

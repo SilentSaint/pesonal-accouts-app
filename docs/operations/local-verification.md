@@ -48,6 +48,9 @@ normal Git discovery.
 The wrapper is Git worktree-safe and forwards the invoking user's
 non-primary supplementary groups so group-owned cache mounts remain writable
 inside the container.
+After a successful container run, it rejects tracked changes or non-ignored
+untracked files left in the detached snapshot before reporting the revision as
+validated.
 
 The host-side preflight also requires `curl` and checks HTTPS reachability for
 the Docker image and pinned toolchain sources, Gradle, Maven Central, Terraform

@@ -8,56 +8,13 @@ fi
 
 label="$1"
 shift
-attempts="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
-delay_seconds="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
-MAX_RETRY_ATTEMPTS=10
-MAX_RETRY_DELAY_SECONDS=922337203685477580
-
-if ! [[ "$attempts" =~ ^[0-9]+$ ]]; then
-  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be a positive decimal integer." >&2
-  exit 64
-fi
-normalized_attempts="${attempts#"${attempts%%[!0]*}"}"
-if [[ -z "$normalized_attempts" ]]; then
-  normalized_attempts=0
-fi
-attempts="$normalized_attempts"
-if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]]; then
-  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be a positive decimal integer." >&2
-  exit 64
-fi
-if ! [[ "$delay_seconds" =~ ^[0-9]+$ ]]; then
-  echo "LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be a non-negative decimal integer." >&2
-  exit 64
-fi
-
-normalized_delay_seconds="${delay_seconds#"${delay_seconds%%[!0]*}"}"
-if [[ -z "$normalized_delay_seconds" ]]; then
-  normalized_delay_seconds=0
-fi
-delay_seconds="$normalized_delay_seconds"
-
-attempts_exceed_max=0
-if (( ${#attempts} > ${#MAX_RETRY_ATTEMPTS} )) ||
-  (( ${#attempts} == ${#MAX_RETRY_ATTEMPTS} )) && [[ "$attempts" > "$MAX_RETRY_ATTEMPTS" ]]; then
-  attempts_exceed_max=1
-fi
-if (( attempts_exceed_max )); then
-  echo "LOCAL_VERIFIER_RETRY_ATTEMPTS must be between 1 and $MAX_RETRY_ATTEMPTS." >&2
-  exit 64
-fi
-
-delay_seconds_exceed_max=0
-if (( ${#delay_seconds} > ${#MAX_RETRY_DELAY_SECONDS} )); then
-  delay_seconds_exceed_max=1
-elif (( ${#delay_seconds} == ${#MAX_RETRY_DELAY_SECONDS} )) &&
-  [[ "$delay_seconds" > "$MAX_RETRY_DELAY_SECONDS" ]]; then
-  delay_seconds_exceed_max=1
-fi
-if (( delay_seconds_exceed_max )); then
-  echo "LOCAL_VERIFIER_RETRY_DELAY_SECONDS must be between 0 and $MAX_RETRY_DELAY_SECONDS." >&2
-  exit 64
-fi
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/retry-policy.sh"
+RETRY_ATTEMPTS="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
+RETRY_DELAY_SECONDS="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
+retry_policy_normalize
+attempts="$RETRY_ATTEMPTS"
+delay_seconds="$RETRY_DELAY_SECONDS"
 
 attempt=1
 status=0

@@ -195,7 +195,9 @@ test('local verification is independent of hosted CI and AWS credentials', () =>
   assert.match(dockerRunner, /--tmpfs \/tmp:exec/);
   assert.doesNotMatch(dockerRunner, /CODEBUILD_/);
   assert.doesNotMatch(dockerRunner, /terraform apply|aws s3 (cp|sync)|aws lambda update-function-code/);
-  assert.match(read('scripts/ci/retry-command'), /LOCAL_VERIFIER_RETRY_ATTEMPTS/);
+  assert.match(read('scripts/ci/retry-command'), /retry-policy\.sh/);
+  assert.match(read('scripts/ci/verify-local-docker'), /retry-policy\.sh/);
+  assert.match(read('scripts/ci/retry-policy.sh'), /LOCAL_VERIFIER_RETRY_ATTEMPTS/);
 
   assert.match(dockerfile, /JAVA_VERSION=21/);
   assert.match(dockerfile, /FLUTTER_VERSION=3\.44\.0/);

@@ -103,6 +103,21 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(wrapper, /playwright\.azureedge\.net\/builds\/chromium\/1134\/chromium-linux\.zip/);
 });
 
+test('Docker config normalizes zero-padded retry attempts and delays', () => {
+  const result = spawnSync(verifier, ['--print-config'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '08',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0008',
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Retry policy: 8 attempt\(s\), 8s linear backoff/);
+});
+
 test('preflight accepts a persistent cache directory and checks Docker before the gate', () => {
   const result = runWithFakeDocker('exit 0', [
     '--preflight-only',
@@ -127,6 +142,7 @@ test('Docker gate uses immutable source and helper snapshots when checkout chang
   const trackedFiles = [
     'scripts/ci/verify-local-docker',
     'scripts/ci/retry-command',
+    'scripts/ci/retry-policy.sh',
     'ci/local-verification/Dockerfile',
   ];
 
@@ -234,6 +250,99 @@ test('Docker gate uses immutable source and helper snapshots when checkout chang
     assert.equal(fs.readFileSync(buildCountFile, 'utf8'), '2');
     assert.match(result.stderr, /retrying in 0s/);
     assert.equal(fs.readFileSync(path.join(checkout, 'revision.txt'), 'utf8'), 'changed during image build\n');
+    assert.deepEqual(fs.readdirSync(path.join(cacheDir, 'worktrees')), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Docker gate rejects a container that mutates its detached source snapshot', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-mutation-'));
+  const checkout = path.join(tempRoot, 'checkout');
+  const cacheDir = path.join(tempRoot, 'cache');
+  const fakeDocker = path.join(tempRoot, 'docker');
+  const fakeCurl = path.join(tempRoot, 'curl');
+  const trackedFiles = [
+    'scripts/ci/verify-local-docker',
+    'scripts/ci/retry-command',
+    'scripts/ci/retry-policy.sh',
+    'ci/local-verification/Dockerfile',
+  ];
+
+  try {
+    for (const relativePath of trackedFiles) {
+      const destination = path.join(checkout, relativePath);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(root, relativePath), destination);
+    }
+    fs.writeFileSync(path.join(checkout, 'revision.txt'), 'original committed source\n');
+    fs.mkdirSync(cacheDir);
+
+    for (const args of [
+      ['init', '--quiet', checkout],
+      ['-C', checkout, 'config', 'user.name', 'Local verifier mutation contract'],
+      ['-C', checkout, 'config', 'user.email', 'local-verifier@example.invalid'],
+      ['-C', checkout, 'add', '--', '.'],
+      ['-C', checkout, 'commit', '--quiet', '-m', 'mutation fixture'],
+    ]) {
+      const result = spawnSync('git', args, { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    fs.writeFileSync(
+      fakeDocker,
+      [
+        '#!/usr/bin/env bash',
+        'if [[ "$1" == "info" ]]; then exit 0; fi',
+        'if [[ "$1" == "run" ]]; then',
+        '  while (($#)); do',
+        '    if [[ "$1" == "--volume" ]]; then',
+        '      case "$2" in *:/workspace) workspace_source="${2%:/workspace}" ;; esac',
+        '      shift 2',
+        '    else',
+        '      shift',
+        '    fi',
+        '  done',
+        '  [[ -n "${workspace_source:-}" ]] || exit 23',
+        '  printf "mutated during verification\\n" > "$workspace_source/revision.txt"',
+        '  exit 0',
+        'fi',
+        'exit 91',
+      ].join('\n'),
+    );
+    fs.chmodSync(fakeDocker, 0o755);
+    fs.writeFileSync(fakeCurl, '#!/usr/bin/env bash\nexit 0\n');
+    fs.chmodSync(fakeCurl, 0o755);
+
+    const result = spawnSync(
+      path.join(checkout, 'scripts', 'ci', 'verify-local-docker'),
+      ['--no-build', '--cache-dir', cacheDir],
+      {
+        cwd: checkout,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          AWS_ACCESS_KEY_ID: '',
+          AWS_SECRET_ACCESS_KEY: '',
+          AWS_SESSION_TOKEN: '',
+          AWS_SECURITY_TOKEN: '',
+          AWS_PROFILE: '',
+          AWS_CONFIG_FILE: '/dev/null',
+          AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+          AWS_EC2_METADATA_DISABLED: 'true',
+          LOCAL_VERIFIER_MIN_CACHE_FREE_MB: '1',
+          LOCAL_VERIFIER_DOCKER_BIN: fakeDocker,
+          LOCAL_VERIFIER_DOCKER_GROUP_REEXEC: '1',
+          LOCAL_VERIFIER_RETRY_ATTEMPTS: '1',
+          LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+          PATH: `${tempRoot}:${process.env.PATH}`,
+        },
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /modified.*source snapshot/i);
+    assert.match(result.stderr, /revision\.txt/);
     assert.deepEqual(fs.readdirSync(path.join(cacheDir, 'worktrees')), []);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -627,6 +736,7 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   );
   assert.match(runbook, /Git worktree/);
   assert.match(runbook, /detached Git worktree at/);
+  assert.match(runbook, /After a successful container run, it rejects tracked changes or non-ignored\s+untracked files/);
   assert.match(runbook, /invoking checkout itself is never mounted/);
   assert.match(runbook, /common directory/);
   assert.match(runbook, /non-zero/);
