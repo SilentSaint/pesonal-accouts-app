@@ -238,3 +238,29 @@ test('developer build instructions use the local verifier', () => {
   assert.match(verifierContract, /scripts\/ci\/verify-local\b/);
   assert.doesNotMatch(verifierContract, deletedVerifierReference);
 });
+
+test('Codex PR review automation stays bound to the authorized current head', () => {
+  const agents = read('AGENTS.md');
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(workflow, /arm a quiet Codex heartbeat automation in that\s+same task/);
+  assert.match(workflow, /exact (?:current )?head SHA/);
+  assert.match(
+    workflow,
+    /After each fix commit,\s*refresh the\s+tracked SHA and invalidate prior approvals\./,
+  );
+  assert.match(workflow, /local `code-review`\s+skill on the PR diff/);
+  assert.match(workflow, /Standards and Spec agents review in parallel/);
+  assert.ok(
+    workflow.includes("`Codex Review: Didn't find any major issues. Keep it up!`"),
+    'the exact Codex review authorization message must be preserved',
+  );
+  assert.match(workflow, /valid current-head Codex approval/);
+  assert.match(workflow, /no actionable\s+review conversations remain unresolved/);
+  assert.match(workflow, /exact-head\s+local Docker gate passes/);
+  assert.match(workflow, /Merge through the pull-request path only; never write directly to\s+`main`/);
+  assert.match(
+    agents,
+    /Agents may merge only when the canonical engineering\s+workflow authorizes it and its gates pass\./,
+  );
+});
