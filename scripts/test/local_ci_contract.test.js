@@ -279,17 +279,26 @@ test('qualifying Codex approval grants conditional agent merge authority', () =>
   const agents = read('AGENTS.md');
   const workflow = read('docs/engineering/workflow.md');
 
+  assert.match(
+    agents,
+    /GitHub repository `SilentSaint\/pesonal-accouts-app` as\s+the\s+canonical integration surface/i,
+  );
+  assert.match(agents, /GitHub read\/write and pull-request operations/i);
+  assert.match(agents, /canonical engineering workflow in\s+`docs\/engineering\/workflow\.md`/i);
+  assert.doesNotMatch(agents, /AWS CodeCommit repository in `ap-south-2` as the\s+canonical integration surface/i);
+  assert.doesNotMatch(agents, /required CodeCommit read\/write and pull-request operations/i);
   assert.match(agents, /owner grants standing\s+authorization for the agent to merge/i);
   assert.match(
     agents,
-    /qualifying Codex signal and\s+every merge gate in the canonical engineering workflow pass/i,
+    /qualifying\s+current-head Codex signal and\s+every required merge gate pass/i,
   );
-  assert.match(agents, /GitHub connector's protected\s+pull-request merge operation/i);
-  assert.match(agents, /verified current `expected_head_sha`/i);
   assert.match(workflow, /owner grants standing authorization for the agent to merge/i);
   assert.match(workflow, /qualifying current-head Codex approval and every merge gate below pass/i);
   assert.doesNotMatch(agents, /only the repository owner reviews and merges/i);
-  assert.doesNotMatch(agents, /must not merge/i);
+  assert.doesNotMatch(
+    agents,
+    /Automated Codex and local\s+Standards\/Spec reviews are advisory inputs only and never authorize agents to merge/i,
+  );
   assert.doesNotMatch(workflow, /only the owner merges through the pull-request path/i);
   assert.doesNotMatch(workflow, /review approval is not merge authorization for an agent/i);
 });
@@ -304,6 +313,7 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
     /full local\s+Docker gate passes on the exact current head without AWS credentials or\s+production mutations/i,
   );
   assert.match(workflow, /all required checks are acceptable/i);
+  assert.match(workflow, /any configured\s+maintainer-approval requirement is satisfied/i);
   assert.match(workflow, /missing,\s+failing, or stale required check fails closed/i);
   assert.match(
     workflow,
@@ -313,10 +323,8 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
 });
 
 test('authorized merge uses the protected connector path and verifies the merged SHA', () => {
-  const agents = read('AGENTS.md');
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(agents, /GitHub connector's protected\s+pull-request merge operation/i);
   assert.match(workflow, /invoke the GitHub connector's\s+`github_merge_pull_request` operation with that verified `expected_head_sha`/i);
   assert.match(workflow, /Never write directly to `main`, enable auto-merge as a shortcut, or\s+deploy\/mutate AWS/i);
   assert.match(workflow, /verify the returned merged SHA and the resulting\s+PR\/ref state read-only/i);

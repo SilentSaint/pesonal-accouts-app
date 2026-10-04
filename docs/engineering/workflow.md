@@ -157,7 +157,8 @@ must:
 6. Merge only when a valid current-head Codex approval is present, no actionable
    review conversations remain unresolved, the PR is mergeable, the full local
    Docker gate passes on the exact current head without AWS credentials or
-   production mutations, and all required checks are acceptable. A missing,
+   production mutations, all required checks are acceptable, and any configured
+   maintainer-approval requirement is satisfied. A missing,
    failing, or stale required check fails closed and requires fresh validation.
    Immediately before merging, re-fetch the PR and record the verified current
    `expected_head_sha`; if the head or any gate evidence differs, invalidate the
