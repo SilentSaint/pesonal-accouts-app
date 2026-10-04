@@ -14,6 +14,7 @@ function runWithFakeDocker(
   envOverrides = {},
   fakeGitContents = null,
   fakeMkdirContents = null,
+  checkoutRoot = root,
 ) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
   const fakeDocker = path.join(tempRoot, 'docker');
@@ -26,13 +27,17 @@ function runWithFakeDocker(
   fs.writeFileSync(
     fakeGit,
     fakeGitContents ??
-      '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == diff || "$arg" == status ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n',
+      (checkoutRoot === root
+        ? '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == diff || "$arg" == status ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n'
+        : '#!/usr/bin/env bash\nexec /usr/bin/git "$@"\n'),
   );
   fs.chmodSync(fakeDocker, 0o755);
   fs.writeFileSync(
     fakeCurl,
     [
       '#!/usr/bin/env bash',
+      'if [[ -n "$LOCAL_VERIFIER_TEST_CURL_LOG" ]]; then for arg in "$@"; do [[ "$arg" == https://* ]] && printf "%s\\n" "$arg" >> "$LOCAL_VERIFIER_TEST_CURL_LOG"; done; fi',
+      'if [[ "$LOCAL_VERIFIER_TEST_CURL_DELAY_ONCE" == "1" && ! -e "$LOCAL_VERIFIER_TEST_CACHE_DIR/.curl-delay-once" ]]; then : > "$LOCAL_VERIFIER_TEST_CACHE_DIR/.curl-delay-once"; sleep 1; fi',
       'if [[ -n "$LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT" ]]; then',
       '  for arg in "$@"; do',
       '    [[ "$arg" == *"$LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT"* ]] && exit 7',
@@ -52,8 +57,8 @@ function runWithFakeDocker(
     const resolvedArgs = args.map((arg) => (
       arg === '__CACHE_DIR__' ? cacheDir : arg
     ));
-    return spawnSync(verifier, resolvedArgs, {
-      cwd: root,
+    return spawnSync(path.join(checkoutRoot, 'scripts', 'ci', 'verify-local-docker'), resolvedArgs, {
+      cwd: checkoutRoot,
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -78,8 +83,37 @@ function runWithFakeDocker(
   }
 }
 
+function createVerifierCheckout(tempRoot, commitMessage) {
+  const checkout = path.join(tempRoot, 'checkout');
+  const trackedFiles = [
+    'scripts/ci/verify-local-docker',
+    'scripts/ci/retry-command',
+    'scripts/ci/retry-policy.sh',
+    'ci/local-verification/Dockerfile',
+  ];
+
+  for (const relativePath of trackedFiles) {
+    const destination = path.join(checkout, relativePath);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(root, relativePath), destination);
+  }
+  fs.writeFileSync(path.join(checkout, 'revision.txt'), 'original committed source\n');
+
+  for (const args of [
+    ['init', '--quiet', checkout],
+    ['-C', checkout, 'config', 'user.name', 'Local verifier contract'],
+    ['-C', checkout, 'config', 'user.email', 'local-verifier@example.invalid'],
+    ['-C', checkout, 'add', '--', '.'],
+    ['-C', checkout, 'commit', '--quiet', '-m', commitMessage],
+  ]) {
+    const result = spawnSync('git', args, { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  }
+
+  return checkout;
+}
+
 test('local verification exposes a safe, reproducible Docker contract', () => {
-  const wrapper = fs.readFileSync(verifier, 'utf8');
   const dockerfile = fs.readFileSync(
     path.join(root, 'ci', 'local-verification', 'Dockerfile'),
     'utf8',
@@ -100,7 +134,6 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(result.stdout, /Docker access: preflighted/);
   assert.match(result.stdout, /Verification source: detached worktree snapshot of HEAD/);
   assert.match(dockerfile, /PLAYWRIGHT_VERSION=1\.47\.2/);
-  assert.match(wrapper, /playwright\.azureedge\.net\/builds\/chromium\/1134\/chromium-linux\.zip/);
 });
 
 test('Docker config normalizes zero-padded retry attempts and delays', () => {
@@ -130,43 +163,77 @@ test('preflight accepts a persistent cache directory and checks Docker before th
   assert.match(result.stdout, /Cache directory:/);
 });
 
+test('preflight reports elapsed time including host dependency checks', () => {
+  const result = runWithFakeDocker(
+    'if [[ "$1" == "info" ]]; then exit 0; fi\nexit 91',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    { LOCAL_VERIFIER_TEST_CURL_DELAY_ONCE: '1' },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Local Docker verification finished with status 0 after [1-9][0-9]*s/);
+});
+
+test('preflight rejects an unavailable snapshot workspace before reporting success', () => {
+  const result = runWithFakeDocker(
+    'if [[ "$1" == "info" ]]; then exit 0; fi\nexit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    null,
+    '#!/usr/bin/env bash\nfor arg in "$@"; do [[ "$arg" == */worktrees ]] && exit 1; done\nexec /usr/bin/mkdir "$@"\n',
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unable to create a local verification cache directory: .*\/worktrees/);
+  assert.doesNotMatch(result.stdout, /Docker access preflight passed/);
+});
+
+test('Docker run keeps per-run Terraform data on the persistent cache volume', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-terraform-data-'));
+  const checkout = createVerifierCheckout(tempRoot, 'Terraform data fixture');
+  const dockerArgsFile = path.join(tempRoot, 'docker-args');
+
+  try {
+    const result = runWithFakeDocker(
+      'if [[ "$1" == "info" ]]; then exit 0; fi\nif [[ "$1" == "run" ]]; then printf "%s\\n" "$@" > "$LOCAL_VERIFIER_TEST_DOCKER_ARGS_FILE"; exit 0; fi\nexit 0',
+      ['--no-build', '--cache-dir', '__CACHE_DIR__'],
+      { LOCAL_VERIFIER_TEST_DOCKER_ARGS_FILE: dockerArgsFile },
+      null,
+      null,
+      checkout,
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const dockerArgs = fs.readFileSync(dockerArgsFile, 'utf8');
+    assert.match(dockerArgs, /TF_DATA_DIR=\/cache\/terraform\/data\/local-verifier\.[A-Za-z0-9]+/);
+    assert.doesNotMatch(dockerArgs, /TF_DATA_DIR=\/tmp\//);
+    assert.match(dockerArgs, /\.\/scripts\/ci\/verify-local/);
+    assert.ok(dockerArgs.includes('TF_PLUGIN_CACHE_DIR=/cache/terraform/plugin-cache'));
+    assert.ok(dockerArgs.includes('GRADLE_USER_HOME=/cache/gradle'));
+    assert.ok(dockerArgs.includes('PUB_CACHE=/cache/flutter/pub-cache'));
+    assert.ok(dockerArgs.includes('npm_config_cache=/cache/npm'));
+    assert.ok(dockerArgs.includes('AWS_ACCESS_KEY_ID=\n'));
+    assert.ok(dockerArgs.includes('AWS_SECRET_ACCESS_KEY=\n'));
+    assert.ok(dockerArgs.includes('AWS_EC2_METADATA_DISABLED=true'));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('Docker gate uses immutable source and helper snapshots when checkout changes during image build', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-snapshot-'));
-  const checkout = path.join(tempRoot, 'checkout');
+  const checkout = createVerifierCheckout(tempRoot, 'snapshot fixture');
   const cacheDir = path.join(tempRoot, 'cache');
   const fakeDocker = path.join(tempRoot, 'docker');
   const fakeCurl = path.join(tempRoot, 'curl');
   const fakeId = path.join(tempRoot, 'id');
   const buildCountFile = path.join(tempRoot, 'build-attempts');
   const idMarker = path.join(tempRoot, 'id-marker');
-  const trackedFiles = [
-    'scripts/ci/verify-local-docker',
-    'scripts/ci/retry-command',
-    'scripts/ci/retry-policy.sh',
-    'ci/local-verification/Dockerfile',
-  ];
 
   try {
-    for (const relativePath of trackedFiles) {
-      const destination = path.join(checkout, relativePath);
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.copyFileSync(path.join(root, relativePath), destination);
-    }
-    fs.writeFileSync(path.join(checkout, 'revision.txt'), 'original committed source\n');
     fs.mkdirSync(cacheDir);
     fs.writeFileSync(fakeCurl, '#!/usr/bin/env bash\nexit 0\n');
     fs.chmodSync(fakeCurl, 0o755);
-
-    for (const args of [
-      ['init', '--quiet', checkout],
-      ['-C', checkout, 'config', 'user.name', 'Local verifier contract'],
-      ['-C', checkout, 'config', 'user.email', 'local-verifier@example.invalid'],
-      ['-C', checkout, 'add', '--', '.'],
-      ['-C', checkout, 'commit', '--quiet', '-m', 'snapshot fixture'],
-    ]) {
-      const result = spawnSync('git', args, { encoding: 'utf8' });
-      assert.equal(result.status, 0, result.stderr);
-    }
 
     fs.writeFileSync(
       fakeDocker,
@@ -258,36 +325,13 @@ test('Docker gate uses immutable source and helper snapshots when checkout chang
 
 test('Docker gate rejects a container that mutates its detached source snapshot', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-mutation-'));
-  const checkout = path.join(tempRoot, 'checkout');
+  const checkout = createVerifierCheckout(tempRoot, 'mutation fixture');
   const cacheDir = path.join(tempRoot, 'cache');
   const fakeDocker = path.join(tempRoot, 'docker');
   const fakeCurl = path.join(tempRoot, 'curl');
-  const trackedFiles = [
-    'scripts/ci/verify-local-docker',
-    'scripts/ci/retry-command',
-    'scripts/ci/retry-policy.sh',
-    'ci/local-verification/Dockerfile',
-  ];
 
   try {
-    for (const relativePath of trackedFiles) {
-      const destination = path.join(checkout, relativePath);
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.copyFileSync(path.join(root, relativePath), destination);
-    }
-    fs.writeFileSync(path.join(checkout, 'revision.txt'), 'original committed source\n');
     fs.mkdirSync(cacheDir);
-
-    for (const args of [
-      ['init', '--quiet', checkout],
-      ['-C', checkout, 'config', 'user.name', 'Local verifier mutation contract'],
-      ['-C', checkout, 'config', 'user.email', 'local-verifier@example.invalid'],
-      ['-C', checkout, 'add', '--', '.'],
-      ['-C', checkout, 'commit', '--quiet', '-m', 'mutation fixture'],
-    ]) {
-      const result = spawnSync('git', args, { encoding: 'utf8' });
-      assert.equal(result.status, 0, result.stderr);
-    }
 
     fs.writeFileSync(
       fakeDocker,
@@ -382,32 +426,73 @@ test('cold Docker image toolchain host outage fails preflight before image build
   assert.doesNotMatch(result.stderr, /docker image build started/);
 });
 
-test('Playwright CDN preflight accepts a mirror fallback and rejects a total outage', () => {
+test('reusing an image skips only image-build network dependencies', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-no-build-network-'));
+  const curlLog = path.join(tempRoot, 'curl-urls');
+  const fakeDocker = 'if [[ "$1" == "info" ]]; then exit 0; fi\nexit 91';
+
+  try {
+    const noBuild = runWithFakeDocker(
+      fakeDocker,
+      ['--no-build', '--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+      {
+        LOCAL_VERIFIER_TEST_CURL_LOG: curlLog,
+        LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'nodejs.org',
+      },
+    );
+    const checkedUrls = fs.readFileSync(curlLog, 'utf8');
+    const runtimeDependencyFailure = runWithFakeDocker(
+      fakeDocker,
+      ['--no-build', '--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+      { LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'services.gradle.org' },
+    );
+
+    assert.equal(noBuild.status, 0, noBuild.stderr);
+    assert.doesNotMatch(checkedUrls, /nodejs\.org/);
+    assert.notEqual(runtimeDependencyFailure.status, 0);
+    assert.match(runtimeDependencyFailure.stderr, /Dependency network preflight failed.*services\.gradle\.org/s);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Playwright CDN preflight uses the pinned revision, falls back, and rejects a total outage', () => {
   const fakeDocker = 'if [[ "$1" == "info" ]]; then exit 0; fi\necho "docker was unexpectedly reached" >&2\nexit 91';
   const args = ['--preflight-only', '--cache-dir', '__CACHE_DIR__'];
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-cdn-'));
+  const curlLog = path.join(tempRoot, 'curl-urls');
   const env = {
     LOCAL_VERIFIER_RETRY_ATTEMPTS: '1',
     LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
   };
-  const fallback = runWithFakeDocker(fakeDocker, args, {
-    ...env,
-    LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'playwright.azureedge.net',
-  });
-  const outage = runWithFakeDocker(fakeDocker, args, {
-    ...env,
-    LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'playwright',
-  });
 
-  assert.equal(fallback.status, 0, fallback.stderr);
-  assert.match(fallback.stdout, /Playwright browser CDN preflight passed/);
-  assert.notEqual(outage.status, 0);
-  assert.match(outage.stderr, /unable to reach any Playwright Chromium CDN/);
-  assert.doesNotMatch(outage.stderr, /docker was unexpectedly reached/);
+  try {
+    const fallback = runWithFakeDocker(fakeDocker, args, {
+      ...env,
+      LOCAL_VERIFIER_TEST_CURL_LOG: curlLog,
+      LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'playwright.azureedge.net',
+    });
+    const requestedUrls = fs.readFileSync(curlLog, 'utf8').trim().split('\n');
+    const outage = runWithFakeDocker(fakeDocker, args, {
+      ...env,
+      LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'playwright',
+    });
+
+    assert.equal(fallback.status, 0, fallback.stderr);
+    assert.match(fallback.stdout, /Playwright browser CDN preflight passed/);
+    assert.ok(requestedUrls.includes('https://playwright.azureedge.net/builds/chromium/1134/chromium-linux.zip'));
+    assert.ok(requestedUrls.includes('https://playwright-akamai.azureedge.net/builds/chromium/1134/chromium-linux.zip'));
+    assert.notEqual(outage.status, 0);
+    assert.match(outage.stderr, /unable to reach any Playwright Chromium CDN/);
+    assert.doesNotMatch(outage.stderr, /docker was unexpectedly reached/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('preflight creates every mounted cache directory and Terraform lock before Docker access', () => {
   const result = runWithFakeDocker(
-    'for cache_path in gradle terraform/plugin-cache flutter/pub-cache npm; do\n  [[ -d "$LOCAL_VERIFIER_TEST_CACHE_DIR/$cache_path" ]] || exit 9\ndone\n[[ -f "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" && -w "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" ]] || exit 10\nexit 0',
+    'for cache_path in gradle terraform/data terraform/plugin-cache flutter/pub-cache npm worktrees; do\n  [[ -d "$LOCAL_VERIFIER_TEST_CACHE_DIR/$cache_path" ]] || exit 9\ndone\n[[ -f "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" && -w "$LOCAL_VERIFIER_TEST_CACHE_DIR/terraform/plugin-cache.lock" ]] || exit 10\nexit 0',
     ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
   );
 
@@ -601,13 +686,11 @@ test('local Docker verification delegates to every local validation lane', () =>
     'utf8',
   );
 
-  assert.match(wrapper, /exec \.\/scripts\/ci\/verify-local\b/);
   assert.match(wrapper, /--env AWS_ACCESS_KEY_ID=/);
   assert.match(wrapper, /--env AWS_SECRET_ACCESS_KEY=/);
   assert.match(wrapper, /--env AWS_SESSION_TOKEN=/);
   assert.match(wrapper, /--env AWS_SHARED_CREDENTIALS_FILE=\/dev\/null/);
   assert.match(wrapper, /--env AWS_EC2_METADATA_DISABLED=true/);
-  assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
   assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
   assert.match(wrapper, /GRADLE_USER_HOME=\/cache\/gradle/);
   assert.match(wrapper, /PUB_CACHE=\/cache\/flutter\/pub-cache/);
@@ -638,7 +721,6 @@ test('Terraform provider-cache lock is scoped to initialization', () => {
     'utf8',
   );
 
-  assert.match(wrapper, /TF_DATA_DIR=\/tmp\/aet-terraform-data/);
   assert.match(wrapper, /TF_PLUGIN_CACHE_DIR=\/cache\/terraform\/plugin-cache/);
   assert.match(wrapper, /TF_PLUGIN_CACHE_LOCK_FILE=\/cache\/terraform\/plugin-cache\.lock/);
   assert.match(wrapper, /plugin-cache\.lock/);
@@ -722,10 +804,12 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /D3/);
   assert.match(runbook, /DynamoDB local/i);
   assert.match(runbook, /host-side preflight also requires `curl`/);
-  assert.match(runbook, /Docker image and pinned toolchain sources/);
-  assert.match(runbook, /Playwright\s+Chromium CDN mirror/);
-  assert.match(runbook, /Maven Central, Terraform\s+Registry and releases/);
+  assert.match(runbook, /runtime dependency sources: Gradle, Maven Central, Terraform Registry and\s+releases/);
+  assert.match(runbook, /checks the image\/toolchain sources and at least one pinned Playwright Chromium\s+CDN mirror/);
+  assert.match(runbook, /With `--no-build`, image-only sources and the browser CDN are\s+skipped/);
   assert.match(runbook, /only a host\s+reachability\s+check/);
+  assert.match(runbook, /Terraform working\s+directory data uses a unique per-run directory under the persistent cache/);
+  assert.match(runbook, /records elapsed time from before host preflight through container\s+completion/);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /AWS_EC2_METADATA_DISABLED=true/);
   assert.match(runbook, /AWS SDK\/CLI/);

@@ -53,12 +53,14 @@ untracked files left in the detached snapshot before reporting the revision as
 validated.
 
 The host-side preflight also requires `curl` and checks HTTPS reachability for
-the Docker image and pinned toolchain sources, Gradle, Maven Central, Terraform
-Registry and releases, pub.dev, npm Registry, and at least one pinned Playwright
-Chromium CDN mirror before starting an image build. This catches common DNS,
-proxy, and outbound-network setup problems early; it is only a host reachability
-check, so downloads inside Docker can still fail and use the bounded retry
-policy below.
+the runtime dependency sources: Gradle, Maven Central, Terraform Registry and
+releases, pub.dev, and npm Registry. When building the image, it additionally
+checks the image/toolchain sources and at least one pinned Playwright Chromium
+CDN mirror. With `--no-build`, image-only sources and the browser CDN are
+skipped, while runtime dependency sources remain checked. This catches common
+DNS, proxy, and outbound-network setup problems early; it is only a host
+reachability check, so downloads inside Docker can still fail and use the
+bounded retry policy below.
 
 Before building or running a container, the wrapper verifies that the checkout
 has no tracked changes or non-ignored untracked files, the Dockerfile exists,
@@ -84,12 +86,17 @@ provider/data, Flutter pub, and npm downloads across clean-checkout runs. Use
 relative cache paths resolve beside the checkout, never inside it; an absolute
 path inside the checkout is rejected before the cache is created. The wrapper
 reports the selected path and free space in its log. Terraform working
-directory data is kept in the container's per-run `/tmp`, while the persistent
-provider cache is protected by a lock held only during `terraform init`;
-concurrent verifier runs can execute the other validation lanes in parallel
-without racing on Terraform's non-concurrency-safe provider cache. Preflight
-creates and checks each mounted cache directory and the lock file before Docker
-builds or starts a container.
+directory data uses a unique per-run directory under the persistent cache at
+`/cache/terraform/data` and is removed when the container exits, so it does not
+consume the container's quota-limited `/tmp`. The persistent provider cache is
+protected by a lock held only during `terraform init`; concurrent verifier runs
+can execute the other validation lanes in parallel without racing on
+Terraform's non-concurrency-safe provider cache. Preflight creates and checks
+each mounted cache directory, including the Terraform data parent and detached-
+worktree parent, and the lock file before Docker builds or starts a container.
+
+The wrapper records elapsed time from before host preflight through container
+completion, including failures and `--preflight-only` runs.
 
 Dependency acquisition has three bounded attempts with a two-second linear
 backoff by default. The retry helper normalizes decimal environment values,

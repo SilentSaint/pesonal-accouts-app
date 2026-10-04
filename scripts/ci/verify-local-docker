@@ -62,7 +62,7 @@ Verification source: detached worktree snapshot of HEAD
 Cache directory: $CACHE_DIR
 Minimum cache free space: ${MIN_CACHE_FREE_MB} MB
 Dependency cache mounts: Gradle, Terraform, Flutter pub, npm
-Terraform cache policy: per-run data and provider-cache lock during init only
+Terraform cache policy: per-run data under cache; provider-cache lock during init only
 Retry policy: ${RETRY_ATTEMPTS} attempt(s), ${RETRY_DELAY_SECONDS}s linear backoff
 AWS credential injection: disabled
 AWS IMDS credential lookup: disabled (no network-level block)
@@ -220,10 +220,12 @@ prepare_cache() {
   local -a mounted_cache_paths=(
     "$CACHE_DIR/gradle"
     "$CACHE_DIR/terraform"
+    "$CACHE_DIR/terraform/data"
     "$CACHE_DIR/terraform/plugin-cache"
     "$CACHE_DIR/flutter"
     "$CACHE_DIR/flutter/pub-cache"
     "$CACHE_DIR/npm"
+    "$CACHE_DIR/worktrees"
   )
   for cache_path in "${mounted_cache_paths[@]}"; do
     if ! mkdir -p "$cache_path"; then
@@ -306,13 +308,15 @@ dependency_network_preflight() {
     --connect-timeout 3 --max-time 8
     --output /dev/null
   )
-  local -a endpoints=(
+  local -a image_build_endpoints=(
     "https://public.ecr.aws/"
     "https://archive.ubuntu.com/ubuntu/"
     "https://security.ubuntu.com/ubuntu/"
     "https://apt.corretto.aws/corretto.key"
     "https://nodejs.org/dist/"
     "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.44.0-stable.tar.xz"
+  )
+  local -a runtime_endpoints=(
     "https://services.gradle.org/distributions/gradle-8.7-bin.zip"
     "https://repo.maven.apache.org/maven2/"
     "https://registry.terraform.io/.well-known/terraform.json"
@@ -326,7 +330,12 @@ dependency_network_preflight() {
     "https://playwright-akamai.azureedge.net/builds/chromium/1134/chromium-linux.zip"
     "https://playwright-verizon.azureedge.net/builds/chromium/1134/chromium-linux.zip"
   )
+  local -a endpoints=("${runtime_endpoints[@]}")
   local playwright_cdn_available=0
+
+  if ((BUILD_IMAGE)); then
+    endpoints=("${image_build_endpoints[@]}" "${runtime_endpoints[@]}")
+  fi
 
   if ! command -v curl >/dev/null 2>&1; then
     echo "Dependency network preflight cannot run: curl is required on the host." >&2
@@ -342,20 +351,24 @@ dependency_network_preflight() {
     fi
   done
 
-  for endpoint in "${playwright_cdns[@]}"; do
-    if curl "${curl_args[@]}" "$endpoint" >/dev/null 2>&1; then
-      playwright_cdn_available=1
-      break
+  if ((BUILD_IMAGE)); then
+    for endpoint in "${playwright_cdns[@]}"; do
+      if curl "${curl_args[@]}" "$endpoint" >/dev/null 2>&1; then
+        playwright_cdn_available=1
+        break
+      fi
+    done
+    if (( ! playwright_cdn_available )); then
+      echo "Dependency network preflight failed: unable to reach any Playwright Chromium CDN." >&2
+      echo "Check DNS, proxy, and outbound HTTPS access before starting the full verification." >&2
+      exit 1
     fi
-  done
-  if (( ! playwright_cdn_available )); then
-    echo "Dependency network preflight failed: unable to reach any Playwright Chromium CDN." >&2
-    echo "Check DNS, proxy, and outbound HTTPS access before starting the full verification." >&2
-    exit 1
   fi
 
   echo "Dependency network preflight passed."
-  echo "Playwright browser CDN preflight passed."
+  if ((BUILD_IMAGE)); then
+    echo "Playwright browser CDN preflight passed."
+  fi
 }
 
 preflight() {
@@ -381,13 +394,6 @@ preflight() {
   echo "Verification revision: $SOURCE_REVISION"
 }
 
-preflight
-
-if ((PREFLIGHT_ONLY)); then
-  echo "Docker preflight passed; no image build or container run requested."
-  exit 0
-fi
-
 START_SECONDS="$(date +%s)"
 remove_verification_snapshot() {
   if [[ -z "$SNAPSHOT_DIR" ]]; then
@@ -412,6 +418,13 @@ report_duration() {
   exit "$status"
 }
 trap report_duration EXIT
+
+preflight
+
+if ((PREFLIGHT_ONLY)); then
+  echo "Docker preflight passed; no image build or container run requested."
+  exit 0
+fi
 
 create_verification_snapshot() {
   local snapshot_parent="$CACHE_DIR/worktrees"
@@ -489,7 +502,7 @@ run_container() {
   --env LOCAL_VERIFIER_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
   --env GRADLE_USER_HOME=/cache/gradle \
   --env PUB_CACHE=/cache/flutter/pub-cache \
-  --env TF_DATA_DIR=/tmp/aet-terraform-data \
+  --env "TF_DATA_DIR=/cache/terraform/data/${SNAPSHOT_DIR##*/}" \
   --env TF_PLUGIN_CACHE_DIR=/cache/terraform/plugin-cache \
   --env TF_PLUGIN_CACHE_LOCK_FILE=/cache/terraform/plugin-cache.lock \
   --env npm_config_cache=/cache/npm \
@@ -503,9 +516,19 @@ run_container() {
   --env AWS_EC2_METADATA_DISABLED=true \
   "$IMAGE_NAME" \
   bash -euo pipefail -c '
+    cleanup_terraform_data() {
+      local status=$?
+      trap - EXIT
+      if ! rm -rf -- "$TF_DATA_DIR"; then
+        echo "Unable to remove per-run Terraform data directory: $TF_DATA_DIR" >&2
+        status=1
+      fi
+      exit "$status"
+    }
+    trap cleanup_terraform_data EXIT
     mkdir -p "$HOME" "$GRADLE_USER_HOME" "$PUB_CACHE" "$TF_DATA_DIR" "$TF_PLUGIN_CACHE_DIR" "$npm_config_cache"
     git config --global --add safe.directory /workspace
-    exec ./scripts/ci/verify-local
+    ./scripts/ci/verify-local
   '
 }
 
