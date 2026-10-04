@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The verifier must inspect the checkout containing this script, not a repository
+# selected by inherited Git environment overrides from the caller's shell.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ORIGINAL_ARGS=("$@")
 ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)"
@@ -205,14 +209,31 @@ if ((PRINT_CONFIG)); then
   exit 0
 fi
 
+cache_path_is_contained() {
+  local cache_path="$1"
+  local resolved_cache_path
+
+  if ! resolved_cache_path="$(realpath -m -- "$cache_path")"; then
+    echo "Unable to resolve local verification cache path: $cache_path" >&2
+    return 1
+  fi
+  case "$resolved_cache_path" in
+    "$CACHE_DIR"/*)
+      return 0
+      ;;
+  esac
+  echo "Local verification cache path resolves outside the selected cache directory: $cache_path -> $resolved_cache_path" >&2
+  return 1
+}
+
 prepare_cache() {
   if ! mkdir -p "$CACHE_DIR"; then
     echo "Unable to create the local verification cache directory: $CACHE_DIR" >&2
     echo "Choose a writable path with --cache-dir PATH." >&2
     exit 1
   fi
-  if [[ ! -d "$CACHE_DIR" || ! -w "$CACHE_DIR" ]]; then
-    echo "Local verification cache is not writable: $CACHE_DIR" >&2
+  if [[ ! -d "$CACHE_DIR" || ! -w "$CACHE_DIR" || ! -x "$CACHE_DIR" ]]; then
+    echo "Local verification cache is not writable or searchable: $CACHE_DIR" >&2
     echo "Choose a writable path with --cache-dir PATH." >&2
     exit 1
   fi
@@ -228,18 +249,27 @@ prepare_cache() {
     "$CACHE_DIR/worktrees"
   )
   for cache_path in "${mounted_cache_paths[@]}"; do
+    if ! cache_path_is_contained "$cache_path"; then
+      exit 1
+    fi
     if ! mkdir -p "$cache_path"; then
       echo "Unable to create a local verification cache directory: $cache_path" >&2
       echo "Choose a writable path with --cache-dir PATH." >&2
       exit 1
     fi
-    if [[ ! -d "$cache_path" || ! -w "$cache_path" ]]; then
-      echo "Local verification cache subdirectory is not writable: $cache_path" >&2
+    if ! cache_path_is_contained "$cache_path"; then
+      exit 1
+    fi
+    if [[ ! -d "$cache_path" || ! -w "$cache_path" || ! -x "$cache_path" ]]; then
+      echo "Local verification cache subdirectory is not writable or searchable: $cache_path" >&2
       echo "Choose a writable path with --cache-dir PATH." >&2
       exit 1
     fi
   done
   local terraform_lock_file="$CACHE_DIR/terraform/plugin-cache.lock"
+  if ! cache_path_is_contained "$terraform_lock_file"; then
+    exit 1
+  fi
   if ! { : >> "$terraform_lock_file"; } 2>/dev/null ||
     [[ ! -f "$terraform_lock_file" || ! -w "$terraform_lock_file" ]]; then
     echo "Terraform provider-cache lock file is not writable: $terraform_lock_file" >&2

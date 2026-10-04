@@ -15,6 +15,7 @@ function runWithFakeDocker(
   fakeGitContents = null,
   fakeMkdirContents = null,
   checkoutRoot = root,
+  cacheSetup = null,
 ) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
   const fakeDocker = path.join(tempRoot, 'docker');
@@ -23,6 +24,9 @@ function runWithFakeDocker(
   const fakeMkdir = path.join(tempRoot, 'mkdir');
   const cacheDir = path.join(tempRoot, 'cache');
   fs.mkdirSync(cacheDir);
+  if (cacheSetup !== null) {
+    cacheSetup(cacheDir);
+  }
   fs.writeFileSync(fakeDocker, `#!/usr/bin/env bash\n${fakeDockerContents}\n`);
   fs.writeFileSync(
     fakeGit,
@@ -79,6 +83,14 @@ function runWithFakeDocker(
       },
     });
   } finally {
+    try {
+      const gradleCache = path.join(cacheDir, 'gradle');
+      if (fs.lstatSync(gradleCache).isDirectory()) {
+        fs.chmodSync(gradleCache, 0o700);
+      }
+    } catch {
+      // The cache fixture may not have been created before preflight failed.
+    }
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
@@ -112,6 +124,45 @@ function createVerifierCheckout(tempRoot, commitMessage) {
 
   return checkout;
 }
+
+test('preflight uses the invoking checkout when Git repository overrides are exported', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-git-overrides-'));
+  const otherCheckout = createVerifierCheckout(tempRoot, 'unrelated checkout');
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.GIT_DIR;
+  delete cleanEnv.GIT_WORK_TREE;
+  delete cleanEnv.GIT_COMMON_DIR;
+  delete cleanEnv.GIT_INDEX_FILE;
+  const expectedRevision = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+    env: cleanEnv,
+  });
+  const otherRevision = spawnSync('git', ['-C', otherCheckout, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+    env: cleanEnv,
+  });
+
+  try {
+    assert.equal(expectedRevision.status, 0, expectedRevision.stderr);
+    assert.equal(otherRevision.status, 0, otherRevision.stderr);
+    assert.notEqual(expectedRevision.stdout.trim(), otherRevision.stdout.trim());
+
+    const result = runWithFakeDocker(
+      'exit 0',
+      ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+      {
+        GIT_DIR: path.join(otherCheckout, '.git'),
+        GIT_WORK_TREE: otherCheckout,
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Verification revision: ${expectedRevision.stdout.trim()}`));
+    assert.doesNotMatch(result.stdout, new RegExp(`Verification revision: ${otherRevision.stdout.trim()}`));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test('local verification exposes a safe, reproducible Docker contract', () => {
   const dockerfile = fs.readFileSync(
@@ -514,6 +565,43 @@ test('preflight checks mounted cache subdirectories before Docker starts', () =>
   assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
 });
 
+test('preflight rejects cache subdirectories that cannot be searched', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    null,
+    '#!/usr/bin/env bash\n/usr/bin/mkdir "$@"\nstatus=$?\nif ((status != 0)); then exit "$status"; fi\nfor cache_path in "$@"; do\n  if [[ "$cache_path" == */gradle ]]; then /usr/bin/chmod 0222 "$cache_path"; fi\ndone\nexit 0\n',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache.*not writable|unable to create.*cache/i);
+  assert.doesNotMatch(result.stdout, /Docker access preflight passed/);
+});
+
+test('preflight rejects cache subdirectory symlinks that resolve into the checkout', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-cache-symlink-'));
+  const checkout = createVerifierCheckout(tempRoot, 'writable checkout fixture');
+
+  try {
+    const result = runWithFakeDocker(
+      'echo docker should not run >&2; exit 0',
+      ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+      {},
+      null,
+      null,
+      checkout,
+      (cacheDir) => fs.symlinkSync(checkout, path.join(cacheDir, 'gradle'), 'dir'),
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /cache path resolves outside.*cache/i);
+    assert.doesNotMatch(result.stdout, /Docker access preflight passed/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('Docker access failures stop before an image build with actionable output', () => {
   const result = runWithFakeDocker('exit 1', [
     '--preflight-only',
@@ -810,6 +898,9 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /only a host\s+reachability\s+check/);
   assert.match(runbook, /Terraform working\s+directory data uses a unique per-run directory under the persistent cache/);
   assert.match(runbook, /records elapsed time from before host preflight through container\s+completion/);
+  assert.match(runbook, /clears inherited Git repository-selection\s+variables/);
+  assert.match(runbook, /cache directory and mounted cache children are writable and searchable/);
+  assert.match(runbook, /Cache-child symlinks that escape the selected cache directory are rejected/);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /AWS_EC2_METADATA_DISABLED=true/);
   assert.match(runbook, /AWS SDK\/CLI/);

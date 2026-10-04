@@ -41,10 +41,13 @@ user. After preflight it captures `HEAD` and creates a detached Git worktree at
 that exact revision. Docker builds from this snapshot and mounts it at
 `/workspace`; the invoking checkout itself is never mounted. Build/test output
 is isolated in the temporary snapshot, which is removed when the verifier
-exits. The wrapper resolves the snapshot's Git directory and common directory,
-mounts the common directory read-only at its original absolute path, and does
-not export a global `GIT_DIR`, so tools that inspect their own checkout retain
-normal Git discovery.
+exits. At launch, the wrapper clears inherited Git repository-selection
+variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and `GIT_INDEX_FILE`)
+so revision discovery and cleanliness checks always refer to the checkout
+containing the script. The wrapper resolves the snapshot's Git directory and
+common directory, mounts the common directory read-only at its original
+absolute path, and does not export a global `GIT_DIR`, so tools that inspect
+their own checkout retain normal Git discovery.
 The wrapper is Git worktree-safe and forwards the invoking user's
 non-primary supplementary groups so group-owned cache mounts remain writable
 inside the container.
@@ -64,8 +67,11 @@ bounded retry policy below.
 
 Before building or running a container, the wrapper verifies that the checkout
 has no tracked changes or non-ignored untracked files, the Dockerfile exists,
-the cache directory is writable, the cache filesystem has at least 2 GB free by
-default, and `docker info` succeeds. Ignored generated build output is allowed;
+the cache directory and mounted cache children are writable and searchable,
+their resolved paths remain beneath the selected cache directory, the cache
+filesystem has at least 2 GB free by default, and `docker info` succeeds.
+Cache-child symlinks that escape the selected cache directory are rejected
+before Docker access. Ignored generated build output is allowed;
 source, test, Terraform, and other non-ignored untracked files are rejected so
 the reported revision matches the mounted checkout. If the account belongs to
 `docker` but the current process does not
