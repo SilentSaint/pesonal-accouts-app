@@ -89,40 +89,63 @@ available. Force pushes and branch deletion on `main` are prohibited. Every
 change reaches `main` through a pull request; no direct commit or automation
 write to `main` is permitted.
 
-The repository owner controls the merge boundary. The owner may explicitly
-authorize autonomous merging for a particular pull request as part of a
-dark-factory task; that task-scoped authorization is not a general bypass. The
-watcher must still use the protected pull-request merge path and satisfy every
-review and check gate.
+The repository owner controls the merge boundary. The owner has granted
+standing authorization for autonomous merging when the configured Codex review
+bot posts the exact message:
+`Codex Review: Didn't find any major issues. Keep it up!`
+for the current PR head. This signal is valid only for the head SHA the bot
+reviewed; it is not a bypass for any review or check gate below. A changed head
+invalidates the signal. The watcher must merge through the pull-request path
+and satisfy every review and check gate.
 
 ### Dark-factory review loop
 
-Creating an issue-scoped PR is the trigger to start the review watcher. The
-watcher must:
+Creating an issue-scoped PR is the trigger to start the review watcher. Before
+the PR-creation task yields, arm a quiet Codex heartbeat automation in that
+same task, bound to the PR URL/number and the exact current head SHA. On each
+heartbeat, compare the live head with the tracked SHA; if it changed, invalidate
+all prior review/approval signals, refresh the tracked SHA, and verify that a
+review was triggered for the new head. After each fix commit, refresh the
+tracked SHA and invalidate prior approvals. The heartbeat is the durable
+watcher; a GitHub review request alone does not keep the Codex task alive. If
+heartbeat automation is unavailable, keep the task active and wait for the
+review response rather than reporting completion or handing off. The watcher
+must:
 
-1. Request an `@codex` review as soon as the PR is created.
-2. For cycles 1 through 9, inspect every actionable request, implement the fixes
+1. On creation, verify that Codex review was triggered. If no review is pending
+   or present, request `@codex review` once; do not create duplicate requests
+   when GitHub already started the automatic review. Record the requested and
+   reviewed head SHAs.
+2. Before implementing actionable review feedback, run the local `code-review`
+   skill on the PR diff so its Standards and Spec agents review in parallel.
+   Use those findings with the bot's feedback to scope the fix. If agents cannot
+   be started, report the limitation and do not silently claim the local review
+   step was completed.
+3. For cycles 1 through 9, inspect every actionable request, implement the fixes
    on the PR branch, run focused validation, reply to the review, resolve the
    addressed conversations, and request another review.
-3. Count one request-and-response sequence as one review cycle. Cycle 10 is the
+4. Count one request-and-response sequence as one review cycle. Cycle 10 is the
    final automated response: if it contains actionable feedback, leave the PR
    unchanged, do not start cycle 11, and notify the owner with the cycle count
    and blocker. The owner decides whether to continue manually. A clean cycle 10
    may proceed to the merge gate. If the head changes after cycle 10, do not reset
    the cap or start another automated cycle: invalidate the prior approval, leave
    the PR unchanged, and hand it to the owner for a fresh manual decision.
-4. Treat a Codex `+1`/thumbs-up reaction on the PR itself as the technical
-   approval signal only for the head SHA that Codex reviewed. The watcher must
-   record the reviewed head SHA and compare it with the current head before
-   merging; any new commit invalidates the prior approval and requires another
-   review. Reactions on review comments, our own comments, or text-only comments
+5. Treat either the exact Codex review message
+   `Codex Review: Didn't find any major issues. Keep it up!` or a Codex `+1`/
+   thumbs-up reaction on the PR itself as the technical approval signal, only
+   for the head SHA Codex reviewed. Verify the author's bot identity, record
+   the reviewed head SHA, and compare it with the current head before merging;
+   any new commit invalidates the prior approval and requires another review.
+   Reactions on review comments, our own comments, and other text-only comments
    do not satisfy this gate.
-5. Merge only when the PR-level Codex approval is present, no actionable review
-   conversations remain unresolved, the PR is mergeable, and required checks are
-   acceptable. If the owner explicitly authorizes autonomous merging for this
-   PR, the watcher may merge through the pull-request path; otherwise it stops
-   and hands off to the owner. This never authorizes a direct write to `main`.
-6. After merge, perform a read-only verification against the exact merged SHA.
+6. Merge only when a valid current-head Codex approval is present, no actionable
+   review conversations remain unresolved, the PR is mergeable, the exact-head
+   local Docker gate passes, and required checks are acceptable. No other
+   approval signal conveys merge authorization without separate explicit owner
+   approval. Merge through the pull-request path only; never write directly to
+   `main`.
+7. After merge, perform a read-only verification against the exact merged SHA.
    Never apply infrastructure automatically as a post-merge step.
 
 The watcher stays quiet while the PR and review state are unchanged and reports
