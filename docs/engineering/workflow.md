@@ -89,13 +89,12 @@ available. Force pushes and branch deletion on `main` are prohibited. Every
 change reaches `main` through a pull request; no direct commit or automation
 write to `main` is permitted.
 
-The repository owner performs the final human review and retains merge
-authority. Automated Codex reviews and local Standards/Spec reviews may provide
-advisory technical feedback; they do not replace the owner's final
-review/approval or authorize agents to merge. A valid Codex review comment or
-qualifying PR-level thumbs-up remains a technical review outcome only. The
-watcher reports when all gates are satisfied and hands the PR to the owner for
-the merge decision.
+The repository owner grants standing authorization for the agent to merge a PR
+when a qualifying current-head Codex approval and every merge gate below pass.
+That approval is the owner's delegated merge signal only under those
+conditions; it is not a bypass for review, validation, mergeability,
+required-check, branch-protection, or exact-head gates. Ambiguous or incomplete
+evidence leaves the PR unmerged and is handed to the owner.
 
 ### Dark-factory review loop
 
@@ -155,14 +154,22 @@ must:
    hand it to the owner. Reactions on review comments, reactions from the
    owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
-6. Report the PR ready for its owner only when a valid current-head Codex
-   approval is present, no actionable review conversations remain unresolved,
-   the PR is mergeable, the exact-head local Docker gate passes, and required
-   checks are acceptable. Only the owner merges through the pull-request path;
-   review approval is not merge authorization for an agent. Never write
-   directly to `main`.
-7. After merge, perform a read-only verification against the exact merged SHA.
-   Never apply infrastructure automatically as a post-merge step.
+6. Merge only when a valid current-head Codex approval is present, no actionable
+   review conversations remain unresolved, the PR is mergeable, the full local
+   Docker gate passes on the exact current head without AWS credentials or
+   production mutations, and all required checks are acceptable. A missing,
+   failing, or stale required check fails closed and requires fresh validation.
+   Immediately before merging, re-fetch the PR and record the verified current
+   `expected_head_sha`; if the head or any gate evidence differs, invalidate the
+   prior approval and gate results and require fresh review and validation.
+   When every gate passes, invoke the GitHub connector's
+   `github_merge_pull_request` operation with that verified `expected_head_sha`.
+   Never write directly to `main`, enable auto-merge as a shortcut, or
+   deploy/mutate AWS. Any ambiguous or incomplete evidence leaves the PR
+   unmerged and is handed to the owner.
+7. After the merge operation, verify the returned merged SHA and the resulting
+   PR/ref state read-only against the exact expected result. Never apply
+   infrastructure automatically as a post-merge step.
 
 The watcher stays quiet while the PR and review state are unchanged and reports
 only meaningful review changes, completed fixes, cycle-limit stops, merge or

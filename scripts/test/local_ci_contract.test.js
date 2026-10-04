@@ -256,7 +256,7 @@ test('Codex PR review automation stays bound to the reviewed current head', () =
   );
   assert.match(workflow, /valid current-head Codex\s+approval/);
   assert.match(workflow, /no actionable\s+review conversations remain unresolved/);
-  assert.match(workflow, /exact-head\s+local Docker gate passes/);
+  assert.match(workflow, /full local\s+Docker gate passes on the exact current head/);
 });
 
 test('Codex review comments accept clear equivalent approval wording for the reviewed head', () => {
@@ -275,24 +275,58 @@ test('Codex review comments accept clear equivalent approval wording for the rev
   assert.match(workflow, /any new commit after that\s+review.*invalidates the signal/is);
 });
 
-test('Codex approval signals do not grant agents merge authority', () => {
+test('qualifying Codex approval grants conditional agent merge authority', () => {
   const agents = read('AGENTS.md');
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(agents, /canonical engineering workflow for\s+the final human review and merge boundary/i);
-  assert.match(agents, /Automated Codex and local\s+Standards\/Spec reviews are advisory inputs only/i);
-  assert.match(agents, /never authorize agents to\s+merge/i);
-  assert.match(workflow, /repository owner performs the final human review and retains merge\s+authority/i);
-  assert.match(workflow, /Automated Codex reviews and local Standards\/Spec reviews may provide\s+advisory technical feedback/i);
-  assert.match(workflow, /do not replace the owner's final\s+review\/approval or authorize agents to merge/i);
-  assert.match(workflow, /review approval is not merge authorization for an agent/i);
-  assert.doesNotMatch(workflow, /standing authorization for autonomous merging/i);
+  assert.match(agents, /owner grants standing\s+authorization for the agent to merge/i);
+  assert.match(
+    agents,
+    /qualifying Codex signal and\s+every merge gate in the canonical engineering workflow pass/i,
+  );
+  assert.match(agents, /GitHub connector's protected\s+pull-request merge operation/i);
+  assert.match(agents, /verified current `expected_head_sha`/i);
+  assert.match(workflow, /owner grants standing authorization for the agent to merge/i);
+  assert.match(workflow, /qualifying current-head Codex approval and every merge gate below pass/i);
+  assert.doesNotMatch(agents, /only the repository owner reviews and merges/i);
+  assert.doesNotMatch(agents, /must not merge/i);
+  assert.doesNotMatch(workflow, /only the owner merges through the pull-request path/i);
+  assert.doesNotMatch(workflow, /review approval is not merge authorization for an agent/i);
+});
+
+test('merge gate fails closed on incomplete review or validation evidence', () => {
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(workflow, /no actionable\s+review conversations remain unresolved/i);
+  assert.match(workflow, /the PR is mergeable/i);
+  assert.match(
+    workflow,
+    /full local\s+Docker gate passes on the exact current head without AWS credentials or\s+production mutations/i,
+  );
+  assert.match(workflow, /all required checks are acceptable/i);
+  assert.match(workflow, /missing,\s+failing, or stale required check fails closed/i);
+  assert.match(
+    workflow,
+    /head or any gate evidence differs, invalidate the\s+prior approval and gate results and require fresh review and validation/i,
+  );
+  assert.match(workflow, /ambiguous or incomplete\s+evidence leaves the PR unmerged and is handed to the owner/i);
+});
+
+test('authorized merge uses the protected connector path and verifies the merged SHA', () => {
+  const agents = read('AGENTS.md');
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(agents, /GitHub connector's protected\s+pull-request merge operation/i);
+  assert.match(workflow, /invoke the GitHub connector's\s+`github_merge_pull_request` operation with that verified `expected_head_sha`/i);
+  assert.match(workflow, /Never write directly to `main`, enable auto-merge as a shortcut, or\s+deploy\/mutate AWS/i);
+  assert.match(workflow, /verify the returned merged SHA and the resulting\s+PR\/ref state read-only/i);
 });
 
 test('Codex PR reactions are correlated to one tracked review request and head', () => {
   const workflow = read('docs/engineering/workflow.md');
 
   assert.match(workflow, /record\s+the request timestamp and head SHA/i);
+  assert.match(workflow, /associate it with exactly one recorded\s+review request/i);
   assert.match(workflow, /on the PR itself and comes from the configured Codex review bot/i);
   assert.match(workflow, /reaction timestamp must be after the recorded request/i);
   assert.match(workflow, /current PR head must still match the tracked head/i);

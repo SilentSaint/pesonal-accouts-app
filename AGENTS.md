@@ -76,11 +76,13 @@ All agents working on the backlog MUST follow these rules:
    to `main`.
 3. **PR validation**: open a pull request against canonical `main` after the
    local Docker verifier validates the exact revision under review.
-4. **Owner-controlled merge**: follow the canonical engineering workflow for
-   the final human review and merge boundary. Automated Codex and local
-   Standards/Spec reviews are advisory inputs only and never authorize agents to
-   merge. Agents may prepare commits and pull requests but must not bypass merge
-   protection or the guarded release path.
+4. **Owner-authorized merge**: the repository owner grants standing
+   authorization for the agent to merge when the qualifying Codex signal and
+   every merge gate in the canonical engineering workflow pass. The agent MUST
+   use the GitHub connector's protected pull-request merge operation with the
+   verified current `expected_head_sha`; never write directly to `main`, enable
+   auto-merge as a shortcut, deploy, or mutate AWS. Ambiguous or incomplete
+   evidence leaves the PR unmerged and returns it to the owner.
 5. **Least-privilege access**: agent credentials should be limited to the
    required CodeCommit read/write and pull-request operations. Do not grant
    production deployment, Terraform apply, IAM administration, or account
