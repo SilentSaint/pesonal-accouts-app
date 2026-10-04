@@ -338,12 +338,20 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
   assert.match(workflow, /ambiguous or incomplete\s+evidence leaves the PR unmerged and is handed to the owner/i);
 });
 
-test('authorized merge uses the protected connector path and verifies the merged SHA', () => {
+test('authorized merge routes by serialization mechanism and verifies the merged SHA', () => {
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(workflow, /invoke the GitHub connector's\s+`github_merge_pull_request` operation with that verified `expected_head_sha`/i);
+  assert.match(
+    workflow,
+    /strict branch-protection\/ruleset gate or repository-wide serialization\s+lock, invoke the GitHub connector's\s+`github_merge_pull_request` operation with\s+the verified `expected_head_sha`/i,
+  );
+  assert.match(workflow, /for a merge queue, use a queue-capable\s+asynchronous\/enqueue operation with that verified head instead/i);
+  assert.match(workflow, /never call\s+the ordinary merge endpoint as a queue fallback/i);
+  assert.match(workflow, /Treat an `enqueued` result as\s+pending rather than as a merged SHA/i);
+  assert.match(workflow, /wait for the queue to report the actual\s+merge/i);
+  assert.match(workflow, /no queue-capable operation, or enqueue fails, is cancelled,\s+times out, or cannot be verified as merged, leave the PR unmerged and hand it\s+to the owner/i);
   assert.match(workflow, /Never write directly to `main`, enable auto-merge as a shortcut, or\s+deploy\/mutate AWS/i);
-  assert.match(workflow, /verify the returned merged SHA and the resulting\s+PR\/ref state read-only/i);
+  assert.match(workflow, /verify the\s+returned\/eventual merged SHA and the resulting PR\/ref state read-only/i);
 });
 
 test('Codex PR reactions are correlated to one tracked review request and head', () => {

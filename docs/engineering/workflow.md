@@ -172,14 +172,24 @@ must:
    serialization lock that covers this final refresh through merge. The callable
    head guard alone does not serialize `main`. If no such active gate is present,
    leave the PR unmerged and hand it to the owner.
-   When every gate passes, invoke the GitHub connector's
-   `github_merge_pull_request` operation with that verified `expected_head_sha`.
+   Select the merge operation that matches the active serialization mechanism:
+   for a strict branch-protection/ruleset gate or repository-wide serialization
+   lock, invoke the GitHub connector's `github_merge_pull_request` operation with
+   the verified `expected_head_sha`; for a merge queue, use a queue-capable
+   asynchronous/enqueue operation with that verified head instead and never call
+   the ordinary merge endpoint as a queue fallback. Treat an `enqueued` result as
+   pending rather than as a merged SHA, wait for the queue to report the actual
+   merge, and then perform step 7 against that eventual merged SHA. If the
+   connector has no queue-capable operation, or enqueue fails, is cancelled,
+   times out, or cannot be verified as merged, leave the PR unmerged and hand it
+   to the owner.
    Never write directly to `main`, enable auto-merge as a shortcut, or
    deploy/mutate AWS. Any ambiguous or incomplete evidence leaves the PR
    unmerged and is handed to the owner.
-7. After the merge operation, verify the returned merged SHA and the resulting
-   PR/ref state read-only against the exact expected result. Never apply
-   infrastructure automatically as a post-merge step.
+7. After a direct merge operation or confirmed queue completion, verify the
+   returned/eventual merged SHA and the resulting PR/ref state read-only against
+   the exact expected result. Never apply infrastructure automatically as a
+   post-merge step.
 
 The watcher stays quiet while the PR and review state are unchanged and reports
 only meaningful review changes, completed fixes, cycle-limit stops, merge or
