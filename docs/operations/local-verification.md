@@ -70,8 +70,8 @@ has no tracked changes or non-ignored untracked files, the Dockerfile exists,
 the cache directory and mounted cache children are writable and searchable,
 their resolved paths remain beneath the selected cache directory, the cache
 filesystem has at least 2 GB free by default, and `docker info` succeeds.
-Cache-child symlinks that escape the selected cache directory are rejected
-before Docker access. Ignored generated build output is allowed;
+Cache-child symlinks and aliases are rejected before Docker access so distinct
+cache roles cannot overlap. Ignored generated build output is allowed;
 source, test, Terraform, and other non-ignored untracked files are rejected so
 the reported revision matches the mounted checkout. If the account belongs to
 `docker` but the current process does not

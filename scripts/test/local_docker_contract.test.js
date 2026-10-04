@@ -565,7 +565,9 @@ test('preflight checks mounted cache subdirectories before Docker starts', () =>
   assert.doesNotMatch(result.stderr, /Docker access preflight passed/);
 });
 
-test('preflight rejects cache subdirectories that cannot be searched', () => {
+test('preflight rejects cache subdirectories that cannot be searched', {
+  skip: process.getuid() === 0 ? 'root bypasses directory search mode bits' : false,
+}, () => {
   const result = runWithFakeDocker(
     'echo docker should not run >&2; exit 0',
     ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
@@ -600,6 +602,26 @@ test('preflight rejects cache subdirectory symlinks that resolve into the checko
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('preflight rejects cache child symlinks that alias another cache child', () => {
+  const result = runWithFakeDocker(
+    'echo docker should not run >&2; exit 0',
+    ['--preflight-only', '--cache-dir', '__CACHE_DIR__'],
+    {},
+    null,
+    null,
+    root,
+    (cacheDir) => fs.symlinkSync(
+      path.join(cacheDir, 'terraform', 'data'),
+      path.join(cacheDir, 'worktrees'),
+      'dir',
+    ),
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cache.*(symlink|alias|overlap)/i);
+  assert.doesNotMatch(result.stdout, /Docker access preflight passed/);
 });
 
 test('Docker access failures stop before an image build with actionable output', () => {
@@ -900,7 +922,7 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /records elapsed time from before host preflight through container\s+completion/);
   assert.match(runbook, /clears inherited Git repository-selection\s+variables/);
   assert.match(runbook, /cache directory and mounted cache children are writable and searchable/);
-  assert.match(runbook, /Cache-child symlinks that escape the selected cache directory are rejected/);
+  assert.match(runbook, /Cache-child symlinks and aliases are rejected before Docker access/);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /AWS_EC2_METADATA_DISABLED=true/);
   assert.match(runbook, /AWS SDK\/CLI/);

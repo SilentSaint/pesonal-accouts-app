@@ -217,13 +217,15 @@ cache_path_is_contained() {
     echo "Unable to resolve local verification cache path: $cache_path" >&2
     return 1
   fi
-  case "$resolved_cache_path" in
-    "$CACHE_DIR"/*)
-      return 0
-      ;;
-  esac
-  echo "Local verification cache path resolves outside the selected cache directory: $cache_path -> $resolved_cache_path" >&2
-  return 1
+  if [[ "$resolved_cache_path" != "$CACHE_DIR"/* ]]; then
+    echo "Local verification cache path resolves outside the selected cache directory: $cache_path -> $resolved_cache_path" >&2
+    return 1
+  fi
+  if [[ "$resolved_cache_path" != "$cache_path" ]]; then
+    echo "Local verification cache path uses a symbolic-link alias: $cache_path -> $resolved_cache_path" >&2
+    return 1
+  fi
+  return 0
 }
 
 prepare_cache() {
