@@ -239,8 +239,7 @@ test('developer build instructions use the local verifier', () => {
   assert.doesNotMatch(verifierContract, deletedVerifierReference);
 });
 
-test('Codex PR review automation stays bound to the authorized current head', () => {
-  const agents = read('AGENTS.md');
+test('Codex PR review automation stays bound to the reviewed current head', () => {
   const workflow = read('docs/engineering/workflow.md');
 
   assert.match(workflow, /arm a quiet Codex heartbeat automation in that\s+same task/);
@@ -253,14 +252,50 @@ test('Codex PR review automation stays bound to the authorized current head', ()
   assert.match(workflow, /Standards and Spec agents review in parallel/);
   assert.ok(
     workflow.includes("`Codex Review: Didn't find any major issues. Keep it up!`"),
-    'the exact Codex review authorization message must be preserved',
+    'the canonical Codex review wording must remain documented',
   );
-  assert.match(workflow, /valid current-head Codex approval/);
+  assert.match(workflow, /valid current-head Codex\s+approval/);
   assert.match(workflow, /no actionable\s+review conversations remain unresolved/);
   assert.match(workflow, /exact-head\s+local Docker gate passes/);
-  assert.match(workflow, /Merge through the pull-request path only; never write directly to\s+`main`/);
-  assert.match(
-    agents,
-    /Agents may merge only when the canonical engineering\s+workflow authorizes it and its gates pass\./,
-  );
+});
+
+test('Codex review comments accept clear equivalent approval wording for the reviewed head', () => {
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(workflow, /classify the complete Codex review comment by meaning, not exact wording/i);
+  assert.match(workflow, /author is the configured Codex review bot/i);
+  assert.match(workflow, /explicitly state\s+no major issues or an equivalent unambiguous\s+approval/i);
+  assert.match(workflow, /Nice work!/);
+  assert.match(workflow, /LGTM|Looks good to me/);
+  assert.match(workflow, /praise alone is not/i);
+  assert.match(workflow, /actionable findings, requests\s+for changes, caveats, conditional approval, or mixed feedback are not an\s+approval/i);
+  assert.match(workflow, /reviewed head SHA.*current PR head/is);
+  assert.match(workflow, /review record unambiguously associated with that comment/i);
+  assert.match(workflow, /missing\/ambiguous SHA[\s\S]*invalidates the signal/i);
+  assert.match(workflow, /any new commit after that\s+review.*invalidates the signal/is);
+});
+
+test('Codex approval signals do not grant agents merge authority', () => {
+  const agents = read('AGENTS.md');
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(agents, /canonical engineering workflow for\s+the final human review and merge boundary/i);
+  assert.match(agents, /Automated Codex and local\s+Standards\/Spec reviews are advisory inputs only/i);
+  assert.match(agents, /never authorize agents to\s+merge/i);
+  assert.match(workflow, /repository owner performs the final human review and retains merge\s+authority/i);
+  assert.match(workflow, /Automated Codex reviews and local Standards\/Spec reviews may provide\s+advisory technical feedback/i);
+  assert.match(workflow, /do not replace the owner's final\s+review\/approval or authorize agents to merge/i);
+  assert.match(workflow, /review approval is not merge authorization for an agent/i);
+  assert.doesNotMatch(workflow, /standing authorization for autonomous merging/i);
+});
+
+test('Codex PR reactions are correlated to one tracked review request and head', () => {
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(workflow, /record\s+the request timestamp and head SHA/i);
+  assert.match(workflow, /on the PR itself and comes from the configured Codex review bot/i);
+  assert.match(workflow, /reaction timestamp must be after the recorded request/i);
+  assert.match(workflow, /current PR head must still match the tracked head/i);
+  assert.match(workflow, /multiple possible\s+requests or any head change make the association ambiguous/i);
+  assert.match(workflow, /Reactions on review comments, reactions from the\s+owner\/other actors.*do not satisfy this gate/is);
 });

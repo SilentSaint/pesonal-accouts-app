@@ -89,14 +89,13 @@ available. Force pushes and branch deletion on `main` are prohibited. Every
 change reaches `main` through a pull request; no direct commit or automation
 write to `main` is permitted.
 
-The repository owner controls the merge boundary. The owner has granted
-standing authorization for autonomous merging when the configured Codex review
-bot posts the exact message:
-`Codex Review: Didn't find any major issues. Keep it up!`
-for the current PR head. This signal is valid only for the head SHA the bot
-reviewed; it is not a bypass for any review or check gate below. A changed head
-invalidates the signal. The watcher must merge through the pull-request path
-and satisfy every review and check gate.
+The repository owner performs the final human review and retains merge
+authority. Automated Codex reviews and local Standards/Spec reviews may provide
+advisory technical feedback; they do not replace the owner's final
+review/approval or authorize agents to merge. A valid Codex review comment or
+qualifying PR-level thumbs-up remains a technical review outcome only. The
+watcher reports when all gates are satisfied and hands the PR to the owner for
+the merge decision.
 
 ### Dark-factory review loop
 
@@ -114,8 +113,9 @@ must:
 
 1. On creation, verify that Codex review was triggered. If no review is pending
    or present, request `@codex review` once; do not create duplicate requests
-   when GitHub already started the automatic review. Record the requested and
-   reviewed head SHAs.
+   when GitHub already started the automatic review. For each request, record
+   the request timestamp and head SHA; record the reviewed SHA when a response
+   arrives.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -131,20 +131,36 @@ must:
    may proceed to the merge gate. If the head changes after cycle 10, do not reset
    the cap or start another automated cycle: invalidate the prior approval, leave
    the PR unchanged, and hand it to the owner for a fresh manual decision.
-5. Treat either the exact Codex review message
-   `Codex Review: Didn't find any major issues. Keep it up!` or a Codex `+1`/
-   thumbs-up reaction on the PR itself as the technical approval signal, only
-   for the head SHA Codex reviewed. Verify the author's bot identity, record
-   the reviewed head SHA, and compare it with the current head before merging;
-   any new commit invalidates the prior approval and requires another review.
-   Reactions on review comments, our own comments, and other text-only comments
+5. For a review comment, verify the author is the configured Codex review bot,
+   then classify the complete Codex review comment by meaning, not exact wording.
+   It must explicitly state no major issues or an equivalent unambiguous
+   approval. The existing “Keep it up!” verdict and equivalent forms such as
+   “Nice work!”, “LGTM”, or “Looks good to me” are acceptable when they express
+   that clear review verdict; praise alone is not. Actionable findings, requests
+   for changes, caveats, conditional approval, or mixed feedback are not an
+   approval. Ambiguous wording fails closed and is handed to the owner.
+   Preserve the canonical example
+   `Codex Review: Didn't find any major issues. Keep it up!`.
+   Bind the approval to the reviewed head SHA: the SHA in the bot comment or a
+   review record unambiguously associated with that comment must match the
+   current PR head. A missing/ambiguous SHA, or any new commit after that
+   review, invalidates the signal.
+
+   A Codex `+1`/thumbs-up reaction can also be a technical approval signal only
+   when it is on the PR itself and comes from the configured Codex review bot.
+   Since the reaction carries no SHA, associate it with exactly one recorded
+   review request: its reaction timestamp must be after the recorded request,
+   and the current PR head must still match the tracked head. Multiple possible
+   requests or any head change make the association ambiguous; fail closed and
+   hand it to the owner. Reactions on review comments, reactions from the
+   owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
-6. Merge only when a valid current-head Codex approval is present, no actionable
-   review conversations remain unresolved, the PR is mergeable, the exact-head
-   local Docker gate passes, and required checks are acceptable. No other
-   approval signal conveys merge authorization without separate explicit owner
-   approval. Merge through the pull-request path only; never write directly to
-   `main`.
+6. Report the PR ready for its owner only when a valid current-head Codex
+   approval is present, no actionable review conversations remain unresolved,
+   the PR is mergeable, the exact-head local Docker gate passes, and required
+   checks are acceptable. Only the owner merges through the pull-request path;
+   review approval is not merge authorization for an agent. Never write
+   directly to `main`.
 7. After merge, perform a read-only verification against the exact merged SHA.
    Never apply infrastructure automatically as a post-merge step.
 
