@@ -272,14 +272,19 @@ test('Codex review comments accept clear equivalent approval wording for the rev
   assert.match(workflow, /reviewed head SHA.*current PR head/is);
   assert.match(workflow, /review record unambiguously associated with that comment/i);
   assert.match(workflow, /missing\/ambiguous SHA[\s\S]*invalidates the signal/i);
+  assert.match(workflow, /any new commit after that\s+review.*invalidates the signal/is);
 });
 
 test('Codex approval signals do not grant agents merge authority', () => {
   const agents = read('AGENTS.md');
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(agents, /only the repository owner reviews and merges/);
-  assert.match(workflow, /only the repository owner\s+merges pull requests/i);
+  assert.match(agents, /canonical engineering workflow for\s+the final human review and merge boundary/i);
+  assert.match(agents, /Automated Codex and local\s+Standards\/Spec reviews are advisory inputs only/i);
+  assert.match(agents, /never authorize agents to\s+merge/i);
+  assert.match(workflow, /repository owner performs the final human review and retains merge\s+authority/i);
+  assert.match(workflow, /Automated Codex reviews and local Standards\/Spec reviews may provide\s+advisory technical feedback/i);
+  assert.match(workflow, /do not replace the owner's final\s+review\/approval or authorize agents to merge/i);
   assert.match(workflow, /review approval is not merge authorization for an agent/i);
   assert.doesNotMatch(workflow, /standing authorization for autonomous merging/i);
 });

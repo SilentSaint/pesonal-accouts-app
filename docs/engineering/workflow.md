@@ -89,11 +89,13 @@ available. Force pushes and branch deletion on `main` are prohibited. Every
 change reaches `main` through a pull request; no direct commit or automation
 write to `main` is permitted.
 
-The repository owner controls the merge boundary, and only the repository owner
-merges pull requests. A valid Codex review comment or qualifying PR-level
-thumbs-up is a technical review outcome only; it never authorizes an agent to
-merge. The watcher reports when all gates are satisfied and hands the PR to the
-owner for the merge decision.
+The repository owner performs the final human review and retains merge
+authority. Automated Codex reviews and local Standards/Spec reviews may provide
+advisory technical feedback; they do not replace the owner's final
+review/approval or authorize agents to merge. A valid Codex review comment or
+qualifying PR-level thumbs-up remains a technical review outcome only. The
+watcher reports when all gates are satisfied and hands the PR to the owner for
+the merge decision.
 
 ### Dark-factory review loop
 
