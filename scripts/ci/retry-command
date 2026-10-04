@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# < 2)); then
+  echo "Usage: scripts/ci/retry-command LABEL COMMAND [ARGUMENT ...]" >&2
+  exit 64
+fi
+
+label="$1"
+shift
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/retry-policy.sh"
+RETRY_ATTEMPTS="${LOCAL_VERIFIER_RETRY_ATTEMPTS:-3}"
+RETRY_DELAY_SECONDS="${LOCAL_VERIFIER_RETRY_DELAY_SECONDS:-2}"
+retry_policy_normalize
+attempts="$RETRY_ATTEMPTS"
+delay_seconds="$RETRY_DELAY_SECONDS"
+
+attempt=1
+status=0
+while ((attempt <= attempts)); do
+  if "$@"; then
+    exit 0
+  else
+    status=$?
+  fi
+  if ((attempt == attempts)); then
+    echo "$label failed after $attempt attempt(s)." >&2
+    exit "$status"
+  fi
+  backoff=$((delay_seconds * attempt))
+  echo "$label failed on attempt $attempt/$attempts; retrying in ${backoff}s." >&2
+  sleep "$backoff"
+  attempt=$((attempt + 1))
+done
