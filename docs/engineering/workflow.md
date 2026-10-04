@@ -114,7 +114,7 @@ must:
    or present, request `@codex review` once; do not create duplicate requests
    when GitHub already started the automatic review. For each request, record
    the request timestamp and head SHA; record the reviewed SHA when a response
-   arrives.
+   arrives. Track the base branch SHA alongside the reviewed head SHA.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -160,9 +160,12 @@ must:
    production mutations, all required checks are acceptable, and any configured
    maintainer-approval requirement is satisfied. A missing,
    failing, or stale required check fails closed and requires fresh validation.
-   Immediately before merging, re-fetch the PR and record the verified current
-   `expected_head_sha`; if the head or any gate evidence differs, invalidate the
-   prior approval and gate results and require fresh review and validation.
+   Immediately before merging, re-fetch the PR and the current `main` ref. Record
+   the verified current `expected_head_sha`, the PR `base_sha`, and the current
+   `main` SHA; require the PR base to equal the current `main` SHA. If the head,
+   base, or any gate evidence differs, invalidate the prior approval and gate
+   results and require the branch to be updated/rebased and fresh review and
+   validation.
    When every gate passes, invoke the GitHub connector's
    `github_merge_pull_request` operation with that verified `expected_head_sha`.
    Never write directly to `main`, enable auto-merge as a shortcut, or

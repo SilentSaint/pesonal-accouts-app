@@ -257,6 +257,7 @@ test('Codex PR review automation stays bound to the reviewed current head', () =
   assert.match(workflow, /valid current-head Codex\s+approval/);
   assert.match(workflow, /no actionable\s+review conversations remain unresolved/);
   assert.match(workflow, /full local\s+Docker gate passes on the exact current head/);
+  assert.match(workflow, /track(?:ed)?\s+the\s+base branch SHA alongside the reviewed head SHA/i);
 });
 
 test('Codex review comments accept clear equivalent approval wording for the reviewed head', () => {
@@ -317,8 +318,14 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
   assert.match(workflow, /missing,\s+failing, or stale required check fails closed/i);
   assert.match(
     workflow,
-    /head or any gate evidence differs, invalidate the\s+prior approval and gate results and require fresh review and validation/i,
+    /head,\s+base, or any gate evidence differs, invalidate the\s+prior approval and gate\s+results and require the branch to be updated\/rebased and fresh review and\s+validation/i,
   );
+  assert.match(workflow, /re-fetch the PR and the current `main` ref/i);
+  assert.match(
+    workflow,
+    /record\s+the verified current `expected_head_sha`,\s+the PR `base_sha`, and the current\s+`main` SHA/i,
+  );
+  assert.match(workflow, /require the PR base to equal the current `main` SHA/i);
   assert.match(workflow, /ambiguous or incomplete\s+evidence leaves the PR unmerged and is handed to the owner/i);
 });
 
