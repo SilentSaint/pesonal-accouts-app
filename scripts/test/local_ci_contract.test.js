@@ -318,7 +318,7 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
   assert.match(workflow, /missing,\s+failing, or stale required check fails closed/i);
   assert.match(
     workflow,
-    /head,\s+base, or any gate evidence differs, invalidate the\s+prior approval and gate\s+results and require the branch to be updated\/rebased and fresh review and\s+validation/i,
+    /head,\s+base,\s+ancestry, or any gate evidence differs,\s+invalidate the\s+prior approval and gate\s+results and require the branch to be\s+updated\/rebased and fresh review and\s+validation/i,
   );
   assert.match(workflow, /re-fetch the PR and the current `main` ref/i);
   assert.match(
@@ -326,6 +326,15 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
     /record\s+the verified current `expected_head_sha`,\s+the PR `base_sha`, and the current\s+`main` SHA/i,
   );
   assert.match(workflow, /require the PR base to equal the current `main` SHA/i);
+  assert.match(workflow, /verify\s+the\s+current `main` SHA is an ancestor of the PR head/i);
+  assert.match(workflow, /base equality check alone\s+is\s+insufficient/i);
+  assert.match(
+    workflow,
+    /active strict server-side\s+(?:up-to-date )?branch-protection(?:\/ruleset)? gate, a merge queue, or a repository-wide\s+serialization lock/i,
+  );
+  assert.match(workflow, /covers this final refresh through merge/i);
+  assert.match(workflow, /callable\s+head guard alone does not serialize\s+`main`/i);
+  assert.match(workflow, /if no such active gate is present,\s+leave the PR unmerged and hand it to the owner/i);
   assert.match(workflow, /ambiguous or incomplete\s+evidence leaves the PR unmerged and is handed to the owner/i);
 });
 

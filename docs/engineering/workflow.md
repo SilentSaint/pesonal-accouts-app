@@ -162,10 +162,16 @@ must:
    failing, or stale required check fails closed and requires fresh validation.
    Immediately before merging, re-fetch the PR and the current `main` ref. Record
    the verified current `expected_head_sha`, the PR `base_sha`, and the current
-   `main` SHA; require the PR base to equal the current `main` SHA. If the head,
-   base, or any gate evidence differs, invalidate the prior approval and gate
-   results and require the branch to be updated/rebased and fresh review and
-   validation.
+   `main` SHA; require the PR base to equal the current `main` SHA and verify the
+   current `main` SHA is an ancestor of the PR head. A base equality check alone
+   is insufficient. If the head, base, ancestry, or any gate evidence differs,
+   invalidate the prior approval and gate results and require the branch to be
+   updated/rebased and fresh review and validation.
+   Before calling the merge operation, require an active strict server-side
+   up-to-date branch-protection/ruleset gate, a merge queue, or a repository-wide
+   serialization lock that covers this final refresh through merge. The callable
+   head guard alone does not serialize `main`. If no such active gate is present,
+   leave the PR unmerged and hand it to the owner.
    When every gate passes, invoke the GitHub connector's
    `github_merge_pull_request` operation with that verified `expected_head_sha`.
    Never write directly to `main`, enable auto-merge as a shortcut, or
