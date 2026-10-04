@@ -311,6 +311,65 @@ docker_access_preflight() {
   exit 126
 }
 
+dependency_network_preflight() {
+  local endpoint
+  local -a curl_args=(
+    --fail --head --location --silent --show-error
+    --connect-timeout 3 --max-time 8
+    --output /dev/null
+  )
+  local -a endpoints=(
+    "https://public.ecr.aws/"
+    "https://archive.ubuntu.com/ubuntu/"
+    "https://security.ubuntu.com/ubuntu/"
+    "https://apt.corretto.aws/corretto.key"
+    "https://nodejs.org/dist/"
+    "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.44.0-stable.tar.xz"
+    "https://services.gradle.org/distributions/gradle-8.7-bin.zip"
+    "https://repo.maven.apache.org/maven2/"
+    "https://registry.terraform.io/.well-known/terraform.json"
+    "https://releases.hashicorp.com/"
+    "https://pub.dev/"
+    "https://registry.npmjs.org/"
+  )
+  # Chromium revision 1134 is pinned by Playwright 1.47.2 in the Dockerfile.
+  local -a playwright_cdns=(
+    "https://playwright.azureedge.net/builds/chromium/1134/chromium-linux.zip"
+    "https://playwright-akamai.azureedge.net/builds/chromium/1134/chromium-linux.zip"
+    "https://playwright-verizon.azureedge.net/builds/chromium/1134/chromium-linux.zip"
+  )
+  local playwright_cdn_available=0
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "Dependency network preflight cannot run: curl is required on the host." >&2
+    echo "Install curl, or use a host with curl and outbound HTTPS access." >&2
+    exit 1
+  fi
+
+  for endpoint in "${endpoints[@]}"; do
+    if ! curl "${curl_args[@]}" "$endpoint" >/dev/null 2>&1; then
+      echo "Dependency network preflight failed: unable to reach $endpoint." >&2
+      echo "Check DNS, proxy, and outbound HTTPS access before starting the full verification." >&2
+      exit 1
+    fi
+  done
+
+  for endpoint in "${playwright_cdns[@]}"; do
+    if curl "${curl_args[@]}" "$endpoint" >/dev/null 2>&1; then
+      playwright_cdn_available=1
+      break
+    fi
+  done
+  if (( ! playwright_cdn_available )); then
+    echo "Dependency network preflight failed: unable to reach any Playwright Chromium CDN." >&2
+    echo "Check DNS, proxy, and outbound HTTPS access before starting the full verification." >&2
+    exit 1
+  fi
+
+  echo "Dependency network preflight passed."
+  echo "Playwright browser CDN preflight passed."
+}
+
 preflight() {
   "$ROOT_DIR/scripts/ci/retry-command" "Preflight retry policy" true
   local worktree_status
@@ -329,6 +388,7 @@ preflight() {
   fi
   prepare_cache
   docker_access_preflight
+  dependency_network_preflight
   SOURCE_REVISION="$(git -c "safe.directory=$ROOT_DIR" -C "$ROOT_DIR" rev-parse HEAD)"
   echo "Verification revision: $SOURCE_REVISION"
 }

@@ -49,6 +49,14 @@ The wrapper is Git worktree-safe and forwards the invoking user's
 non-primary supplementary groups so group-owned cache mounts remain writable
 inside the container.
 
+The host-side preflight also requires `curl` and checks HTTPS reachability for
+the Docker image and pinned toolchain sources, Gradle, Maven Central, Terraform
+Registry and releases, pub.dev, npm Registry, and at least one pinned Playwright
+Chromium CDN mirror before starting an image build. This catches common DNS,
+proxy, and outbound-network setup problems early; it is only a host reachability
+check, so downloads inside Docker can still fail and use the bounded retry
+policy below.
+
 Before building or running a container, the wrapper verifies that the checkout
 has no tracked changes or non-ignored untracked files, the Dockerfile exists,
 the cache directory is writable, the cache filesystem has at least 2 GB free by

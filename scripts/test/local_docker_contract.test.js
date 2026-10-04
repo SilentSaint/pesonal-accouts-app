@@ -17,6 +17,7 @@ function runWithFakeDocker(
 ) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-contract-'));
   const fakeDocker = path.join(tempRoot, 'docker');
+  const fakeCurl = path.join(tempRoot, 'curl');
   const fakeGit = path.join(tempRoot, 'git');
   const fakeMkdir = path.join(tempRoot, 'mkdir');
   const cacheDir = path.join(tempRoot, 'cache');
@@ -28,6 +29,19 @@ function runWithFakeDocker(
       '#!/usr/bin/env bash\nfor arg in "$@"; do\n  [[ "$arg" == diff || "$arg" == status ]] && exit 0\ndone\nexec /usr/bin/git "$@"\n',
   );
   fs.chmodSync(fakeDocker, 0o755);
+  fs.writeFileSync(
+    fakeCurl,
+    [
+      '#!/usr/bin/env bash',
+      'if [[ -n "$LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT" ]]; then',
+      '  for arg in "$@"; do',
+      '    [[ "$arg" == *"$LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT"* ]] && exit 7',
+      '  done',
+      'fi',
+      'exit 0',
+    ].join('\n'),
+  );
+  fs.chmodSync(fakeCurl, 0o755);
   fs.chmodSync(fakeGit, 0o755);
   if (fakeMkdirContents !== null) {
     fs.writeFileSync(fakeMkdir, fakeMkdirContents);
@@ -65,6 +79,11 @@ function runWithFakeDocker(
 }
 
 test('local verification exposes a safe, reproducible Docker contract', () => {
+  const wrapper = fs.readFileSync(verifier, 'utf8');
+  const dockerfile = fs.readFileSync(
+    path.join(root, 'ci', 'local-verification', 'Dockerfile'),
+    'utf8',
+  );
   const result = spawnSync(verifier, ['--print-config'], {
     cwd: root,
     encoding: 'utf8',
@@ -80,6 +99,8 @@ test('local verification exposes a safe, reproducible Docker contract', () => {
   assert.match(result.stdout, /Terraform mutation: validation only/);
   assert.match(result.stdout, /Docker access: preflighted/);
   assert.match(result.stdout, /Verification source: detached worktree snapshot of HEAD/);
+  assert.match(dockerfile, /PLAYWRIGHT_VERSION=1\.47\.2/);
+  assert.match(wrapper, /playwright\.azureedge\.net\/builds\/chromium\/1134\/chromium-linux\.zip/);
 });
 
 test('preflight accepts a persistent cache directory and checks Docker before the gate', () => {
@@ -99,6 +120,7 @@ test('Docker gate uses immutable source and helper snapshots when checkout chang
   const checkout = path.join(tempRoot, 'checkout');
   const cacheDir = path.join(tempRoot, 'cache');
   const fakeDocker = path.join(tempRoot, 'docker');
+  const fakeCurl = path.join(tempRoot, 'curl');
   const fakeId = path.join(tempRoot, 'id');
   const buildCountFile = path.join(tempRoot, 'build-attempts');
   const idMarker = path.join(tempRoot, 'id-marker');
@@ -116,6 +138,8 @@ test('Docker gate uses immutable source and helper snapshots when checkout chang
     }
     fs.writeFileSync(path.join(checkout, 'revision.txt'), 'original committed source\n');
     fs.mkdirSync(cacheDir);
+    fs.writeFileSync(fakeCurl, '#!/usr/bin/env bash\nexit 0\n');
+    fs.chmodSync(fakeCurl, 0o755);
 
     for (const args of [
       ['init', '--quiet', checkout],
@@ -214,6 +238,62 @@ test('Docker gate uses immutable source and helper snapshots when checkout chang
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('dependency network outage fails preflight before image build with actionable guidance', () => {
+  const result = runWithFakeDocker(
+    'if [[ "$1" == "info" ]]; then exit 0; fi\necho "docker image build started" >&2\nexit 91',
+    ['--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'services.gradle.org',
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '1',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+    },
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Dependency network preflight failed.*services\.gradle\.org/s);
+  assert.match(result.stderr, /outbound HTTPS/i);
+  assert.doesNotMatch(result.stderr, /docker image build started/);
+});
+
+test('cold Docker image toolchain host outage fails preflight before image build', () => {
+  const result = runWithFakeDocker(
+    'if [[ "$1" == "info" ]]; then exit 0; fi\necho "docker image build started" >&2\nexit 91',
+    ['--cache-dir', '__CACHE_DIR__'],
+    {
+      LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'nodejs.org',
+      LOCAL_VERIFIER_RETRY_ATTEMPTS: '1',
+      LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+    },
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Dependency network preflight failed.*nodejs\.org/s);
+  assert.doesNotMatch(result.stderr, /docker image build started/);
+});
+
+test('Playwright CDN preflight accepts a mirror fallback and rejects a total outage', () => {
+  const fakeDocker = 'if [[ "$1" == "info" ]]; then exit 0; fi\necho "docker was unexpectedly reached" >&2\nexit 91';
+  const args = ['--preflight-only', '--cache-dir', '__CACHE_DIR__'];
+  const env = {
+    LOCAL_VERIFIER_RETRY_ATTEMPTS: '1',
+    LOCAL_VERIFIER_RETRY_DELAY_SECONDS: '0',
+  };
+  const fallback = runWithFakeDocker(fakeDocker, args, {
+    ...env,
+    LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'playwright.azureedge.net',
+  });
+  const outage = runWithFakeDocker(fakeDocker, args, {
+    ...env,
+    LOCAL_VERIFIER_TEST_UNREACHABLE_ENDPOINT: 'playwright',
+  });
+
+  assert.equal(fallback.status, 0, fallback.stderr);
+  assert.match(fallback.stdout, /Playwright browser CDN preflight passed/);
+  assert.notEqual(outage.status, 0);
+  assert.match(outage.stderr, /unable to reach any Playwright Chromium CDN/);
+  assert.doesNotMatch(outage.stderr, /docker was unexpectedly reached/);
 });
 
 test('preflight creates every mounted cache directory and Terraform lock before Docker access', () => {
@@ -532,6 +612,11 @@ test('the runbook records the D1 parity boundary and failure behavior', () => {
   assert.match(runbook, /post-merge release/);
   assert.match(runbook, /D3/);
   assert.match(runbook, /DynamoDB local/i);
+  assert.match(runbook, /host-side preflight also requires `curl`/);
+  assert.match(runbook, /Docker image and pinned toolchain sources/);
+  assert.match(runbook, /Playwright\s+Chromium CDN mirror/);
+  assert.match(runbook, /Maven Central, Terraform\s+Registry and releases/);
+  assert.match(runbook, /only a host\s+reachability\s+check/);
   assert.match(runbook, /AWS credential/);
   assert.match(runbook, /AWS_EC2_METADATA_DISABLED=true/);
   assert.match(runbook, /AWS SDK\/CLI/);
