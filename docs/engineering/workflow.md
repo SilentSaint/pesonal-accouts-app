@@ -154,8 +154,8 @@ must:
    hand it to the owner. Reactions on review comments, reactions from the
    owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
-6. Merge only when a valid current-head Codex approval is present, no actionable
-   review conversations remain unresolved, the PR is mergeable, the full local
+6. Merge only when a valid current-head Codex approval is present, all review
+   conversations are resolved before merge, the PR is mergeable, the full local
    Docker gate passes on the exact current head without AWS credentials or
    production mutations, all required checks are acceptable, and any configured
    maintainer-approval requirement is satisfied. A missing,
@@ -168,10 +168,14 @@ must:
    invalidate the prior approval and gate results and require the branch to be
    updated/rebased and fresh review and validation.
    Before calling the merge operation, require an active strict server-side
-   up-to-date branch-protection/ruleset gate, a merge queue, or a repository-wide
-   serialization lock that covers this final refresh through merge. The callable
-   head guard alone does not serialize `main`. If no such active gate is present,
-   leave the PR unmerged and hand it to the owner.
+   up-to-date branch-protection/ruleset gate enforced for the authenticated
+   connector identity, with no administrator/custom-role/bypass-app exemption,
+   a merge queue, or a repository-wide serialization lock that covers this final
+   refresh through merge. A strict gate that the connector identity can bypass
+   does not qualify; if enforcement for that identity cannot be verified, use the
+   queue/serialization-lock path or leave the PR unmerged and hand it to the
+   owner. The callable head guard alone does not serialize `main`. If no such
+   active gate is present, leave the PR unmerged and hand it to the owner.
    Select the merge operation that matches the active serialization mechanism:
    for a strict branch-protection/ruleset gate or repository-wide serialization
    lock, invoke the GitHub connector's `github_merge_pull_request` operation with

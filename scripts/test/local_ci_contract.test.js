@@ -255,7 +255,8 @@ test('Codex PR review automation stays bound to the reviewed current head', () =
     'the canonical Codex review wording must remain documented',
   );
   assert.match(workflow, /valid current-head Codex\s+approval/);
-  assert.match(workflow, /no actionable\s+review conversations remain unresolved/);
+  assert.match(workflow, /all review\s+conversations are resolved before merge/i);
+  assert.doesNotMatch(workflow, /no actionable\s+review conversations remain unresolved/i);
   assert.match(workflow, /full local\s+Docker gate passes on the exact current head/);
   assert.match(workflow, /track(?:ed)?\s+the\s+base branch SHA alongside the reviewed head SHA/i);
 });
@@ -307,7 +308,8 @@ test('qualifying Codex approval grants conditional agent merge authority', () =>
 test('merge gate fails closed on incomplete review or validation evidence', () => {
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(workflow, /no actionable\s+review conversations remain unresolved/i);
+  assert.match(workflow, /all review\s+conversations are resolved before merge/i);
+  assert.doesNotMatch(workflow, /no actionable\s+review conversations remain unresolved/i);
   assert.match(workflow, /the PR is mergeable/i);
   assert.match(
     workflow,
@@ -330,11 +332,15 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
   assert.match(workflow, /base equality check alone\s+is\s+insufficient/i);
   assert.match(
     workflow,
-    /active strict server-side\s+(?:up-to-date )?branch-protection(?:\/ruleset)? gate, a merge queue, or a repository-wide\s+serialization lock/i,
+    /active strict server-side\s+(?:up-to-date )?branch-protection(?:\/ruleset)? gate enforced for the authenticated\s+connector identity[\s\S]*?a merge queue, or a repository-wide\s+serialization lock/i,
   );
-  assert.match(workflow, /covers this final refresh through merge/i);
+  assert.match(workflow, /up-to-date branch-protection\/ruleset gate enforced for the authenticated\s+connector identity/i);
+  assert.match(workflow, /no administrator\/custom-role\/bypass-app exemption/i);
+  assert.match(workflow, /strict gate that the connector identity can bypass\s+does not qualify/i);
+  assert.match(workflow, /if enforcement for that identity cannot be verified, use the\s+queue\/serialization-lock path or leave the PR unmerged and hand it to the\s+owner/i);
+  assert.match(workflow, /covers this final\s+refresh through merge/i);
   assert.match(workflow, /callable\s+head guard alone does not serialize\s+`main`/i);
-  assert.match(workflow, /if no such active gate is present,\s+leave the PR unmerged and hand it to the owner/i);
+  assert.match(workflow, /if no such\s+active gate is present,\s+leave the PR unmerged and hand it to the owner/i);
   assert.match(workflow, /ambiguous or incomplete\s+evidence leaves the PR unmerged and is handed to the owner/i);
 });
 
