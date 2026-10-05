@@ -61,7 +61,7 @@ To prevent this failure mode, **ALL AI AGENTS MUST ADHERE TO THE FOLLOWING RULES
 * **Use Installed Chromium First**: Prefer a system Chrome/Chromium executable for `frontend/e2e_playwright_test.js`; the runner detects standard Linux paths, including `/snap/bin/chromium`.
 * **Avoid Unnecessary Browser Downloads**: When Playwright is not installed, add only its pinned client with `cd frontend && npm install --no-save --no-package-lock playwright@1.47.2`. Do not run `npx playwright install chromium` while a compatible system browser is available; use a managed browser only when no Chrome/Chromium executable exists.
 
-## AWS Agent Collaboration Workflow
+## GitHub Agent Collaboration Workflow
 
 This repository uses the GitHub repository `SilentSaint/pesonal-accouts-app` as
 the canonical integration surface:

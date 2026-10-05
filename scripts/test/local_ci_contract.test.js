@@ -305,6 +305,27 @@ test('qualifying Codex approval grants conditional agent merge authority', () =>
   assert.doesNotMatch(workflow, /review approval is not merge authorization for an agent/i);
 });
 
+test('mutable Codex signals require server-enforced authorization at merge time', () => {
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(
+    workflow,
+    /treat a Codex comment or reaction as evidence only, not merge-time\s+authorization/i,
+  );
+  assert.match(
+    workflow,
+    /active server-side required status\s+check or native approval[\s\S]*bound to the exact verified `expected_head_sha`/i,
+  );
+  assert.match(
+    workflow,
+    /must invalidate authorization when a new negative Codex response\s+arrives or the qualifying signal is withdrawn/i,
+  );
+  assert.match(
+    workflow,
+    /required head-bound authorization gate or its enforcement cannot be verified[\s\S]*leave the PR unmerged/i,
+  );
+});
+
 test('merge gate fails closed on incomplete review or validation evidence', () => {
   const workflow = read('docs/engineering/workflow.md');
 
@@ -360,7 +381,18 @@ test('review conversation resolution stays enforced through the merge operation'
     workflow,
     /a final thread\s+snapshot or a repository-wide serialization lock alone is insufficient/i,
   );
+  assert.match(
+    workflow,
+    /intentionally\s+stricter than the issue's actionable-thread minimum[\s\S]*all threads, including non-actionable\s+ones/i,
+  );
   assert.match(workflow, /if\s+enforcement is missing or unverifiable, leave the PR unmerged/i);
+});
+
+test('GitHub is consistently named as the canonical collaboration surface', () => {
+  const agents = read('AGENTS.md');
+
+  assert.match(agents, /^## GitHub Agent Collaboration Workflow$/m);
+  assert.doesNotMatch(agents, /^## AWS Agent Collaboration Workflow$/m);
 });
 
 test('authorized merge routes by serialization mechanism and verifies the merged SHA', () => {

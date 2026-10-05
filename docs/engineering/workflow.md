@@ -154,6 +154,15 @@ must:
    hand it to the owner. Reactions on review comments, reactions from the
    owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
+   Treat a Codex comment or reaction as evidence only, not merge-time
+   authorization. Before merging, require an active server-side required status
+   check or native approval, bound to the exact verified `expected_head_sha` and
+   enforced for the authenticated merge identity through the merge operation.
+   That gate must invalidate authorization when a new negative Codex response
+   arrives or the qualifying signal is withdrawn; a final signal snapshot or a
+   previously successful but no longer current check is insufficient. If the
+   required head-bound authorization gate or its enforcement cannot be verified,
+   leave the PR unmerged and hand it to the owner.
 6. Merge only when a valid current-head Codex approval is present, all review
    conversations are resolved before merge, the PR is mergeable, the full local
    Docker gate passes on the exact current head without AWS credentials or
@@ -179,7 +188,10 @@ must:
    Independently, require server-side conversation-resolution enforcement for
    the authenticated merge identity through the merge operation. The active
    ruleset/branch-protection rule must require all review conversations to be
-   resolved, and the connector identity must not bypass it. A final thread
+   resolved, and the connector identity must not bypass it. This is intentionally
+   stricter than the issue's actionable-thread minimum: GitHub's native
+   enforcement treats threads uniformly, so all threads, including non-actionable
+   ones, must be resolved. A final thread
    snapshot or a repository-wide serialization lock alone is insufficient; if
    enforcement is missing or unverifiable, leave the PR unmerged.
    Select the merge operation that matches the active serialization mechanism:
