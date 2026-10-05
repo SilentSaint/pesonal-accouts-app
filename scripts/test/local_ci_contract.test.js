@@ -344,6 +344,25 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
   assert.match(workflow, /ambiguous or incomplete\s+evidence leaves the PR unmerged and is handed to the owner/i);
 });
 
+test('review conversation resolution stays enforced through the merge operation', () => {
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(
+    workflow,
+    /server-side conversation-resolution enforcement for\s+the authenticated merge identity through the merge operation/i,
+  );
+  assert.match(
+    workflow,
+    /active\s+ruleset\/branch-protection rule must require all review conversations to be\s+resolved/i,
+  );
+  assert.match(workflow, /connector identity must not bypass it/i);
+  assert.match(
+    workflow,
+    /a final thread\s+snapshot or a repository-wide serialization lock alone is insufficient/i,
+  );
+  assert.match(workflow, /if\s+enforcement is missing or unverifiable, leave the PR unmerged/i);
+});
+
 test('authorized merge routes by serialization mechanism and verifies the merged SHA', () => {
   const workflow = read('docs/engineering/workflow.md');
 

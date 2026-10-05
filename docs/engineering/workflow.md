@@ -176,6 +176,12 @@ must:
    queue/serialization-lock path or leave the PR unmerged and hand it to the
    owner. The callable head guard alone does not serialize `main`. If no such
    active gate is present, leave the PR unmerged and hand it to the owner.
+   Independently, require server-side conversation-resolution enforcement for
+   the authenticated merge identity through the merge operation. The active
+   ruleset/branch-protection rule must require all review conversations to be
+   resolved, and the connector identity must not bypass it. A final thread
+   snapshot or a repository-wide serialization lock alone is insufficient; if
+   enforcement is missing or unverifiable, leave the PR unmerged.
    Select the merge operation that matches the active serialization mechanism:
    for a strict branch-protection/ruleset gate or repository-wide serialization
    lock, invoke the GitHub connector's `github_merge_pull_request` operation with
