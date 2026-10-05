@@ -405,10 +405,33 @@ test('authorized merge routes by serialization mechanism and verifies the merged
   assert.match(workflow, /for a merge queue, use a queue-capable\s+asynchronous\/enqueue operation with that verified head instead/i);
   assert.match(workflow, /never call\s+the ordinary merge endpoint as a queue fallback/i);
   assert.match(workflow, /Treat an `enqueued` result as\s+pending rather than as a merged SHA/i);
-  assert.match(workflow, /wait for the queue to report the actual\s+merge/i);
+  assert.match(workflow, /Only\s+after the queue reports\s+the actual merge/i);
   assert.match(workflow, /no queue-capable operation, or enqueue fails, is cancelled,\s+times out, or cannot be verified as merged, leave the PR unmerged and hand it\s+to the owner/i);
   assert.match(workflow, /Never write directly to `main`, enable auto-merge as a shortcut, or\s+deploy\/mutate AWS/i);
   assert.match(workflow, /verify the\s+returned\/eventual merged SHA and the resulting PR\/ref state read-only/i);
+});
+
+test('merge queue completion gates the exact merge-group revision', () => {
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(workflow, /before queue completion,\s+re-fetch the\s+PR's current head and verify its Codex authorization remains valid/i);
+  assert.match(workflow, /verify\s+the current merge-group SHA and tree/i);
+  assert.match(
+    workflow,
+    /full local Docker gate and required checks on that exact merge-group\s+SHA or a\s+verified identical tree/i,
+  );
+  assert.match(workflow, /Codex authorization remains bound to the exact current\s+PR head through queue completion/i);
+  assert.match(workflow, /a new PR commit invalidates that authorization\s+even if its tree is identical/i);
+  assert.match(
+    workflow,
+    /queue's server-side rules must block\s+completion\s+until both current PR-head authorization and merge-group validation\s+and checks pass/i,
+  );
+  assert.match(workflow, /merge-group SHA\s+or tree change invalidates validation/i);
+  assert.match(workflow, /A PR head change invalidates authorization[\s\S]*a merge-group SHA\s+or tree change invalidates validation/i);
+  assert.match(
+    workflow,
+    /PR head, merge-group revision, or its gates cannot be verified[\s\S]*leave the PR unmerged and hand it to the owner/i,
+  );
 });
 
 test('Codex PR reactions are correlated to one tracked review request and head', () => {

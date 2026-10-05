@@ -200,8 +200,22 @@ must:
    the verified `expected_head_sha`; for a merge queue, use a queue-capable
    asynchronous/enqueue operation with that verified head instead and never call
    the ordinary merge endpoint as a queue fallback. Treat an `enqueued` result as
-   pending rather than as a merged SHA, wait for the queue to report the actual
-   merge, and then perform step 7 against that eventual merged SHA. If the
+   pending rather than as a merged SHA. Before queue completion, re-fetch the
+   PR's current head and verify its Codex authorization remains valid and enforced
+   for that exact PR head. Codex authorization remains bound to the exact current
+   PR head through queue completion; a new PR commit invalidates that authorization
+   even if its tree is identical. Also verify the current merge-group SHA and tree.
+   Require the full local Docker gate and required checks on that exact merge-group
+   SHA or a verified identical tree. The queue's server-side rules must block
+   completion until both current PR-head authorization and merge-group validation
+   and checks pass. A PR head change invalidates authorization; a merge-group SHA
+   or tree change invalidates validation. Any state change must block completion
+   until the authorization and validation are reevaluated for the new state. If the
+   PR head, merge-group revision, or its gates cannot be verified,
+   or queue policy cannot block completion until they pass, remove/cancel the
+   entry when possible and leave the PR unmerged and hand it to the owner. Only
+   after the queue reports the actual merge, perform step 7 against that eventual
+   merged SHA. If the
    connector has no queue-capable operation, or enqueue fails, is cancelled,
    times out, or cannot be verified as merged, leave the PR unmerged and hand it
    to the owner.
