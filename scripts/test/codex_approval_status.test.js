@@ -7,7 +7,7 @@ const {
   decideAgentMerge,
   publishCommitStatus,
   reconcilePullRequest,
-  selectPullRequestNumbers,
+  selectPullRequestTargets,
 } = require('../ci/codex-approval-status');
 
 const headSha = 'a'.repeat(40);
@@ -68,6 +68,18 @@ test('a complete positive Codex review for the exact current head qualifies', ()
     "Codex Review: Didn't find any major issues. Hooray!\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\nIf Codex has suggestions, it will comment; otherwise it will react with 👍.\n</details>",
   );
   assert.equal(evaluateCodexApproval(snapshot({ issueComments: [canonicalFooter] })).authorized, true);
+
+  for (const body of [
+    'Codex Review: I approve this PR.',
+    'Codex Review: This is approved.',
+    'Codex Review: This pull request is approved.',
+  ]) {
+    assert.equal(
+      evaluateCodexApproval(snapshot({ issueComments: [review(body)] })).authorized,
+      true,
+      body,
+    );
+  }
 });
 
 test('a current-head pull-request review qualifies and a later negative review revokes older approval', () => {
@@ -123,6 +135,8 @@ test('praise alone, mixed/actionable feedback, wrong authors, and stale heads fa
     'LGTM, but please fix the retry behavior.',
     'No major issues; one blocking bug remains.',
     'Codex Review: Looks good to me. Consider documenting the retry behavior.',
+    'Codex Review: No major issues. Rename foo to bar.',
+    'Codex Review: LGTM would be premature.',
     'Codex Review: LGTM; one potential improvement is clearer error handling.',
     'Codex Review: No major issues; the edge case is not covered.',
     'Codex Review: Not approved; no major issues found.',
@@ -280,6 +294,7 @@ test('the merge decision requires current authorization and every independent ga
     conversationsResolved: true,
     dockerGatePassed: true,
     requiredChecksPassed: true,
+    codexReconciliationSucceeded: true,
     branchCurrent: true,
     serverEnforcementVerified: true,
     serializationVerified: true,
@@ -372,7 +387,9 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
       review("Codex Review: Didn't find any major issues. Keep it up!"),
       requestComment,
     ]);
-    if (url.endsWith('/pulls/177/reviews?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
     throw new Error(`Unexpected API URL: ${url}`);
@@ -390,9 +407,64 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
   assert.equal(statuses.length, 2);
   assert.ok(statuses.every((call) => call.url.endsWith(`/statuses/${headSha}`)));
   assert.deepEqual(statuses.map((call) => JSON.parse(call.options.body).state), ['pending', 'success']);
-  assert.ok(calls.some((call) => call.url.endsWith('/pulls/177/reviews?per_page=100')));
+  assert.ok(calls.some((call) => call.url.endsWith('/graphql') && call.options.method === 'POST'));
   assert.ok(calls.findIndex((call) => call.url.includes('/statuses/'))
     < calls.findIndex((call) => call.url.endsWith('/pulls/177/commits?per_page=100')));
+});
+
+test('an edit to an older current-head review supersedes a newer Codex approval', async () => {
+  const statuses = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const editedReview = {
+    fullDatabaseId: '51',
+    author: { login: bot },
+    body: 'Codex Review: Please fix the retry boundary.',
+    state: 'COMMENTED',
+    commit: { oid: headSha },
+    submittedAt: '2026-10-06T10:02:00Z',
+    updatedAt: '2026-10-06T10:06:00Z',
+    lastEditedAt: '2026-10-06T10:06:00Z',
+  };
+  const newerApproval = {
+    fullDatabaseId: '52',
+    author: { login: bot },
+    body: "Codex Review: Didn't find any major issues. Keep it up!",
+    state: 'COMMENTED',
+    commit: { oid: headSha },
+    submittedAt: '2026-10-06T10:04:00Z',
+    updatedAt: '2026-10-06T10:04:00Z',
+    lastEditedAt: null,
+  };
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+    }
+    if (url.includes('/statuses/')) {
+      statuses.push(JSON.parse(options.body).state);
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) {
+      return responseFor({ data: { repository: { pullRequest: { reviews: {
+        nodes: [editedReview, newerApproval],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } } } });
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.deepEqual(statuses, ['pending', 'failure']);
 });
 
 test('a failed GitHub snapshot replaces prior success with an error status', async () => {
@@ -413,6 +485,62 @@ test('a failed GitHub snapshot replaces prior success with an error status', asy
     { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
     { apiBaseUrl: 'https://api.github.com', token: 'test-token', fetchImpl, botLogin: bot },
   ), /GitHub API read failed \(503\)/);
+  assert.deepEqual(states, ['pending', 'error']);
+});
+
+test('a failed PR read overwrites a prior status when the trigger provides its head SHA', async () => {
+  const states = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) return { ok: false, status: 503 };
+    if (url.includes('/statuses/')) {
+      states.push(JSON.parse(options.body).state);
+      return { ok: true, json: async () => ({}) };
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await assert.rejects(() => reconcilePullRequest(
+    177,
+    { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    {
+      apiBaseUrl: 'https://api.github.com',
+      token: 'test-token',
+      fetchImpl,
+      eventName: 'pull_request_target',
+      headSha,
+      botLogin: bot,
+    },
+  ), /GitHub API read failed \(503\)/);
+  assert.deepEqual(states, ['pending', 'error']);
+});
+
+test('a failed pending-status write is followed by a fail-closed error status', async () => {
+  const states = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+    }
+    if (url.includes('/statuses/')) {
+      const state = JSON.parse(options.body).state;
+      states.push(state);
+      return state === 'pending' ? { ok: false, status: 503 } : responseFor({});
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await assert.rejects(() => reconcilePullRequest(
+    177,
+    { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    {
+      apiBaseUrl: 'https://api.github.com',
+      token: 'test-token',
+      fetchImpl,
+      eventName: 'pull_request_target',
+      headSha,
+      botLogin: bot,
+    },
+  ), /GitHub rejected the codex-approval status update \(503\)/);
   assert.deepEqual(states, ['pending', 'error']);
 });
 
@@ -439,7 +567,9 @@ test('the five-minute reconciler does not rewrite an unchanged status on every p
     if (url.endsWith('/issues/177/comments?per_page=100')) {
       return responseFor([review("Codex Review: Didn't find any major issues. Keep it up!")]);
     }
-    if (url.endsWith('/pulls/177/reviews?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
     throw new Error(`Unexpected API URL: ${url}`);
@@ -478,7 +608,9 @@ test('a same-context success from another app is not treated as the trusted stat
     if (url.endsWith('/issues/177/comments?per_page=100')) {
       return responseFor([review("Codex Review: Didn't find any major issues. Keep it up!")]);
     }
-    if (url.endsWith('/pulls/177/reviews?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
     throw new Error(`Unexpected API URL: ${url}`);
@@ -494,21 +626,21 @@ test('a same-context success from another app is not treated as the trusted stat
   assert.deepEqual(postStates, ['success']);
 });
 
-test('review events target one PR while scheduled discovery selects every open main PR', async () => {
+test('review events preserve a fallback head SHA while scheduled discovery selects open main PR heads', async () => {
   const repository = { owner: 'SilentSaint', repo: 'pesonal-accouts-app' };
   const calls = [];
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
-  const targeted = await selectPullRequestNumbers({
+  const targeted = await selectPullRequestTargets({
     eventName: 'pull_request_review',
-    payload: { pull_request: { number: 177 } },
+    payload: { pull_request: { number: 177, head: { sha: headSha } } },
     repository,
     apiBaseUrl: 'https://api.github.com',
     token: 'test-token',
     fetchImpl: async () => { throw new Error('targeted events must not enumerate other PRs'); },
   });
-  assert.deepEqual(targeted, [177]);
+  assert.deepEqual(targeted, [{ number: 177, head_sha: headSha }]);
 
-  const scheduled = await selectPullRequestNumbers({
+  const scheduled = await selectPullRequestTargets({
     eventName: 'schedule',
     payload: {},
     repository,
@@ -516,15 +648,21 @@ test('review events target one PR while scheduled discovery selects every open m
     token: 'test-token',
     fetchImpl: async (url) => {
       calls.push(url);
-      return responseFor([{ number: 177 }, { number: 179 }]);
+      return responseFor([
+        { number: 177, head: { sha: headSha } },
+        { number: 179, head: { sha: otherSha } },
+      ]);
     },
   });
-  assert.deepEqual(scheduled, [177, 179]);
+  assert.deepEqual(scheduled, [
+    { number: 177, head_sha: headSha },
+    { number: 179, head_sha: otherSha },
+  ]);
   assert.deepEqual(calls, [
     'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls?state=open&base=main&per_page=100',
   ]);
 
-  const issueComment = await selectPullRequestNumbers({
+  const issueComment = await selectPullRequestTargets({
     eventName: 'issue_comment',
     payload: { issue: { number: 177 } },
     repository,
@@ -533,4 +671,17 @@ test('review events target one PR while scheduled discovery selects every open m
     fetchImpl: async () => { throw new Error('issue comments must not enumerate PRs'); },
   });
   assert.deepEqual(issueComment, []);
+
+  const issueCommentPR = await selectPullRequestTargets({
+    eventName: 'issue_comment',
+    payload: { issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } } },
+    repository,
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async (url) => {
+      assert.equal(url, 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177');
+      return responseFor({ number: 177, head: { sha: headSha } });
+    },
+  });
+  assert.deepEqual(issueCommentPR, [{ number: 177, head_sha: headSha }]);
 });

@@ -107,7 +107,10 @@ new browser login.
 * **No hosted validation dependency**: CodeBuild and GitHub Actions are not required for validation. Do not restore a hosted buildspec or workflow as a prerequisite for a change.
   The `codex-approval` Actions status is a required merge-authorization policy
   gate only; it is not a build/test result and never replaces the local Docker
-  gate.
+  gate. Before merging, verify that the latest Codex approval workflow run for
+  this PR (or a successful scheduled run that covers it) completed after the
+  latest Codex review activity. A failed or unmappable run blocks merging even
+  if an older `codex-approval` status remains green.
 * **Non-mutating gate**: Local verification must not receive AWS credentials or run Terraform apply, S3 publication, Lambda updates, or CloudFront invalidation.
 * **Explicit deployment**: Production deployment is a separate owner-approved operation. Keep deployment credentials and release commands outside the local verification scripts.
 

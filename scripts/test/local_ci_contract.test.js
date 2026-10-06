@@ -11,6 +11,29 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
 
+function workflowStepScript(workflow, stepName, nextJobName) {
+  const stepStart = workflow.indexOf(`      - name: ${stepName}\n`);
+  assert.notEqual(stepStart, -1, `workflow step ${stepName} must exist`);
+  const stepEnd = workflow.indexOf(`\n  ${nextJobName}:`, stepStart);
+  assert.notEqual(stepEnd, -1, `workflow job ${nextJobName} must follow ${stepName}`);
+  const step = workflow.slice(stepStart, stepEnd);
+  const run = step.match(/^        run: (.*)$/m);
+  assert.ok(run, `${stepName} must define a run command`);
+  if (run[1] !== '|') return run[1];
+
+  const bodyStart = step.indexOf(run[0]) + run[0].length + 1;
+  const body = [];
+  for (const line of step.slice(bodyStart).split('\n')) {
+    if (line.trim() === '') {
+      body.push('');
+      continue;
+    }
+    if (!line.startsWith('          ')) break;
+    body.push(line.slice(10));
+  }
+  return body.join('\n').replace(/\n+$/, '');
+}
+
 test('dependency retry helper retries transient commands with bounded backoff', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-retry-'));
   const stateFile = path.join(tempRoot, 'attempts');
@@ -337,6 +360,8 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
     /full local\s+Docker gate passes on the exact current head without AWS credentials or\s+production mutations/i,
   );
   assert.match(workflow, /all required checks are acceptable/i);
+  assert.match(workflow, /codexReconciliationSucceeded=false/i);
+  assert.match(workflow, /failed\s+target-selection\/reconcile job, missing or unassociated workflow run/i);
   assert.match(workflow, /any configured\s+maintainer-approval requirement is satisfied/i);
   assert.match(workflow, /missing,\s+failing, or stale required check fails closed/i);
   assert.match(
@@ -446,6 +471,43 @@ test('Codex PR reactions are correlated to one tracked review request and head',
   assert.match(workflow, /Reactions on review comments, reactions from the\s+owner\/other actors.*do not satisfy this gate/is);
 });
 
+test('the selector skips cleanly until trusted main has the approval policy script', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const workflow = read('docs/engineering/workflow.md');
+  const selectorScript = workflowStepScript(
+    action,
+    'Select PRs for independent reconciliation',
+    'reconcile',
+  );
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-policy-bootstrap-'));
+  const outputFile = path.join(tempRoot, 'github-output');
+
+  try {
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', selectorScript], {
+      cwd: tempRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputFile,
+        PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}`,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(outputFile, 'utf8'), 'pr_targets=[]\n');
+    assert.match(
+      action,
+      /if:\s*\$\{\{\s*needs\.select-pull-requests\.outputs\.pr_targets\s*!=\s*''\s*&&\s*needs\.select-pull-requests\.outputs\.pr_targets\s*!=\s*'\[\]'\s*\}\}/,
+    );
+    assert.match(
+      workflow,
+      /bootstrap no-op does not publish\s+`codex-approval` and does not satisfy `codexReconciliationSucceeded`/i,
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('the Codex approval status bridge is least-privilege and never executes PR code', () => {
   const action = read('.github/workflows/codex-approval-status.yml');
   const bridge = read('scripts/ci/codex-approval-status.js');
@@ -457,10 +519,12 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(action, /pull_request_review_comment:/);
   assert.match(action, /schedule:/);
   assert.match(action, /select-pull-requests:/);
-  assert.match(action, /pr_numbers:\s*\$\{\{\s*steps\.select\.outputs\.pr_numbers\s*\}\}/);
-  assert.match(action, /matrix:[\s\S]*pr_number:\s*\$\{\{\s*fromJSON\(needs\.select-pull-requests\.outputs\.pr_numbers\)\s*\}\}/);
-  assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.pr_number\s*\}\}/);
-  assert.match(action, /CODEX_PR_NUMBER:\s*\$\{\{\s*matrix\.pr_number\s*\}\}/);
+  assert.match(action, /--select-pr-targets/);
+  assert.match(action, /pr_targets:\s*\$\{\{\s*steps\.select\.outputs\.pr_targets\s*\}\}/);
+  assert.match(action, /matrix:[\s\S]*target:\s*\$\{\{\s*fromJSON\(needs\.select-pull-requests\.outputs\.pr_targets\)\s*\}\}/);
+  assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.number\s*\}\}/);
+  assert.match(action, /CODEX_PR_NUMBER:\s*\$\{\{\s*matrix\.target\.number\s*\}\}/);
+  assert.match(action, /CODEX_PR_HEAD_SHA:\s*\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.doesNotMatch(action, /group:\s*codex-approval-reconcile/);
   assert.match(action, /contents:\s*read/);
   assert.match(action, /issues:\s*read/);
@@ -474,7 +538,10 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
 
   assert.match(bridge, /const STATUS_CONTEXT = 'codex-approval'/);
   assert.match(bridge, /statuses\/\$\{sha\}/);
-  assert.match(bridge, /\$\{prPath\}\/reviews\?per_page=100/);
+  assert.match(bridge, /query PullRequestApprovalReviews/);
+  assert.match(bridge, /lastEditedAt/);
+  assert.match(bridge, /updatedAt/);
+  assert.match(bridge, /updated_at:\s*review\.lastEditedAt\s*\|\|\s*review\.updatedAt\s*\|\|\s*review\.submittedAt/);
   assert.match(bridge, /await publish\('pending'/);
   assert.match(bridge, /await publish\('error'/);
   assert.match(bridge, /allowedRequesters: \[repository\.owner\]/);

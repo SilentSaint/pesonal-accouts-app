@@ -7,6 +7,27 @@ const STATUS_CONTEXT = 'codex-approval';
 const DEFAULT_BOT_LOGIN = 'chatgpt-codex-connector[bot]';
 const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
 const REVIEWED_SHA = /reviewed\s+(?:head|commit)(?:\s+sha)?\s*:\s*\*{0,2}\s*`?([a-f0-9]{7,40})`?/gi;
+const PULL_REQUEST_REVIEWS_QUERY = `
+  query PullRequestApprovalReviews($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        reviews(first: 100, after: $after) {
+          nodes {
+            fullDatabaseId
+            author { login }
+            body
+            state
+            commit { oid }
+            submittedAt
+            updatedAt
+            lastEditedAt
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+`;
 
 function result(authorized, signal, reason, headSha = null) {
   return { authorized, signal, reason, headSha: /^[a-f0-9]{40}$/i.test(headSha || '') ? headSha : null };
@@ -63,10 +84,14 @@ function isUnambiguousApproval(body) {
   const text = String(body || '').replace(
     /<details>\s*<summary>\s*ℹ️ About Codex in GitHub<\/summary>[\s\S]*$/i,
     ' ',
-  );
+  ).replace(/^\s*(?:#{1,6}\s*)?(?:💡\s*)?Codex Review\s*:?\s*/i, ' ')
+    .replace(/^[ \t]*\*{0,2}Reviewed commit(?:\s+sha)?\s*:\s*\*{0,2}[ \t]*`?[a-f0-9]{7,40}`?[ \t]*$/gim, ' ');
   const negatedApproval = /\b(?:not|never|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't)\b(?:\W+\w+){0,6}\W+\b(?:lgtm|approv(?:e|ed|al|ing)|looks?\s+good|good\s+to\s+merge|ready\s+to\s+merge)\b/i;
   if (negatedApproval.test(text)) return false;
   const approvals = [
+    /\bI approve (?:this|the) (?:PR|pull request)\b/i,
+    /\bthis (?:PR|pull request) is approved\b/i,
+    /\bthis is approved\b/i,
     /\b(?:didn't|did not) find (?:any )?(?:(?:major|significant|blocking) )?issues?\b/i,
     /\bno (?:(?:major|significant|blocking|open|actionable) )?issues?\b/i,
     /\bno (?:actionable )?findings?\b/i,
@@ -91,7 +116,9 @@ function isUnambiguousApproval(body) {
   const textWithoutNoFindingsPhrase = text.replace(/\bno actionable findings?\b/gi, ' ');
   if (contrary[0].test(textWithoutNoFindingsPhrase)) return false;
   const remainingText = matchedApprovals.reduce((remainder, pattern) => remainder.replace(pattern, ' '), text);
-  return !contrary.some((pattern) => pattern.test(remainingText));
+  const nonSubstantiveRemainder = /^(?:(?:keep it up|nice work|hooray|great work|great job|well done|thanks|thank you)|[\s.,;:!?…—–\-*_`#>👍👏✨✅])*$/i;
+  return !contrary.some((pattern) => pattern.test(remainingText))
+    && nonSubstantiveRemainder.test(remainingText);
 }
 
 function recordedRequests(issueComments, headSha, allowedRequesters) {
@@ -216,6 +243,7 @@ const REQUIRED_MERGE_GATES = [
   'conversationsResolved',
   'dockerGatePassed',
   'requiredChecksPassed',
+  'codexReconciliationSucceeded',
   'branchCurrent',
   'serverEnforcementVerified',
   'serializationVerified',
@@ -283,6 +311,75 @@ async function githubJson(path, { apiBaseUrl, token, fetchImpl }) {
   return response.json();
 }
 
+function graphqlEndpoint(apiBaseUrl) {
+  const endpoint = new URL(apiBaseUrl);
+  const apiPath = endpoint.pathname.replace(/\/+$/, '');
+  endpoint.pathname = apiPath.endsWith('/api/v3')
+    ? apiPath.replace(/\/v3$/, '/graphql')
+    : `${apiPath}/graphql`;
+  endpoint.search = '';
+  endpoint.hash = '';
+  return endpoint.toString();
+}
+
+async function githubGraphql(query, variables, options) {
+  const response = await options.fetchImpl(graphqlEndpoint(options.apiBaseUrl), {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${options.token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!response.ok) throw new Error(`GitHub API read failed (${response.status}) for the pull-request review query.`);
+  const payload = await response.json();
+  if (!payload || !payload.data || (Array.isArray(payload.errors) && payload.errors.length > 0)) {
+    throw new Error('GitHub GraphQL returned an incomplete pull-request review response.');
+  }
+  return payload.data;
+}
+
+async function pullRequestReviews(number, repository, options) {
+  const reviews = [];
+  let after = null;
+  while (true) {
+    const data = await githubGraphql(PULL_REQUEST_REVIEWS_QUERY, {
+      owner: repository.owner,
+      repo: repository.repo,
+      number,
+      after,
+    }, options);
+    const connection = data.repository && data.repository.pullRequest && data.repository.pullRequest.reviews;
+    if (!connection || !Array.isArray(connection.nodes) || !connection.pageInfo) {
+      throw new Error('GitHub GraphQL returned an invalid pull-request review list.');
+    }
+    for (const review of connection.nodes) {
+      if (!review || review.fullDatabaseId === null || review.fullDatabaseId === undefined) {
+        throw new Error('GitHub GraphQL returned a review without a stable database ID.');
+      }
+      reviews.push({
+        id: review.fullDatabaseId,
+        user: review.author ? { login: review.author.login } : null,
+        body: review.body,
+        state: review.state,
+        commit_id: review.commit ? review.commit.oid : null,
+        submitted_at: review.submittedAt,
+        updated_at: review.lastEditedAt || review.updatedAt || review.submittedAt,
+      });
+    }
+    if (typeof connection.pageInfo.hasNextPage !== 'boolean') {
+      throw new Error('GitHub GraphQL returned invalid pull-request review pagination state.');
+    }
+    if (!connection.pageInfo.hasNextPage) break;
+    if (!connection.pageInfo.endCursor || connection.pageInfo.endCursor === after) {
+      throw new Error('GitHub GraphQL returned an invalid pull-request review pagination cursor.');
+    }
+    after = connection.pageInfo.endCursor;
+  }
+  return reviews;
+}
+
 async function githubPages(path, options) {
   const items = [];
   let next = path;
@@ -340,7 +437,7 @@ function parseRepository(fullName) {
   return { owner: parts[0], repo: parts[1] };
 }
 
-async function selectPullRequestNumbers({
+async function selectPullRequestTargets({
   eventName,
   payload = {},
   repository,
@@ -349,7 +446,23 @@ async function selectPullRequestNumbers({
   fetchImpl = globalThis.fetch,
 } = {}) {
   const targetedNumber = eventPullRequestNumber(eventName, payload);
-  if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) return [targetedNumber];
+  if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
+    let headSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
+    if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
+      if (!repository || !repository.owner || !repository.repo || !token) {
+        throw new Error('Pull-request target head could not be verified.');
+      }
+      const pullRequest = await githubJson(
+        `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
+        { apiBaseUrl, token, fetchImpl },
+      );
+      headSha = pullRequest.head && pullRequest.head.sha;
+    }
+    if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
+      throw new Error('Pull-request target head SHA is missing or invalid.');
+    }
+    return [{ number: targetedNumber, head_sha: headSha }];
+  }
   if (eventName === 'issue_comment') return [];
   if (!['schedule', 'workflow_dispatch'].includes(eventName)) return [];
   if (!repository || !repository.owner || !repository.repo || !token) {
@@ -360,15 +473,19 @@ async function selectPullRequestNumbers({
     { apiBaseUrl, token, fetchImpl },
   );
   return pullRequests
-    .map((pullRequest) => pullRequest.number)
-    .filter((number) => Number.isSafeInteger(number) && number > 0);
+    .filter((pullRequest) => Number.isSafeInteger(pullRequest.number) && pullRequest.number > 0)
+    .map((pullRequest) => {
+      const headSha = pullRequest.head && pullRequest.head.sha;
+      if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
+        throw new Error(`Pull-request target ${pullRequest.number} has no verified head SHA.`);
+      }
+      return { number: pullRequest.number, head_sha: headSha };
+    });
 }
 
 async function reconcilePullRequest(number, repository, options) {
   const prPath = `/repos/${repository.owner}/${repository.repo}/pulls/${number}`;
-  const pr = await githubJson(prPath, options);
-  if (pr.state !== 'open' || !pr.base || pr.base.ref !== 'main' || !pr.head || !pr.head.sha) return;
-  const sha = pr.head.sha;
+  let sha = /^[a-f0-9]{40}$/i.test(options.headSha || '') ? options.headSha : null;
   const publish = (state, description) => publishCommitStatus({
     apiBaseUrl: options.apiBaseUrl,
     owner: repository.owner,
@@ -385,13 +502,24 @@ async function reconcilePullRequest(number, repository, options) {
   // reconciliation compares the final state before writing to avoid creating
   // two status records every five minutes for unchanged PRs.
   const scheduled = options.eventName === 'schedule';
-  if (!scheduled) await publish('pending', 'Rechecking the current Codex approval signal.');
+  let pendingAttempted = false;
   try {
+    const pr = await githubJson(prPath, options);
+    if (pr.state !== 'open' || !pr.base || pr.base.ref !== 'main') return;
+    const liveSha = pr.head && pr.head.sha;
+    if (!/^[a-f0-9]{40}$/i.test(liveSha || '')) {
+      throw new Error('The current PR head SHA is missing or invalid.');
+    }
+    sha = liveSha;
+    if (!scheduled) {
+      pendingAttempted = true;
+      await publish('pending', 'Rechecking the current Codex approval signal.');
+    }
     const [commits, issueComments, reviewComments, reviews, pullRequestReactions] = await Promise.all([
       githubPages(`${prPath}/commits?per_page=100`, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/comments?per_page=100`, options),
       githubPages(`${prPath}/comments?per_page=100`, options),
-      githubPages(`${prPath}/reviews?per_page=100`, options),
+      pullRequestReviews(number, repository, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/reactions?per_page=100`, options),
     ]);
     const approval = evaluateCodexApproval({
@@ -407,7 +535,13 @@ async function reconcilePullRequest(number, repository, options) {
       await publish(finalState, approval.reason);
     }
   } catch (error) {
-    await publish('error', 'Codex approval could not be verified; merge authorization is blocked.');
+    if (sha) {
+      if (!scheduled && !pendingAttempted) {
+        pendingAttempted = true;
+        await publish('pending', 'Rechecking the current Codex approval signal.');
+      }
+      await publish('error', 'Codex approval could not be verified; merge authorization is blocked.');
+    }
     throw error;
   }
 }
@@ -426,6 +560,7 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
     fetchImpl,
     botLogin: env.CODEX_REVIEW_BOT_LOGIN || DEFAULT_BOT_LOGIN,
     eventName,
+    headSha: env.CODEX_PR_HEAD_SHA,
     targetUrl: env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID
       ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
       : undefined,
@@ -434,20 +569,20 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
 }
 
 if (require.main === module) {
-  const selectTargets = process.argv.includes('--select-pr-numbers');
+  const selectTargets = process.argv.includes('--select-pr-targets');
   const operation = selectTargets
     ? (async () => {
       const repository = parseRepository(process.env.GITHUB_REPOSITORY);
       const eventPath = process.env.GITHUB_EVENT_PATH;
       const payload = eventPath ? JSON.parse(fs.readFileSync(eventPath, 'utf8')) : {};
-      const numbers = await selectPullRequestNumbers({
+      const targets = await selectPullRequestTargets({
         eventName: process.env.GITHUB_EVENT_NAME || '',
         payload,
         repository,
         apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
         token: process.env.GITHUB_TOKEN,
       });
-      const output = `pr_numbers=${JSON.stringify(numbers)}\n`;
+      const output = `pr_targets=${JSON.stringify(targets)}\n`;
       if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
       else process.stdout.write(output);
     })()
@@ -467,5 +602,5 @@ module.exports = {
   publishCommitStatus,
   reconcilePullRequest,
   reviewedHead,
-  selectPullRequestNumbers,
+  selectPullRequestTargets,
 };
