@@ -238,11 +238,15 @@ must:
 `.github/workflows/codex-approval-status.yml` publishes the required
 `codex-approval` commit status on the exact PR head SHA. It re-evaluates PR
 comment/review events and the current GitHub API snapshot; the scheduled pass
-also reconciles PR-level reactions. Its GitHub Actions token is limited to
-reading repository/PR metadata and writing commit statuses. The job checks out
-trusted `main` policy code only; it never checks out or executes PR code. This
-status represents only the Codex authorization signal, not the local Docker
-gate or other merge requirements.
+also reconciles PR-level reactions. Scheduled and manual runs fan out across
+open PRs, and each open PR is reconciled in its own per-PR concurrency group;
+an event for one PR cannot cancel another PR's status revocation. A newer run
+may replace an older run only for the same PR, then re-reads that PR's current
+GitHub snapshot. Its GitHub Actions token is limited to reading repository/PR
+metadata and writing commit statuses. The job checks out trusted `main` policy
+code only; it never checks out or executes PR code. This status represents only
+the Codex authorization signal, not the local Docker gate or other merge
+requirements.
 
 Before relying on agent merges, the repository owner must configure an active
 `main` ruleset requiring the `codex-approval` status from GitHub Actions, require

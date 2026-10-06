@@ -14,16 +14,46 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
-# Keep permissions off unless the reconciliation job explicitly needs them.
+# Keep permissions off unless a job explicitly needs them.
 permissions: {}
 
-concurrency:
-  group: codex-approval-reconcile
-  cancel-in-progress: true
-
 jobs:
+  select-pull-requests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_numbers: ${{ steps.select.outputs.pr_numbers }}
+    steps:
+      - name: Check out trusted main policy code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Select PRs for independent reconciliation
+        id: select
+        run: node scripts/ci/codex-approval-status.js --select-pr-numbers
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
   reconcile:
-    if: ${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
+    needs: select-pull-requests
+    if: ${{ needs.select-pull-requests.outputs.pr_numbers != '' && needs.select-pull-requests.outputs.pr_numbers != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pr_number: ${{ fromJSON(needs.select-pull-requests.outputs.pr_numbers) }}
+    concurrency:
+      group: codex-approval-${{ github.repository }}-${{ matrix.pr_number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -45,8 +75,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_API_URL: ${{ github.api_url }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
           CODEX_REVIEW_BOT_LOGIN: chatgpt-codex-connector[bot]
+          CODEX_PR_NUMBER: ${{ matrix.pr_number }}

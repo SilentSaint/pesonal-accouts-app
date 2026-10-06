@@ -456,6 +456,12 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(action, /pull_request_review:/);
   assert.match(action, /pull_request_review_comment:/);
   assert.match(action, /schedule:/);
+  assert.match(action, /select-pull-requests:/);
+  assert.match(action, /pr_numbers:\s*\$\{\{\s*steps\.select\.outputs\.pr_numbers\s*\}\}/);
+  assert.match(action, /matrix:[\s\S]*pr_number:\s*\$\{\{\s*fromJSON\(needs\.select-pull-requests\.outputs\.pr_numbers\)\s*\}\}/);
+  assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.pr_number\s*\}\}/);
+  assert.match(action, /CODEX_PR_NUMBER:\s*\$\{\{\s*matrix\.pr_number\s*\}\}/);
+  assert.doesNotMatch(action, /group:\s*codex-approval-reconcile/);
   assert.match(action, /contents:\s*read/);
   assert.match(action, /issues:\s*read/);
   assert.match(action, /pull-requests:\s*read/);
@@ -475,6 +481,7 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(bridge, /sameLogin\(status\.creator\.login, 'github-actions\[bot\]'\)/);
   assert.match(workflow, /machine-readable marker[\s\S]*codex-review-request: head=<40-character-head-sha>/i);
   assert.match(workflow, /`codex-approval` commit status on the exact PR head SHA/i);
+  assert.match(workflow, /each open PR is reconciled in its own per-PR concurrency group/i);
   assert.match(workflow, /repository owner must configure an active[\s\S]*ruleset requiring the `codex-approval` status/i);
   assert.match(workflow, /standard Actions and webhook events do not include PR reaction\s+creation\/removal/i);
   assert.match(workflow, /polls reactions every five minutes/i);
