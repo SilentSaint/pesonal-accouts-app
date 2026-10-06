@@ -24,8 +24,8 @@ function sameLogin(left, right) {
 
 function sortNewestFirst(items) {
   return [...items].sort((left, right) => {
-    const timeDifference = (timestamp(right.updated_at || right.created_at) ?? -1)
-      - (timestamp(left.updated_at || left.created_at) ?? -1);
+    const timeDifference = (timestamp(right.updated_at || right.created_at || right.submitted_at) ?? -1)
+      - (timestamp(left.updated_at || left.created_at || left.submitted_at) ?? -1);
     if (timeDifference !== 0) return timeDifference;
     return Number(right.id || 0) - Number(left.id || 0);
   });
@@ -38,6 +38,12 @@ function reviewedHead(body, commits, headSha) {
   const matchingCommits = commits.filter((commit) =>
     typeof commit.sha === 'string' && commit.sha.toLowerCase().startsWith(prefix));
   return matchingCommits.length === 1 && matchingCommits[0].sha.toLowerCase() === headSha.toLowerCase();
+}
+
+function reviewSubmissionHeadMatches(review, commits, headSha) {
+  if (typeof review.commit_id !== 'string' || review.commit_id.toLowerCase() !== headSha.toLowerCase()) return false;
+  const body = String(review.body || '');
+  return !/\breviewed\s+(?:head|commit)\b/i.test(body) || reviewedHead(body, commits, headSha);
 }
 
 function isUnambiguousApproval(body) {
@@ -97,6 +103,7 @@ function evaluateCodexApproval(snapshot, options = {}) {
   const commits = Array.isArray(snapshot && snapshot.commits) ? snapshot.commits : [];
   const issueComments = Array.isArray(snapshot && snapshot.issueComments) ? snapshot.issueComments : [];
   const reviewComments = Array.isArray(snapshot && snapshot.reviewComments) ? snapshot.reviewComments : [];
+  const submittedReviews = Array.isArray(snapshot && snapshot.reviews) ? snapshot.reviews : [];
   const reactions = Array.isArray(snapshot && snapshot.pullRequestReactions)
     ? snapshot.pullRequestReactions
     : [];
@@ -111,16 +118,34 @@ function evaluateCodexApproval(snapshot, options = {}) {
   }
 
   const botComments = issueComments.filter((comment) =>
-    comment.user && sameLogin(comment.user.login, botLogin));
+    comment.user && sameLogin(comment.user.login, botLogin)
+    && !/<!--\s*codex-pull-request-review-summary\s*-->/i.test(comment.body || ''));
   const latestBotComment = sortNewestFirst(botComments)[0];
-  const botReviews = botComments.filter((comment) =>
-    /\bcodex review\b|reviewed\s+(?:head|commit)\b/i.test(comment.body || ''));
-  const latestBotReview = sortNewestFirst(botReviews)[0];
-  if (latestBotReview && reviewedHead(latestBotReview.body, commits, headSha)) {
-    if (!isUnambiguousApproval(latestBotReview.body)) {
+  const botReviewResponses = [
+    ...botComments
+      .filter((comment) => /\bcodex review\b|reviewed\s+(?:head|commit)\b/i.test(comment.body || ''))
+      .map((comment) => ({
+        ...comment,
+        currentHead: reviewedHead(comment.body, commits, headSha),
+        responseBody: comment.body,
+        responseState: 'COMMENTED',
+      })),
+    ...submittedReviews
+      .filter((review) => review.user && sameLogin(review.user.login, botLogin))
+      .map((review) => ({
+        ...review,
+        currentHead: reviewSubmissionHeadMatches(review, commits, headSha),
+        responseBody: review.body,
+        responseState: String(review.state || '').toUpperCase(),
+      })),
+  ];
+  const latestBotReview = sortNewestFirst(botReviewResponses.filter((response) => response.currentHead))[0];
+  if (latestBotReview) {
+    if (['CHANGES_REQUESTED', 'DISMISSED'].includes(latestBotReview.responseState)
+      || !isUnambiguousApproval(latestBotReview.responseBody)) {
       return result(false, null, 'The latest current-head Codex review is not an unambiguous approval.', headSha);
     }
-    const reviewTime = timestamp(latestBotReview.updated_at || latestBotReview.created_at);
+    const reviewTime = timestamp(latestBotReview.updated_at || latestBotReview.created_at || latestBotReview.submitted_at);
     const laterBotMessage = latestBotComment && latestBotComment.id !== latestBotReview.id
       && (timestamp(latestBotComment.updated_at || latestBotComment.created_at) ?? -1) > (reviewTime ?? -1);
     if (laterBotMessage) {
@@ -141,7 +166,10 @@ function evaluateCodexApproval(snapshot, options = {}) {
   }
   const request = requests[0];
   const reviewAfterRequest = botComments.some((comment) =>
-    (timestamp(comment.updated_at || comment.created_at) ?? -1) >= request.createdAt);
+    (timestamp(comment.updated_at || comment.created_at) ?? -1) >= request.createdAt)
+    || submittedReviews.some((review) =>
+      review.user && sameLogin(review.user.login, botLogin)
+      && (timestamp(review.updated_at || review.submitted_at) ?? -1) >= request.createdAt);
   if (reviewAfterRequest) {
     return result(false, null, 'A newer Codex review response must be evaluated instead of a reaction.', headSha);
   }
@@ -316,10 +344,11 @@ async function reconcilePullRequest(number, repository, options) {
   const scheduled = options.eventName === 'schedule';
   if (!scheduled) await publish('pending', 'Rechecking the current Codex approval signal.');
   try {
-    const [commits, issueComments, reviewComments, pullRequestReactions] = await Promise.all([
+    const [commits, issueComments, reviewComments, reviews, pullRequestReactions] = await Promise.all([
       githubPages(`${prPath}/commits?per_page=100`, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/comments?per_page=100`, options),
       githubPages(`${prPath}/comments?per_page=100`, options),
+      githubPages(`${prPath}/reviews?per_page=100`, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/reactions?per_page=100`, options),
     ]);
     const approval = evaluateCodexApproval({
@@ -327,6 +356,7 @@ async function reconcilePullRequest(number, repository, options) {
       commits,
       issueComments,
       reviewComments,
+      reviews,
       pullRequestReactions,
     }, { botLogin: options.botLogin, allowedRequesters: [repository.owner] });
     const finalState = approval.authorized ? 'success' : 'failure';
