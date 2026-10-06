@@ -61,12 +61,12 @@ To prevent this failure mode, **ALL AI AGENTS MUST ADHERE TO THE FOLLOWING RULES
 * **Use Installed Chromium First**: Prefer a system Chrome/Chromium executable for `frontend/e2e_playwright_test.js`; the runner detects standard Linux paths, including `/snap/bin/chromium`.
 * **Avoid Unnecessary Browser Downloads**: When Playwright is not installed, add only its pinned client with `cd frontend && npm install --no-save --no-package-lock playwright@1.47.2`. Do not run `npx playwright install chromium` while a compatible system browser is available; use a managed browser only when no Chrome/Chromium executable exists.
 
-## AWS Agent Collaboration Workflow
+## GitHub Agent Collaboration Workflow
 
-This repository uses the AWS CodeCommit repository in `ap-south-2` as the
-canonical integration surface:
+This repository uses the GitHub repository `SilentSaint/pesonal-accouts-app` as
+the canonical integration surface:
 
-`arn:aws:codecommit:ap-south-2:727118420276:pesonal-accouts-app`
+`https://github.com/SilentSaint/pesonal-accouts-app`
 
 All agents working on the backlog MUST follow these rules:
 
@@ -74,15 +74,16 @@ All agents working on the backlog MUST follow these rules:
    keep unrelated fixes out of the branch.
 2. **Branch first**: push agent work to a dedicated branch; never push directly
    to `main`.
-3. **PR validation**: open a pull request against canonical `main` after the
+3. **PR validation**: open a pull request against GitHub `main` after the
    local Docker verifier validates the exact revision under review.
-4. **Owner-controlled merge**: follow the canonical engineering workflow for
-   the final human review and merge boundary. Automated Codex and local
-   Standards/Spec reviews are advisory inputs only and never authorize agents to
-   merge. Agents may prepare commits and pull requests but must not bypass merge
-   protection or the guarded release path.
+4. **Owner-authorized merge**: follow the canonical engineering workflow in
+   `docs/engineering/workflow.md` for merge authority and gates. The repository
+   owner grants standing authorization for the agent to merge when a qualifying
+   current-head Codex signal and every required merge gate pass. Ambiguous or
+   incomplete evidence leaves the PR unmerged and is handed to the owner; agents
+   must not bypass branch protection or the guarded release path.
 5. **Least-privilege access**: agent credentials should be limited to the
-   required CodeCommit read/write and pull-request operations. Do not grant
+   required GitHub read/write and pull-request operations. Do not grant
    production deployment, Terraform apply, IAM administration, or account
    administration access to backlog agents.
 6. **Issue completion**: keep the issue open until its acceptance criteria,
@@ -103,7 +104,7 @@ new browser login.
 
 ### 5. Local Verification and AWS Deployment Boundary
 * **Canonical validation**: Run `scripts/ci/verify-local-docker` for the reproducible full gate, or `scripts/ci/verify-local` when the pinned toolchain is installed directly.
-* **No hosted validation dependency**: CodeBuild, CodeCommit, and GitHub Actions are not required for validation. Do not restore a hosted buildspec or workflow as a prerequisite for a change.
+* **No hosted validation dependency**: CodeBuild and GitHub Actions are not required for validation. Do not restore a hosted buildspec or workflow as a prerequisite for a change.
 * **Non-mutating gate**: Local verification must not receive AWS credentials or run Terraform apply, S3 publication, Lambda updates, or CloudFront invalidation.
 * **Explicit deployment**: Production deployment is a separate owner-approved operation. Keep deployment credentials and release commands outside the local verification scripts.
 

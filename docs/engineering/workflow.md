@@ -89,13 +89,12 @@ available. Force pushes and branch deletion on `main` are prohibited. Every
 change reaches `main` through a pull request; no direct commit or automation
 write to `main` is permitted.
 
-The repository owner performs the final human review and retains merge
-authority. Automated Codex reviews and local Standards/Spec reviews may provide
-advisory technical feedback; they do not replace the owner's final
-review/approval or authorize agents to merge. A valid Codex review comment or
-qualifying PR-level thumbs-up remains a technical review outcome only. The
-watcher reports when all gates are satisfied and hands the PR to the owner for
-the merge decision.
+The repository owner grants standing authorization for the agent to merge a PR
+when a qualifying current-head Codex approval and every merge gate below pass.
+That approval is the owner's delegated merge signal only under those
+conditions; it is not a bypass for review, validation, mergeability,
+required-check, branch-protection, or exact-head gates. Ambiguous or incomplete
+evidence leaves the PR unmerged and is handed to the owner.
 
 ### Dark-factory review loop
 
@@ -115,7 +114,7 @@ must:
    or present, request `@codex review` once; do not create duplicate requests
    when GitHub already started the automatic review. For each request, record
    the request timestamp and head SHA; record the reviewed SHA when a response
-   arrives.
+   arrives. Track the base branch SHA alongside the reviewed head SHA.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -155,14 +154,78 @@ must:
    hand it to the owner. Reactions on review comments, reactions from the
    owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
-6. Report the PR ready for its owner only when a valid current-head Codex
-   approval is present, no actionable review conversations remain unresolved,
-   the PR is mergeable, the exact-head local Docker gate passes, and required
-   checks are acceptable. Only the owner merges through the pull-request path;
-   review approval is not merge authorization for an agent. Never write
-   directly to `main`.
-7. After merge, perform a read-only verification against the exact merged SHA.
-   Never apply infrastructure automatically as a post-merge step.
+   Treat a Codex comment or reaction as evidence only, not merge-time
+   authorization. Before merging, require an active server-side required status
+   check or native approval, bound to the exact verified `expected_head_sha` and
+   enforced for the authenticated merge identity through the merge operation.
+   That gate must invalidate authorization when a new negative Codex response
+   arrives or the qualifying signal is withdrawn; a final signal snapshot or a
+   previously successful but no longer current check is insufficient. If the
+   required head-bound authorization gate or its enforcement cannot be verified,
+   leave the PR unmerged and hand it to the owner.
+6. Merge only when a valid current-head Codex approval is present, all review
+   conversations are resolved before merge, the PR is mergeable, the full local
+   Docker gate passes on the exact current head without AWS credentials or
+   production mutations, all required checks are acceptable, and any configured
+   maintainer-approval requirement is satisfied. A missing,
+   failing, or stale required check fails closed and requires fresh validation.
+   Immediately before merging, re-fetch the PR and the current `main` ref. Record
+   the verified current `expected_head_sha`, the PR `base_sha`, and the current
+   `main` SHA; require the PR base to equal the current `main` SHA and verify the
+   current `main` SHA is an ancestor of the PR head. A base equality check alone
+   is insufficient. If the head, base, ancestry, or any gate evidence differs,
+   invalidate the prior approval and gate results and require the branch to be
+   updated/rebased and fresh review and validation.
+   Before calling the merge operation, require an active strict server-side
+   up-to-date branch-protection/ruleset gate enforced for the authenticated
+   connector identity, with no administrator/custom-role/bypass-app exemption,
+   a merge queue, or a repository-wide serialization lock that covers this final
+   refresh through merge. A strict gate that the connector identity can bypass
+   does not qualify; if enforcement for that identity cannot be verified, use the
+   queue/serialization-lock path or leave the PR unmerged and hand it to the
+   owner. The callable head guard alone does not serialize `main`. If no such
+   active gate is present, leave the PR unmerged and hand it to the owner.
+   Independently, require server-side conversation-resolution enforcement for
+   the authenticated merge identity through the merge operation. The active
+   ruleset/branch-protection rule must require all review conversations to be
+   resolved, and the connector identity must not bypass it. This is intentionally
+   stricter than the issue's actionable-thread minimum: GitHub's native
+   enforcement treats threads uniformly, so all threads, including non-actionable
+   ones, must be resolved. A final thread
+   snapshot or a repository-wide serialization lock alone is insufficient; if
+   enforcement is missing or unverifiable, leave the PR unmerged.
+   Select the merge operation that matches the active serialization mechanism:
+   for a strict branch-protection/ruleset gate or repository-wide serialization
+   lock, invoke the GitHub connector's `github_merge_pull_request` operation with
+   the verified `expected_head_sha`; for a merge queue, use a queue-capable
+   asynchronous/enqueue operation with that verified head instead and never call
+   the ordinary merge endpoint as a queue fallback. Treat an `enqueued` result as
+   pending rather than as a merged SHA. Before queue completion, re-fetch the
+   PR's current head and verify its Codex authorization remains valid and enforced
+   for that exact PR head. Codex authorization remains bound to the exact current
+   PR head through queue completion; a new PR commit invalidates that authorization
+   even if its tree is identical. Also verify the current merge-group SHA and tree.
+   Require the full local Docker gate and required checks on that exact merge-group
+   SHA or a verified identical tree. The queue's server-side rules must block
+   completion until both current PR-head authorization and merge-group validation
+   and checks pass. A PR head change invalidates authorization; a merge-group SHA
+   or tree change invalidates validation. Any state change must block completion
+   until the authorization and validation are reevaluated for the new state. If the
+   PR head, merge-group revision, or its gates cannot be verified,
+   or queue policy cannot block completion until they pass, remove/cancel the
+   entry when possible and leave the PR unmerged and hand it to the owner. Only
+   after the queue reports the actual merge, perform step 7 against that eventual
+   merged SHA. If the
+   connector has no queue-capable operation, or enqueue fails, is cancelled,
+   times out, or cannot be verified as merged, leave the PR unmerged and hand it
+   to the owner.
+   Never write directly to `main`, enable auto-merge as a shortcut, or
+   deploy/mutate AWS. Any ambiguous or incomplete evidence leaves the PR
+   unmerged and is handed to the owner.
+7. After a direct merge operation or confirmed queue completion, verify the
+   returned/eventual merged SHA and the resulting PR/ref state read-only against
+   the exact expected result. Never apply infrastructure automatically as a
+   post-merge step.
 
 The watcher stays quiet while the PR and review state are unchanged and reports
 only meaningful review changes, completed fixes, cycle-limit stops, merge or
