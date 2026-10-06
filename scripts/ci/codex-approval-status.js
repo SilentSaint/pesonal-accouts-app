@@ -31,6 +31,19 @@ function sortNewestFirst(items) {
   });
 }
 
+function activityIsNewer(candidate, reference) {
+  if (candidate.id !== undefined && reference.id !== undefined
+    && String(candidate.id) === String(reference.id)) return false;
+  const candidateTime = timestamp(candidate.updated_at || candidate.created_at || candidate.submitted_at);
+  const referenceTime = timestamp(reference.updated_at || reference.created_at || reference.submitted_at);
+  if (candidateTime === null || referenceTime === null) return true;
+  if (candidateTime !== referenceTime) return candidateTime > referenceTime;
+  const candidateId = Number(candidate.id);
+  const referenceId = Number(reference.id);
+  if (!Number.isSafeInteger(candidateId) || !Number.isSafeInteger(referenceId)) return true;
+  return candidateId > referenceId;
+}
+
 function reviewedHead(body, commits, headSha) {
   const matches = [...String(body || '').matchAll(REVIEWED_SHA)];
   if (matches.length !== 1) return false;
@@ -47,7 +60,12 @@ function reviewSubmissionHeadMatches(review, commits, headSha) {
 }
 
 function isUnambiguousApproval(body) {
-  const text = String(body || '');
+  const text = String(body || '').replace(
+    /<details>\s*<summary>\s*ℹ️ About Codex in GitHub<\/summary>[\s\S]*$/i,
+    ' ',
+  );
+  const negatedApproval = /\b(?:not|never|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't)\b(?:\W+\w+){0,6}\W+\b(?:lgtm|approv(?:e|ed|al|ing)|looks?\s+good|good\s+to\s+merge|ready\s+to\s+merge)\b/i;
+  if (negatedApproval.test(text)) return false;
   const approvals = [
     /\b(?:didn't|did not) find (?:any )?(?:(?:major|significant|blocking) )?issues?\b/i,
     /\bno (?:(?:major|significant|blocking|open|actionable) )?issues?\b/i,
@@ -60,11 +78,13 @@ function isUnambiguousApproval(body) {
     /\bI approve\b/i,
   ];
   const contrary = [
-    /\b(?:but|however|although|except(?:\s+for)?|unless|apart from|aside from|caveat|conditional(?:ly)?|actionable|concern|caution|nit(?:pick)?|suggest(?:ion|ed|ing)?|recommend(?:ation|ed|s)?|consider|optional(?:ly)?|request changes|changes requested|not ready|not approved|do not approve|don't approve|cannot approve|can't approve|must fix|please (?:fix|change|add|remove)|should (?:fix|change|add|remove)|needs? (?:to be fixed|a fix)|issue remains|finding remains|blocker remains|edge case|follow[- ]?up|limitation|warning|todo|improv(?:e|ement|ements)|might want|could (?:you|we)|would (?:be nice|recommend)|if (?:you|we|the (?:author|PR|change))|only if)\b/i,
+    /\b(?:but|however|although|except(?:\s+for)?|unless|apart from|aside from|caveat|conditional(?:ly)?|actionable|concern|caution|nit(?:pick)?|suggest(?:ion|ed|ing)?|recommend(?:ation|ed|s)?|consider|optional(?:ly)?|request changes|changes requested|not ready|not approved|do not approve|don't approve|cannot approve|can't approve|must fix|please (?:fix|change|add|remove)|should (?:fix|change|add|remove)|needs? (?:to be fixed|a fix)|issue remains|finding remains|blocker remains|edge case|follow[- ]?up|limitation|warning|todo|improv(?:e|ement|ements)|might want|could (?:you|we)|would (?:be nice|recommend)|if (?:you|we|the (?:author|PR|change))|only if)\b|\b(?:not|never)\s+(?:clearly\s+)?(?:lgtm|approved|approve|an?\s+approval|ready to merge|good to merge)\b/i,
     /\b(?:issue|finding|problem|risk|bug|defect|regression)s?\b/i,
   ];
   const matchedApprovals = approvals.filter((pattern) => pattern.test(text));
   if (matchedApprovals.length === 0) return false;
+  const conditional = /\b(?:if|unless|when|provided(?:\s+that)?|pending|assuming(?:\s+that)?|subject\s+to|contingent(?:\s+on)?|depending\s+on|until|once|after)\b/i;
+  if (conditional.test(text)) return false;
   // "Actionable" is normally cautionary, but is part of the explicit
   // approval phrase "no actionable findings". Keep other caveats (including
   // negated approvals such as "not approved") fail-closed.
@@ -145,15 +165,14 @@ function evaluateCodexApproval(snapshot, options = {}) {
       || !isUnambiguousApproval(latestBotReview.responseBody)) {
       return result(false, null, 'The latest current-head Codex review is not an unambiguous approval.', headSha);
     }
-    const reviewTime = timestamp(latestBotReview.updated_at || latestBotReview.created_at || latestBotReview.submitted_at);
     const laterBotMessage = latestBotComment && latestBotComment.id !== latestBotReview.id
-      && (timestamp(latestBotComment.updated_at || latestBotComment.created_at) ?? -1) > (reviewTime ?? -1);
+      && activityIsNewer(latestBotComment, latestBotReview);
     if (laterBotMessage) {
       return result(false, null, 'A newer Codex bot response supersedes the approval comment.', headSha);
     }
     const laterInlineBotComment = reviewComments.some((comment) =>
       comment.user && sameLogin(comment.user.login, botLogin)
-      && (timestamp(comment.updated_at || comment.created_at) ?? -1) > (reviewTime ?? -1));
+      && activityIsNewer(comment, latestBotReview));
     if (laterInlineBotComment) {
       return result(false, null, 'A newer inline Codex review comment requires fresh review resolution.', headSha);
     }
@@ -321,6 +340,30 @@ function parseRepository(fullName) {
   return { owner: parts[0], repo: parts[1] };
 }
 
+async function selectPullRequestNumbers({
+  eventName,
+  payload = {},
+  repository,
+  apiBaseUrl = 'https://api.github.com',
+  token,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const targetedNumber = eventPullRequestNumber(eventName, payload);
+  if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) return [targetedNumber];
+  if (eventName === 'issue_comment') return [];
+  if (!['schedule', 'workflow_dispatch'].includes(eventName)) return [];
+  if (!repository || !repository.owner || !repository.repo || !token) {
+    throw new Error('Pull-request discovery configuration is incomplete.');
+  }
+  const pullRequests = await githubPages(
+    `/repos/${repository.owner}/${repository.repo}/pulls?state=open&base=main&per_page=100`,
+    { apiBaseUrl, token, fetchImpl },
+  );
+  return pullRequests
+    .map((pullRequest) => pullRequest.number)
+    .filter((number) => Number.isSafeInteger(number) && number > 0);
+}
+
 async function reconcilePullRequest(number, repository, options) {
   const prPath = `/repos/${repository.owner}/${repository.repo}/pulls/${number}`;
   const pr = await githubJson(prPath, options);
@@ -375,9 +418,8 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
   if (!token) throw new Error('GITHUB_TOKEN is unavailable.');
   const apiBaseUrl = env.GITHUB_API_URL || 'https://api.github.com';
   const eventName = env.GITHUB_EVENT_NAME || '';
-  const eventPath = env.GITHUB_EVENT_PATH;
-  const payload = eventPath ? JSON.parse(fs.readFileSync(eventPath, 'utf8')) : {};
-  const targetedNumber = eventPullRequestNumber(eventName, payload);
+  const number = Number(env.CODEX_PR_NUMBER);
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error('CODEX_PR_NUMBER is invalid.');
   const options = {
     apiBaseUrl,
     token,
@@ -388,24 +430,31 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
       ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
       : undefined,
   };
-  const numbers = targetedNumber
-    ? [targetedNumber]
-    : (await githubPages(`/repos/${repository.owner}/${repository.repo}/pulls?state=open&base=main&per_page=100`, options))
-      .map((pr) => pr.number);
-  const failures = [];
-  for (const number of numbers) {
-    try {
-      await reconcilePullRequest(number, repository, options);
-    } catch (error) {
-      failures.push(`PR #${number}: ${error.message}`);
-    }
-  }
-  if (failures.length) throw new Error(failures.join('\n'));
+  await reconcilePullRequest(number, repository, options);
 }
 
 if (require.main === module) {
-  run().catch((error) => {
-    process.stderr.write(`Codex approval status reconciliation failed: ${error.message}\n`);
+  const selectTargets = process.argv.includes('--select-pr-numbers');
+  const operation = selectTargets
+    ? (async () => {
+      const repository = parseRepository(process.env.GITHUB_REPOSITORY);
+      const eventPath = process.env.GITHUB_EVENT_PATH;
+      const payload = eventPath ? JSON.parse(fs.readFileSync(eventPath, 'utf8')) : {};
+      const numbers = await selectPullRequestNumbers({
+        eventName: process.env.GITHUB_EVENT_NAME || '',
+        payload,
+        repository,
+        apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+        token: process.env.GITHUB_TOKEN,
+      });
+      const output = `pr_numbers=${JSON.stringify(numbers)}\n`;
+      if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
+      else process.stdout.write(output);
+    })()
+    : run();
+  operation.catch((error) => {
+    const description = selectTargets ? 'Codex PR target selection' : 'Codex approval status reconciliation';
+    process.stderr.write(`${description} failed: ${error.message}\n`);
     process.exitCode = 1;
   });
 }
@@ -418,4 +467,5 @@ module.exports = {
   publishCommitStatus,
   reconcilePullRequest,
   reviewedHead,
+  selectPullRequestNumbers,
 };

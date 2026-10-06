@@ -7,6 +7,7 @@ const {
   decideAgentMerge,
   publishCommitStatus,
   reconcilePullRequest,
+  selectPullRequestNumbers,
 } = require('../ci/codex-approval-status');
 
 const headSha = 'a'.repeat(40);
@@ -62,6 +63,11 @@ test('a complete positive Codex review for the exact current head qualifies', ()
     reason: 'The latest Codex review clearly approves the current head.',
     headSha,
   });
+
+  const canonicalFooter = review(
+    "Codex Review: Didn't find any major issues. Hooray!\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\nIf Codex has suggestions, it will comment; otherwise it will react with 👍.\n</details>",
+  );
+  assert.equal(evaluateCodexApproval(snapshot({ issueComments: [canonicalFooter] })).authorized, true);
 });
 
 test('a current-head pull-request review qualifies and a later negative review revokes older approval', () => {
@@ -120,6 +126,13 @@ test('praise alone, mixed/actionable feedback, wrong authors, and stale heads fa
     'Codex Review: LGTM; one potential improvement is clearer error handling.',
     'Codex Review: No major issues; the edge case is not covered.',
     'Codex Review: Not approved; no major issues found.',
+    'Codex Review: NOT LGTM.',
+    "Codex Review: It doesn't look good to me.",
+    'Codex Review: I cannot say this is approved.',
+    'Codex Review: LGTM, provided the CI tests pass.',
+    'Codex Review: Approved pending the auth audit.',
+    'Codex Review: Looks good, assuming CI passes.',
+    'Codex Review: If CI checks pass, LGTM.',
     'Codex Review: No major issues except the retry path can hang.',
     'Codex Review: Looks good if you add a timeout before merging.',
   ]) {
@@ -161,6 +174,18 @@ test('a newer negative Codex response invalidates an older positive review', () 
   assert.equal(evaluateCodexApproval(snapshot({
     issueComments: [positive, unstructuredNegative],
   })).authorized, false, 'a later bot response cannot be ignored because its format is unexpected');
+});
+
+test('a same-second later Codex message fails closed using its higher GitHub id', () => {
+  const approved = review('Codex Review: LGTM', headSha, bot, 10);
+  const followUp = {
+    id: 11,
+    user: { login: bot },
+    body: 'One more issue needs attention.',
+    created_at: approved.created_at,
+    updated_at: approved.updated_at,
+  };
+  assert.equal(evaluateCodexApproval(snapshot({ issueComments: [approved, followUp] })).authorized, false);
 });
 
 test('a PR-level Codex thumbs-up qualifies only after one recorded request for the unchanged head', () => {
@@ -467,4 +492,45 @@ test('a same-context success from another app is not treated as the trusted stat
     botLogin: bot,
   });
   assert.deepEqual(postStates, ['success']);
+});
+
+test('review events target one PR while scheduled discovery selects every open main PR', async () => {
+  const repository = { owner: 'SilentSaint', repo: 'pesonal-accouts-app' };
+  const calls = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const targeted = await selectPullRequestNumbers({
+    eventName: 'pull_request_review',
+    payload: { pull_request: { number: 177 } },
+    repository,
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async () => { throw new Error('targeted events must not enumerate other PRs'); },
+  });
+  assert.deepEqual(targeted, [177]);
+
+  const scheduled = await selectPullRequestNumbers({
+    eventName: 'schedule',
+    payload: {},
+    repository,
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return responseFor([{ number: 177 }, { number: 179 }]);
+    },
+  });
+  assert.deepEqual(scheduled, [177, 179]);
+  assert.deepEqual(calls, [
+    'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls?state=open&base=main&per_page=100',
+  ]);
+
+  const issueComment = await selectPullRequestNumbers({
+    eventName: 'issue_comment',
+    payload: { issue: { number: 177 } },
+    repository,
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async () => { throw new Error('issue comments must not enumerate PRs'); },
+  });
+  assert.deepEqual(issueComment, []);
 });
