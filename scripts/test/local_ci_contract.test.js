@@ -468,6 +468,7 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
 
   assert.match(bridge, /const STATUS_CONTEXT = 'codex-approval'/);
   assert.match(bridge, /statuses\/\$\{sha\}/);
+  assert.match(bridge, /\$\{prPath\}\/reviews\?per_page=100/);
   assert.match(bridge, /await publish\('pending'/);
   assert.match(bridge, /await publish\('error'/);
   assert.match(bridge, /allowedRequesters: \[repository\.owner\]/);

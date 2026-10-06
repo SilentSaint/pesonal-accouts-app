@@ -33,12 +33,23 @@ function request(head = headSha, createdAt = '2026-10-06T10:00:00Z') {
   };
 }
 
+function pullRequestReview(body, commitId = headSha, submittedAt = '2026-10-06T10:02:00Z', state = 'COMMENTED') {
+  return {
+    user: { login: bot },
+    body: body ? `${body}\n\n**Reviewed commit:** \`${commitId.slice(0, 12)}\`` : '',
+    commit_id: commitId,
+    submitted_at: submittedAt,
+    state,
+  };
+}
+
 function snapshot(overrides = {}) {
   return {
     headSha,
     commits: [{ sha: headSha }],
     issueComments: [review("Codex Review: Didn't find any major issues. Keep it up!")],
     reviewComments: [],
+    reviews: [],
     pullRequestReactions: [],
     ...overrides,
   };
@@ -51,6 +62,42 @@ test('a complete positive Codex review for the exact current head qualifies', ()
     reason: 'The latest Codex review clearly approves the current head.',
     headSha,
   });
+});
+
+test('a current-head pull-request review qualifies and a later negative review revokes older approval', () => {
+  const positiveReview = pullRequestReview("Codex Review: Didn't find any major issues. Keep it up!");
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [],
+    reviews: [positiveReview],
+  })).authorized, true, 'the submitted review body is a supported approval source');
+
+  const olderPositiveComment = review("Codex Review: Didn't find any major issues. Keep it up!");
+  const laterReview = pullRequestReview(
+    'Codex Review: Please fix the retry bug.',
+    headSha,
+    '2026-10-06T10:04:00Z',
+  );
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [olderPositiveComment],
+    reviews: [laterReview],
+  })).authorized, false, 'a newer submitted review response supersedes an older positive comment');
+
+  const changedReview = pullRequestReview(
+    "Codex Review: Didn't find any major issues.",
+    headSha,
+    '2026-10-06T10:05:00Z',
+    'CHANGES_REQUESTED',
+  );
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [],
+    reviews: [changedReview],
+  })).authorized, false, 'a changes-requested state is never an approval');
+
+  const emptyLaterReview = pullRequestReview('', headSha, '2026-10-06T10:06:00Z', 'APPROVED');
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [olderPositiveComment],
+    reviews: [emptyLaterReview],
+  })).authorized, false, 'a newer empty review submission must not inherit an older approval');
 });
 
 test('a unique abbreviated reviewed commit is accepted only when it resolves to the current head', () => {
@@ -300,6 +347,7 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
       review("Codex Review: Didn't find any major issues. Keep it up!"),
       requestComment,
     ]);
+    if (url.endsWith('/pulls/177/reviews?per_page=100')) return responseFor([]);
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
     throw new Error(`Unexpected API URL: ${url}`);
@@ -317,6 +365,7 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
   assert.equal(statuses.length, 2);
   assert.ok(statuses.every((call) => call.url.endsWith(`/statuses/${headSha}`)));
   assert.deepEqual(statuses.map((call) => JSON.parse(call.options.body).state), ['pending', 'success']);
+  assert.ok(calls.some((call) => call.url.endsWith('/pulls/177/reviews?per_page=100')));
   assert.ok(calls.findIndex((call) => call.url.includes('/statuses/'))
     < calls.findIndex((call) => call.url.endsWith('/pulls/177/commits?per_page=100')));
 });
@@ -365,6 +414,7 @@ test('the five-minute reconciler does not rewrite an unchanged status on every p
     if (url.endsWith('/issues/177/comments?per_page=100')) {
       return responseFor([review("Codex Review: Didn't find any major issues. Keep it up!")]);
     }
+    if (url.endsWith('/pulls/177/reviews?per_page=100')) return responseFor([]);
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
     throw new Error(`Unexpected API URL: ${url}`);
@@ -403,6 +453,7 @@ test('a same-context success from another app is not treated as the trusted stat
     if (url.endsWith('/issues/177/comments?per_page=100')) {
       return responseFor([review("Codex Review: Didn't find any major issues. Keep it up!")]);
     }
+    if (url.endsWith('/pulls/177/reviews?per_page=100')) return responseFor([]);
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
     throw new Error(`Unexpected API URL: ${url}`);
