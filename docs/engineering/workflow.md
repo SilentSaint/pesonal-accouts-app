@@ -248,6 +248,16 @@ code only; it never checks out or executes PR code. This status represents only
 the Codex authorization signal, not the local Docker gate or other merge
 requirements.
 
+At merge time, the agent must also verify a completed successful run of this
+workflow for the target PR after its latest Codex review activity, or a
+successful scheduled run that reconciled that PR after the activity. A failed
+target-selection/reconcile job, missing or unassociated workflow run, or run
+that predates the latest relevant activity sets
+`codexReconciliationSucceeded=false` and blocks the merge even if an older
+`codex-approval` status remains green. Target selection can fail before the
+current full head SHA is available, so that run cannot overwrite a prior commit
+status; never infer current authorization from the old status alone.
+
 Before relying on agent merges, the repository owner must configure an active
 `main` ruleset requiring the `codex-approval` status from GitHub Actions, require
 up-to-date branches and resolved review conversations, and ensure the
@@ -256,6 +266,12 @@ be merged to `main` before GitHub will run its comment/review triggers; this
 initial policy installation therefore needs the owner's normal bootstrap merge.
 Until the required status and its enforcement are verified, agents leave PRs
 unmerged.
+
+Before the policy script exists on trusted `main`, the selector succeeds with an
+empty target list and skips reconciliation. This bootstrap no-op does not publish
+`codex-approval` and does not satisfy `codexReconciliationSucceeded` or any
+merge gate. Only a run that actually reconciles the target PR's current head
+after its latest Codex review activity qualifies.
 
 GitHub's standard Actions and webhook events do not include PR reaction
 creation/removal. The bridge polls reactions every five minutes, so a removed
