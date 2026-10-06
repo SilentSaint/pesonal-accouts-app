@@ -113,8 +113,14 @@ must:
 1. On creation, verify that Codex review was triggered. If no review is pending
    or present, request `@codex review` once; do not create duplicate requests
    when GitHub already started the automatic review. For each request, record
-   the request timestamp and head SHA; record the reviewed SHA when a response
-   arrives. Track the base branch SHA alongside the reviewed head SHA.
+   the request timestamp and full head SHA; record the reviewed SHA when a response
+   arrives. For a PR-level reaction signal, include this machine-readable marker
+   in the top-level request comment before triggering review:
+   `<!-- codex-review-request: head=<40-character-head-sha>; cycle=<1-10> -->`.
+   Use the GitHub API's comment creation/update timestamp; editing a marker
+   restarts its timestamp. Only a marker written by the repository owner is
+   eligible; keep one request marker per reviewed head. Track the base branch
+   SHA alongside the reviewed head SHA.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -227,6 +233,36 @@ must:
    the exact expected result. Never apply infrastructure automatically as a
    post-merge step.
 
+### Required Codex approval status bridge
+
+`.github/workflows/codex-approval-status.yml` publishes the required
+`codex-approval` commit status on the exact PR head SHA. It re-evaluates PR
+comment/review events and the current GitHub API snapshot; the scheduled pass
+also reconciles PR-level reactions. Its GitHub Actions token is limited to
+reading repository/PR metadata and writing commit statuses. The job checks out
+trusted `main` policy code only; it never checks out or executes PR code. This
+status represents only the Codex authorization signal, not the local Docker
+gate or other merge requirements.
+
+Before relying on agent merges, the repository owner must configure an active
+`main` ruleset requiring the `codex-approval` status from GitHub Actions, require
+up-to-date branches and resolved review conversations, and ensure the
+authenticated merge identity has no bypass exemption. The workflow must first
+be merged to `main` before GitHub will run its comment/review triggers; this
+initial policy installation therefore needs the owner's normal bootstrap merge.
+Until the required status and its enforcement are verified, agents leave PRs
+unmerged.
+
+GitHub's standard Actions and webhook events do not include PR reaction
+creation/removal. The bridge polls reactions every five minutes, so a removed
+thumbs-up can remain reflected by a previously successful status until the next
+poll. A green status by itself is therefore never enough: immediately before
+merge, the agent must fetch the current PR-level reactions and verify that the
+qualifying signal is still present on the exact current head. If that live
+snapshot or the status is unavailable, stale, or ambiguous, leave the PR
+unmerged. Do not enable GitHub auto-merge; the agent's final merge decision must
+also pass every independent gate above.
+
 The watcher stays quiet while the PR and review state are unchanged and reports
 only meaningful review changes, completed fixes, cycle-limit stops, merge or
 verification results, failures, or required owner action.
@@ -250,8 +286,10 @@ resulting production verification.
 
 ## Current baseline dependency
 
-Until repository-baseline reconciliation is complete, workflows must report
-missing prerequisites honestly and must not be made required. In the current
-remote baseline, `backend/lambda/test` and `frontend/e2e_playwright_test.js` are
-absent, so their jobs fail with an explicit reconciliation message. Enable
-required checks only after the reconciled `main` is clean and green.
+Until repository-baseline reconciliation is complete, validation workflows
+must report missing prerequisites honestly and must not be made required. In
+the current remote baseline, `backend/lambda/test` and
+`frontend/e2e_playwright_test.js` are absent, so their jobs fail with an explicit
+reconciliation message. This does not prohibit the separate `codex-approval`
+policy status; it is not a build/test result. Enable required validation checks
+only after the reconciled `main` is clean and green.

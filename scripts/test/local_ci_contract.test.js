@@ -258,7 +258,7 @@ test('Codex PR review automation stays bound to the reviewed current head', () =
   assert.match(workflow, /all review\s+conversations are resolved before merge/i);
   assert.doesNotMatch(workflow, /no actionable\s+review conversations remain unresolved/i);
   assert.match(workflow, /full local\s+Docker gate passes on the exact current head/);
-  assert.match(workflow, /track(?:ed)?\s+the\s+base branch SHA alongside the reviewed head SHA/i);
+  assert.match(workflow, /Track the base branch\s+SHA alongside the reviewed head SHA/i);
 });
 
 test('Codex review comments accept clear equivalent approval wording for the reviewed head', () => {
@@ -437,11 +437,46 @@ test('merge queue completion gates the exact merge-group revision', () => {
 test('Codex PR reactions are correlated to one tracked review request and head', () => {
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(workflow, /record\s+the request timestamp and head SHA/i);
+  assert.match(workflow, /record\s+the request timestamp and full head SHA/i);
   assert.match(workflow, /associate it with exactly one recorded\s+review request/i);
   assert.match(workflow, /on the PR itself and comes from the configured Codex review bot/i);
   assert.match(workflow, /reaction timestamp must be after the recorded request/i);
   assert.match(workflow, /current PR head must still match the tracked head/i);
   assert.match(workflow, /multiple possible\s+requests or any head change make the association ambiguous/i);
   assert.match(workflow, /Reactions on review comments, reactions from the\s+owner\/other actors.*do not satisfy this gate/is);
+});
+
+test('the Codex approval status bridge is least-privilege and never executes PR code', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const bridge = read('scripts/ci/codex-approval-status.js');
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(action, /issue_comment:/);
+  assert.match(action, /pull_request_target:/);
+  assert.match(action, /pull_request_review:/);
+  assert.match(action, /pull_request_review_comment:/);
+  assert.match(action, /schedule:/);
+  assert.match(action, /contents:\s*read/);
+  assert.match(action, /issues:\s*read/);
+  assert.match(action, /pull-requests:\s*read/);
+  assert.match(action, /statuses:\s*write/);
+  assert.match(action, /actions\/checkout@[a-f0-9]{40}/);
+  assert.match(action, /ref:\s*refs\/heads\/main/);
+  assert.match(action, /scripts\/ci\/codex-approval-status\.js/);
+  assert.doesNotMatch(action, /head\.sha.*ref:|pull_request\.head\.ref/);
+  assert.doesNotMatch(action, /npm (?:install|ci)|bash .*\.sh/);
+
+  assert.match(bridge, /const STATUS_CONTEXT = 'codex-approval'/);
+  assert.match(bridge, /statuses\/\$\{sha\}/);
+  assert.match(bridge, /await publish\('pending'/);
+  assert.match(bridge, /await publish\('error'/);
+  assert.match(bridge, /allowedRequesters: \[repository\.owner\]/);
+  assert.match(bridge, /sameLogin\(status\.creator\.login, 'github-actions\[bot\]'\)/);
+  assert.match(workflow, /machine-readable marker[\s\S]*codex-review-request: head=<40-character-head-sha>/i);
+  assert.match(workflow, /`codex-approval` commit status on the exact PR head SHA/i);
+  assert.match(workflow, /repository owner must configure an active[\s\S]*ruleset requiring the `codex-approval` status/i);
+  assert.match(workflow, /standard Actions and webhook events do not include PR reaction\s+creation\/removal/i);
+  assert.match(workflow, /polls reactions every five minutes/i);
+  assert.match(workflow, /green status by itself is therefore never enough/i);
+  assert.match(workflow, /initial policy installation therefore needs the owner's normal bootstrap merge/i);
 });
