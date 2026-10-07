@@ -805,7 +805,7 @@ test('target selection persists deleted bot feedback before reconciliation can b
   assert.ok(revocation, 'the deletion must be recorded before the matrix reconciliation is queued');
   assert.deepEqual(JSON.parse(revocation.options.body), {
     state: 'failure',
-    context: STATUS_CONTEXT,
+    context: 'codex-approval',
     description: 'Codex review feedback was deleted; a fresh review is required.',
   });
 });
