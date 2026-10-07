@@ -54,7 +54,8 @@ function sortNewestFirst(items) {
 }
 
 function activityIsNewer(candidate, reference) {
-  if (candidate.id !== undefined && reference.id !== undefined
+  if (candidate.source === reference.source
+    && candidate.id !== undefined && reference.id !== undefined
     && String(candidate.id) === String(reference.id)) return false;
   const candidateTime = timestamp(candidate.updated_at || candidate.created_at || candidate.submitted_at);
   const referenceTime = timestamp(reference.updated_at || reference.created_at || reference.submitted_at);
@@ -84,10 +85,11 @@ function reviewSubmissionHeadMatches(review, commits, headSha) {
 
 function isUnambiguousApproval(body) {
   const text = String(body || '').replace(
-    /<details>\s*<summary>\s*ℹ️ About Codex in GitHub<\/summary>[\s\S]*$/i,
+    /<details>\s*<summary>\s*ℹ️ About Codex in GitHub<\/summary>[\s\S]*?<\/details>/i,
     ' ',
   ).replace(/^\s*(?:#{1,6}\s*)?(?:💡\s*)?Codex Review\s*:?\s*/i, ' ')
     .replace(/^[ \t]*\*{0,2}Reviewed commit(?:\s+sha)?\s*:\s*\*{0,2}[ \t]*`?[a-f0-9]{7,40}`?[ \t]*$/gim, ' ');
+  if (text.includes('?')) return false;
   const negatedApproval = /\b(?:not|never|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't)\b(?:\W+\w+){0,6}\W+\b(?:lgtm|approv(?:e|ed|al|ing)|looks?\s+good|good\s+to\s+merge|ready\s+to\s+merge)\b/i;
   if (negatedApproval.test(text)) return false;
   const approvals = [
@@ -95,7 +97,7 @@ function isUnambiguousApproval(body) {
     /\bthis (?:PR|pull request) is approved\b/i,
     /\bthis is approved\b/i,
     /\b(?:didn't|did not) find (?:any )?(?:(?:major|significant|blocking) )?issues?\b/i,
-    /\bno (?:(?:major|significant|blocking|open|actionable) )?issues?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?found)?\b/i,
+    /\b(?:I found )?no (?:(?:major|significant|blocking|open|actionable) )?issues?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?(?:found|identified))?\b/i,
     /\bno (?:actionable )?findings?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?found)?\b/i,
     /\bnothing major to address\b/i,
     /\b(?:don't|do not) see any issues?\b/i,
@@ -223,8 +225,7 @@ function evaluateCodexApproval(snapshot, options = {}) {
       && (latestReviewResponseTime === null || latestReviewResponseTime <= feedbackRevokedAt)) {
       return result(false, null, 'The latest Codex review predates deleted-feedback revocation; a fresh review is required.', headSha);
     }
-    const laterBotMessage = latestBotComment && latestBotComment.id !== latestBotReview.id
-      && activityIsNewer(latestBotComment, latestBotReview);
+    const laterBotMessage = latestBotComment && activityIsNewer(latestBotComment, latestBotReview);
     if (laterBotMessage) {
       return result(false, null, 'A newer Codex bot response supersedes the approval comment.', headSha);
     }
@@ -264,6 +265,14 @@ function evaluateCodexApproval(snapshot, options = {}) {
   const reactionTime = timestamp(thumbsUps[0].created_at);
   if (reactionTime === null || reactionTime <= request.createdAt) {
     return result(false, null, 'The Codex thumbs-up did not follow the current-head review request.', headSha);
+  }
+  const contradictoryBotReaction = reactions.some((reaction) => {
+    if (reaction.content !== '-1' || !reaction.user || !sameLogin(reaction.user.login, botLogin)) return false;
+    const contradictoryTime = timestamp(reaction.created_at);
+    return contradictoryTime === null || contradictoryTime >= reactionTime;
+  });
+  if (contradictoryBotReaction) {
+    return result(false, null, 'A later or timestamp-ambiguous Codex thumbs-down supersedes the approval reaction.', headSha);
   }
   if (feedbackRevokedAt !== null && reactionTime <= feedbackRevokedAt) {
     return result(false, null, 'The Codex thumbs-up predates deleted-feedback revocation; a fresh review is required.', headSha);

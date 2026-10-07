@@ -197,11 +197,49 @@ test('praise alone, mixed/actionable feedback, wrong authors, and stale heads fa
   );
 });
 
+test('interrogative approval verdicts fail closed', () => {
+  for (const body of [
+    'Codex Review: LGTM?',
+    'Approved?',
+    'No major issues?',
+  ]) {
+    assert.equal(
+      evaluateCodexApproval(snapshot({ issueComments: [review(body)] })).authorized,
+      false,
+      body,
+    );
+  }
+});
+
+test('actionable text after the standard Codex footer still revokes approval', () => {
+  const body = "Codex Review: Didn't find any major issues. Keep it up!\n\n"
+    + '<details> <summary>ℹ️ About Codex in GitHub</summary>\n'
+    + 'If Codex has suggestions, it will comment; otherwise it will react with 👍.\n'
+    + '</details>\n\nCodex Review: Please fix the retry bug.';
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [review(body)],
+  })).authorized, false, 'the footer must not hide later actionable feedback');
+});
+
 test('an explicit no-actionable-findings review is a positive approval', () => {
   assert.equal(
     evaluateCodexApproval(snapshot({ issueComments: [review('Codex Review: No actionable findings.')] })).authorized,
     true,
   );
+});
+
+test('complete equivalent no-major-issues verdicts are positive approvals', () => {
+  for (const body of [
+    'Codex Review: No major issues identified.',
+    'Codex Review: I found no major issues.',
+  ]) {
+    assert.equal(
+      evaluateCodexApproval(snapshot({ issueComments: [review(body)] })).authorized,
+      true,
+      body,
+    );
+  }
 });
 
 test('a newer negative Codex response invalidates an older positive review', () => {
@@ -223,6 +261,25 @@ test('a newer negative Codex response invalidates an older positive review', () 
   assert.equal(evaluateCodexApproval(snapshot({
     issueComments: [positive, unstructuredNegative],
   })).authorized, false, 'a later bot response cannot be ignored because its format is unexpected');
+});
+
+test('a later issue comment revokes a review even when GitHub resource IDs collide', () => {
+  const currentHeadApproval = {
+    ...pullRequestReview('Codex Review: LGTM', headSha, '2026-10-06T10:02:00Z'),
+    id: 7,
+  };
+  const laterIssueComment = {
+    id: 7,
+    user: { login: bot },
+    body: 'The retry path still needs attention.',
+    created_at: '2026-10-06T10:04:00Z',
+    updated_at: '2026-10-06T10:04:00Z',
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [laterIssueComment],
+    reviews: [currentHeadApproval],
+  })).authorized, false, 'IDs from issue comments and submitted reviews are not interchangeable');
 });
 
 test('a same-second later Codex message fails closed using its higher GitHub id', () => {
@@ -333,6 +390,20 @@ test('only a PR-level thumbs-up from the configured Codex bot can authorize', ()
     issueComments: [issueRequest],
     pullRequestReactions: [{ ...thumbsUp, content: 'heart' }],
   })).authorized, false);
+});
+
+test('a later or timestamp-ambiguous Codex reaction revokes the PR-level thumbs-up', () => {
+  for (const negativeAt of ['2026-10-06T10:04:00Z', '2026-10-06T10:03:00Z']) {
+    const reactions = [
+      { id: 4, user: { login: bot }, content: '+1', created_at: '2026-10-06T10:03:00Z' },
+      { id: 5, user: { login: bot }, content: '-1', created_at: negativeAt },
+    ];
+
+    assert.equal(evaluateCodexApproval(snapshot({
+      issueComments: [request()],
+      pullRequestReactions: reactions,
+    })).authorized, false, 'a newer or equally-timed thumbs-down is ambiguous');
+  }
 });
 
 test('a later actionable inline Codex comment blocks the review-comment signal', () => {
