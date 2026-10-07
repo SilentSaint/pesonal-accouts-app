@@ -810,6 +810,34 @@ test('target selection persists deleted bot feedback before reconciliation can b
   });
 });
 
+test('deleted feedback stays revoked when its PR is closed or retargeted before reopening', async () => {
+  const calls = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const targets = await selectPullRequestTargets({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'deleted',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: { id: 10, user: { login: bot }, body: 'The retry path still needs a fix.' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith('/pulls/177')) {
+        return responseFor({ state: 'closed', base: { ref: 'release' }, head: { sha: headSha } });
+      }
+      if (url.endsWith(`/statuses/${headSha}`)) return responseFor({});
+      throw new Error(`Unexpected API URL: ${url}`);
+    },
+  });
+
+  assert.deepEqual(targets, [{ number: 177, head_sha: headSha }]);
+  assert.ok(calls.some((call) => call.options.method === 'POST'),
+    'deletion revocation must persist even if the PR is closed or temporarily targets another base');
+});
+
 test('review events preserve a fallback head SHA while scheduled discovery selects open main PR heads', async () => {
   const repository = { owner: 'SilentSaint', repo: 'pesonal-accouts-app' };
   const calls = [];

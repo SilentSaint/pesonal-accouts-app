@@ -252,8 +252,9 @@ the Codex authorization signal, not the local Docker gate or other merge
 requirements.
 
 Deleting Codex-authored feedback immediately publishes a failure status with a
-durable deleted-feedback revocation marker in its description before the
-reconcile job enters its per-PR concurrency queue. This marker persists
+durable deleted-feedback revocation marker on the live PR head, even if the PR
+is closed or temporarily targets another base, before the reconcile job enters
+its per-PR concurrency queue. This marker persists
 across scheduled runs; the reconciler reads trusted status history, so an older
 approval that remains visible in GitHub cannot restore authorization.
 Only a current-head Codex approval or reaction recorded after that marker can
