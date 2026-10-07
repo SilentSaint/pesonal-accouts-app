@@ -119,6 +119,20 @@ test('a current-head pull-request review qualifies and a later negative review r
   })).authorized, false, 'a newer empty review submission must not inherit an older approval');
 });
 
+test('an unsubmitted pending Codex review cannot authorize the current head', () => {
+  const pendingReview = {
+    ...pullRequestReview('Codex Review: LGTM'),
+    state: 'PENDING',
+    submitted_at: null,
+    updated_at: null,
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [],
+    reviews: [pendingReview],
+  })).authorized, false);
+});
+
 test('a later review tied to an older head supersedes an earlier current-head approval', () => {
   const currentHeadApproval = pullRequestReview(
     "Codex Review: Didn't find any major issues. Keep it up!",
@@ -426,6 +440,7 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
     if (url.endsWith('/pulls/177')) {
       return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
     }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) return responseFor({ ok: true });
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) return responseFor([
@@ -448,12 +463,12 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
     botLogin: bot,
   });
 
-  const statuses = calls.filter((call) => call.url.includes('/statuses/'));
+  const statuses = calls.filter((call) => call.options.method === 'POST' && call.url.includes('/statuses/'));
   assert.equal(statuses.length, 2);
   assert.ok(statuses.every((call) => call.url.endsWith(`/statuses/${headSha}`)));
   assert.deepEqual(statuses.map((call) => JSON.parse(call.options.body).state), ['pending', 'success']);
   assert.ok(calls.some((call) => call.url.endsWith('/graphql') && call.options.method === 'POST'));
-  assert.ok(calls.findIndex((call) => call.url.includes('/statuses/'))
+  assert.ok(calls.findIndex((call) => call.options.method === 'POST' && call.url.includes('/statuses/'))
     < calls.findIndex((call) => call.url.endsWith('/pulls/177/commits?per_page=100')));
 });
 
@@ -484,6 +499,7 @@ test('an edit to an older current-head review supersedes a newer Codex approval'
     if (url.endsWith('/pulls/177')) {
       return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
     }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) {
       statuses.push(JSON.parse(options.body).state);
       return responseFor({});
@@ -514,18 +530,37 @@ test('an edit to an older current-head review supersedes a newer Codex approval'
 
 test('deleting Codex feedback cannot restore an older approval', async () => {
   const statuses = [];
+  const statusHistory = [{
+    context: 'codex-approval',
+    state: 'success',
+    created_at: '2026-10-06T10:03:00Z',
+    description: 'The prior Codex review was authorized.',
+    creator: { login: 'github-actions[bot]' },
+  }];
+  let currentReview = review('Codex Review: LGTM', headSha, bot, 10);
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
       return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
     }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) {
+      return responseFor([...statusHistory]);
+    }
     if (url.includes('/statuses/')) {
-      statuses.push(JSON.parse(options.body).state);
+      const state = JSON.parse(options.body).state;
+      statuses.push(state);
+      statusHistory.unshift({
+        context: 'codex-approval',
+        state,
+        created_at: state === 'pending' ? '2026-10-06T10:10:00Z' : '2026-10-06T10:10:01Z',
+        description: JSON.parse(options.body).description,
+        creator: { login: 'github-actions[bot]' },
+      });
       return responseFor({});
     }
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) {
-      return responseFor([review('Codex Review: LGTM', headSha, bot, 10)]);
+      return responseFor([currentReview]);
     }
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
@@ -558,6 +593,28 @@ test('deleting Codex feedback cannot restore an older approval', async () => {
       comment: { id: 8, user: { login: bot }, body: 'The retry path still needs a fix.' },
     },
   }).authorized, false, 'deleting an inline Codex comment also requires a fresh review');
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'schedule',
+    botLogin: bot,
+  });
+
+  assert.deepEqual(statuses, ['pending', 'failure'], 'the scheduled pass must preserve the revocation');
+
+  currentReview = review('Codex Review: LGTM', headSha, bot, 11);
+  currentReview.created_at = '2026-10-06T10:15:00Z';
+  currentReview.updated_at = '2026-10-06T10:15:00Z';
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'schedule',
+    botLogin: bot,
+  });
+  assert.deepEqual(statuses, ['pending', 'failure', 'success'], 'a fresh post-revocation approval restores authorization');
 });
 
 test('a failed GitHub snapshot replaces prior success with an error status', async () => {
@@ -614,6 +671,7 @@ test('a failed pending-status write is followed by a fail-closed error status', 
     if (url.endsWith('/pulls/177')) {
       return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
     }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) {
       const state = JSON.parse(options.body).state;
       states.push(state);

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 
 const STATUS_CONTEXT = 'codex-approval';
 const DEFAULT_BOT_LOGIN = 'chatgpt-codex-connector[bot]';
+const DELETED_FEEDBACK_DESCRIPTION = 'Codex review feedback was deleted; a fresh review is required.';
 const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
 const REVIEWED_SHA = /reviewed\s+(?:head|commit)(?:\s+sha)?\s*:\s*\*{0,2}\s*`?([a-f0-9]{7,40})`?/gi;
 const PULL_REQUEST_REVIEWS_QUERY = `
@@ -165,8 +166,10 @@ function evaluateCodexApproval(snapshot, options = {}) {
     return result(false, null, 'The current head could not be verified in the PR commit list.', headSha);
   }
   if (isDeletedCodexFeedback(options.eventName, options.eventPayload || {}, botLogin)) {
-    return result(false, null, 'Codex review feedback was deleted; a fresh review is required.', headSha);
+    return result(false, null, DELETED_FEEDBACK_DESCRIPTION, headSha);
   }
+
+  const feedbackRevokedAt = timestamp(options.revokedAt);
 
   const botComments = issueComments.filter((comment) =>
     comment.user && sameLogin(comment.user.login, botLogin)
@@ -204,10 +207,21 @@ function evaluateCodexApproval(snapshot, options = {}) {
     if (crossResourceTimestampTie) {
       return result(false, null, 'Codex review activity has an ambiguous cross-resource timestamp tie.', headSha);
     }
+    const unsubmittedReview = latestBotReview.source === 'pull-request-review'
+      && (!['COMMENTED', 'APPROVED'].includes(latestBotReview.responseState)
+        || timestamp(latestBotReview.submitted_at) === null);
     if (!latestBotReview.currentHead
+      || unsubmittedReview
       || ['CHANGES_REQUESTED', 'DISMISSED'].includes(latestBotReview.responseState)
       || !isUnambiguousApproval(latestBotReview.responseBody)) {
       return result(false, null, 'The latest Codex review is not an unambiguous current-head approval.', headSha);
+    }
+    const latestReviewResponseTime = timestamp(
+      latestBotReview.updated_at || latestBotReview.created_at || latestBotReview.submitted_at,
+    );
+    if (feedbackRevokedAt !== null
+      && (latestReviewResponseTime === null || latestReviewResponseTime <= feedbackRevokedAt)) {
+      return result(false, null, 'The latest Codex review predates deleted-feedback revocation; a fresh review is required.', headSha);
     }
     const laterBotMessage = latestBotComment && latestBotComment.id !== latestBotReview.id
       && activityIsNewer(latestBotComment, latestBotReview);
@@ -250,6 +264,9 @@ function evaluateCodexApproval(snapshot, options = {}) {
   const reactionTime = timestamp(thumbsUps[0].created_at);
   if (reactionTime === null || reactionTime <= request.createdAt) {
     return result(false, null, 'The Codex thumbs-up did not follow the current-head review request.', headSha);
+  }
+  if (feedbackRevokedAt !== null && reactionTime <= feedbackRevokedAt) {
+    return result(false, null, 'The Codex thumbs-up predates deleted-feedback revocation; a fresh review is required.', headSha);
   }
   return result(true, 'pr-reaction', 'The Codex thumbs-up follows exactly one recorded request for the current head.', headSha);
 }
@@ -425,16 +442,26 @@ async function githubPages(path, options) {
   return items;
 }
 
-async function currentCodexStatus(sha, repository, options) {
-  const statuses = await githubPages(
+async function currentCodexStatuses(sha, repository, options) {
+  return githubPages(
     `/repos/${repository.owner}/${repository.repo}/commits/${sha}/statuses?per_page=100`,
     options,
   );
-  const matching = statuses
+}
+
+function trustedCodexStatuses(statuses) {
+  return statuses
     .filter((status) => status.context === STATUS_CONTEXT
       && status.creator && sameLogin(status.creator.login, 'github-actions[bot]'))
     .sort((left, right) => (timestamp(right.created_at) ?? -1) - (timestamp(left.created_at) ?? -1));
-  return matching.length ? matching[0].state : null;
+}
+
+function latestDeletedFeedbackRevocation(statuses) {
+  const marker = trustedCodexStatuses(statuses)
+    .find((status) => status.state === 'failure'
+      && status.description === DELETED_FEEDBACK_DESCRIPTION
+      && timestamp(status.created_at) !== null);
+  return marker ? marker.created_at : null;
 }
 
 function eventPullRequestNumber(eventName, payload) {
@@ -536,6 +563,9 @@ async function reconcilePullRequest(number, repository, options) {
       throw new Error('The current PR head SHA is missing or invalid.');
     }
     sha = liveSha;
+    const priorStatuses = await currentCodexStatuses(sha, repository, options);
+    const latestStatus = trustedCodexStatuses(priorStatuses)[0] || null;
+    const revokedAt = latestDeletedFeedbackRevocation(priorStatuses);
     if (!scheduled) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
@@ -559,9 +589,10 @@ async function reconcilePullRequest(number, repository, options) {
       allowedRequesters: [repository.owner],
       eventName: options.eventName,
       eventPayload: options.eventPayload,
+      revokedAt,
     });
     const finalState = approval.authorized ? 'success' : 'failure';
-    if (!scheduled || await currentCodexStatus(sha, repository, options) !== finalState) {
+    if (!scheduled || !latestStatus || latestStatus.state !== finalState) {
       await publish(finalState, approval.reason);
     }
   } catch (error) {

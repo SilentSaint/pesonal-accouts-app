@@ -248,6 +248,13 @@ code only; it never checks out or executes PR code. This status represents only
 the Codex authorization signal, not the local Docker gate or other merge
 requirements.
 
+Deleting Codex-authored feedback publishes a failure status with a durable
+deleted-feedback revocation marker in its description. This marker persists
+across scheduled runs; the reconciler reads trusted status history, so an older
+approval that remains visible in GitHub cannot restore authorization.
+Only a current-head Codex approval or reaction recorded after that marker can
+restore the status to success.
+
 At merge time, the agent must also verify a completed successful run of this
 workflow for the target PR after its latest Codex review activity, or a
 successful scheduled run that reconciled that PR after the activity. A failed

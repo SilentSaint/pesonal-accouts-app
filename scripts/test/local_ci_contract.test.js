@@ -542,6 +542,9 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(bridge, /updated_at:\s*review\.lastEditedAt\s*\|\|\s*review\.updatedAt\s*\|\|\s*review\.submittedAt/);
   assert.match(bridge, /await publish\('pending'/);
   assert.match(bridge, /await publish\('error'/);
+  assert.match(bridge, /DELETED_FEEDBACK_DESCRIPTION/);
+  assert.match(bridge, /latestDeletedFeedbackRevocation/);
+  assert.match(bridge, /revokedAt/);
   assert.match(bridge, /allowedRequesters: \[repository\.owner\]/);
   assert.match(bridge, /sameLogin\(status\.creator\.login, 'github-actions\[bot\]'\)/);
   assert.match(workflow, /machine-readable marker[\s\S]*codex-review-request: head=<40-character-head-sha>/i);
@@ -549,6 +552,7 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(workflow, /each open PR is reconciled in its own per-PR concurrency group/i);
   assert.match(workflow, /repository owner must configure an active[\s\S]*ruleset requiring the `codex-approval` status/i);
   assert.match(workflow, /standard Actions and webhook events do not include PR reaction\s+creation\/removal/i);
+  assert.match(workflow, /deleted-feedback revocation marker[\s\S]*persists\s+across scheduled runs/i);
   assert.match(workflow, /polls reactions every five minutes/i);
   assert.match(workflow, /green status by itself is therefore never enough/i);
   assert.match(workflow, /initial policy installation therefore needs the owner's normal bootstrap merge/i);
