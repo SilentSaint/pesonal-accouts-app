@@ -12,6 +12,7 @@ const {
 
 const headSha = 'a'.repeat(40);
 const otherSha = 'b'.repeat(40);
+const previousBaseSha = 'c'.repeat(40);
 const bot = 'chatgpt-codex-connector[bot]';
 const requestAuthor = 'SilentSaint';
 
@@ -117,6 +118,55 @@ test('a current-head pull-request review qualifies and a later negative review r
     issueComments: [olderPositiveComment],
     reviews: [emptyLaterReview],
   })).authorized, false, 'a newer empty review submission must not inherit an older approval');
+});
+
+test('a current-head approval requires a fresh Codex signal after the PR base changes', () => {
+  const baseChange = {
+    baseSha: otherSha,
+    priorApprovalBaseSha: previousBaseSha,
+    baseChangeInvalidation: {
+      baseSha: otherSha,
+      createdAt: '2026-10-06T10:03:00Z',
+    },
+  };
+  const approvalBeforeBaseChange = review("Codex Review: Didn't find any major issues.");
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    ...baseChange,
+    issueComments: [approvalBeforeBaseChange],
+  })).authorized, false, 'a head approval from the previous base cannot authorize a new diff');
+
+  const approvalAfterBaseChange = {
+    ...approvalBeforeBaseChange,
+    created_at: '2026-10-06T10:04:00Z',
+    updated_at: '2026-10-06T10:04:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    ...baseChange,
+    issueComments: [approvalAfterBaseChange],
+  })).authorized, true, 'a fresh exact-head review after base invalidation can authorize');
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    ...baseChange,
+    issueComments: [request()],
+    pullRequestReactions: [{
+      id: 4,
+      user: { login: bot },
+      content: '+1',
+      created_at: '2026-10-06T10:05:00Z',
+    }],
+  })).authorized, false, 'a thumbs-up from before base invalidation cannot authorize');
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    ...baseChange,
+    issueComments: [{ ...request(), created_at: '2026-10-06T10:04:00Z' }],
+    pullRequestReactions: [{
+      id: 4,
+      user: { login: bot },
+      content: '+1',
+      created_at: '2026-10-06T10:05:00Z',
+    }],
+  })).authorized, true, 'a new request and thumbs-up after base invalidation can authorize');
 });
 
 test('an unsubmitted pending Codex review cannot authorize the current head', () => {
@@ -406,6 +456,38 @@ test('a later or timestamp-ambiguous Codex reaction revokes the PR-level thumbs-
   }
 });
 
+test('a later or timestamp-ambiguous Codex thumbs-down revokes comment and submitted-review approvals', () => {
+  const approvals = [
+    { issueComments: [review("Codex Review: Didn't find any major issues.")] },
+    { issueComments: [], reviews: [pullRequestReview("Codex Review: Didn't find any major issues.")] },
+  ];
+
+  for (const approval of approvals) {
+    for (const negativeAt of ['2026-10-06T10:04:00Z', '2026-10-06T10:02:00Z']) {
+      const thumbsDown = {
+        id: 5,
+        user: { login: bot },
+        content: '-1',
+        created_at: negativeAt,
+      };
+      assert.equal(evaluateCodexApproval(snapshot({
+        ...approval,
+        pullRequestReactions: [thumbsDown],
+      })).authorized, false, 'a later or equally timed PR-level thumbs-down supersedes either review signal');
+    }
+
+    assert.equal(evaluateCodexApproval(snapshot({
+      ...approval,
+      pullRequestReactions: [{
+        id: 5,
+        user: { login: bot },
+        content: '-1',
+        created_at: '2026-10-06T10:01:00Z',
+      }],
+    })).authorized, true, 'an earlier thumbs-down does not supersede a later approval');
+  }
+});
+
 test('a later actionable inline Codex comment blocks the review-comment signal', () => {
   const inline = {
     id: 5,
@@ -509,7 +591,7 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url, options });
     if (url.endsWith('/pulls/177')) {
-      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
     if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) return responseFor({ ok: true });
@@ -538,9 +620,143 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
   assert.equal(statuses.length, 2);
   assert.ok(statuses.every((call) => call.url.endsWith(`/statuses/${headSha}`)));
   assert.deepEqual(statuses.map((call) => JSON.parse(call.options.body).state), ['pending', 'success']);
+  assert.ok(statuses.every((call) => JSON.parse(call.options.body).description.includes(`base-sha=${otherSha}`)));
   assert.ok(calls.some((call) => call.url.endsWith('/graphql') && call.options.method === 'POST'));
   assert.ok(calls.findIndex((call) => call.options.method === 'POST' && call.url.includes('/statuses/'))
     < calls.findIndex((call) => call.url.endsWith('/pulls/177/commits?per_page=100')));
+});
+
+test('reconciliation invalidates a prior approval when the live PR base SHA changes', async () => {
+  const calls = [];
+  const priorStatus = {
+    context: STATUS_CONTEXT,
+    state: 'success',
+    created_at: '2026-10-06T10:03:00Z',
+    description: `base-sha=${previousBaseSha}; prior approval`,
+    creator: { login: 'github-actions[bot]' },
+  };
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([priorStatus]);
+    if (url.includes('/statuses/')) return responseFor({});
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([review("Codex Review: Didn't find any major issues.")]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'schedule',
+    botLogin: bot,
+  });
+
+  const statuses = calls.filter((call) => call.options.method === 'POST' && call.url.includes('/statuses/'))
+    .map((call) => JSON.parse(call.options.body));
+  assert.deepEqual(statuses.map((status) => status.state), ['failure']);
+  assert.match(statuses[0].description, new RegExp(`base-sha=${otherSha}`));
+  assert.match(statuses[0].description, /base-change-review-required/);
+  assert.equal(calls.some((call) => call.url.endsWith('/pulls/177/commits?per_page=100')), false,
+    'a stale-base approval must be revoked before selecting approval feedback');
+});
+
+test('a base retarget invalidates an old review even before the policy has recorded approval', async () => {
+  const calls = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
+    if (url.includes('/statuses/')) return responseFor({});
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_target',
+    eventPayload: { action: 'edited', changes: { base: { ref: { from: 'release' } } } },
+    botLogin: bot,
+  });
+
+  const statuses = calls.filter((call) => call.options.method === 'POST' && call.url.includes('/statuses/'))
+    .map((call) => JSON.parse(call.options.body));
+  assert.deepEqual(statuses.map((status) => status.state), ['pending', 'failure']);
+  assert.match(statuses[1].description, /base-change-review-required/);
+  assert.match(statuses[1].description, new RegExp(`base-sha=${otherSha}`));
+  assert.equal(calls.some((call) => call.url.endsWith('/issues/177/comments?per_page=100')), false,
+    'the prior-base review must not be read as approval after a base retarget');
+});
+
+test('a fresh review after the persisted base invalidation restores the current-base status', async () => {
+  const postStates = [];
+  const priorStatuses = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'success',
+      created_at: '2026-10-06T10:02:00Z',
+      description: `base-sha=${previousBaseSha}; prior approval`,
+      creator: { login: 'github-actions[bot]' },
+    },
+    {
+      context: STATUS_CONTEXT,
+      state: 'failure',
+      created_at: '2026-10-06T10:03:00Z',
+      description: `base-sha=${otherSha}; base-change-review-required: fresh review required`,
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor(priorStatuses);
+    if (url.includes('/statuses/')) {
+      postStates.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([{
+        ...review("Codex Review: Didn't find any major issues."),
+        created_at: '2026-10-06T10:04:00Z',
+        updated_at: '2026-10-06T10:04:00Z',
+      }]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.deepEqual(postStates.map((status) => status.state), ['pending', 'success']);
+  assert.ok(postStates[1].description.includes(`base-sha=${otherSha}`));
 });
 
 test('an edit to an older current-head review supersedes a newer Codex approval', async () => {
@@ -568,7 +784,7 @@ test('an edit to an older current-head review supersedes a newer Codex approval'
   };
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
-      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
     if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) {
@@ -612,7 +828,7 @@ test('deleting Codex feedback cannot restore an older approval', async () => {
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
-      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
     if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) {
       return responseFor([...statusHistory]);
@@ -692,7 +908,7 @@ test('a failed GitHub snapshot replaces prior success with an error status', asy
   const states = [];
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
-      return { ok: true, json: async () => ({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } }) };
+      return { ok: true, json: async () => ({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } }) };
     }
     if (url.includes('/statuses/')) {
       states.push(JSON.parse(options.body).state);
@@ -740,7 +956,7 @@ test('a failed pending-status write is followed by a fail-closed error status', 
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
-      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
     if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) {
@@ -771,13 +987,14 @@ test('the five-minute reconciler does not rewrite an unchanged status on every p
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
-      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
     if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) {
       return responseFor([{
         context: 'codex-approval',
         state: 'success',
         created_at: '2026-10-06T10:05:00Z',
+        description: `base-sha=${otherSha}; prior approval`,
         creator: { login: 'github-actions[bot]' },
       }]);
     }
@@ -812,7 +1029,7 @@ test('a same-context success from another app is not treated as the trusted stat
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
-      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
     if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) {
       return responseFor([{
@@ -864,7 +1081,7 @@ test('target selection persists deleted bot feedback before reconciliation can b
     fetchImpl: async (url, options = {}) => {
       calls.push({ url, options });
       if (url.endsWith('/pulls/177')) {
-        return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+        return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
       }
       if (url.endsWith(`/statuses/${headSha}`)) return responseFor({});
       throw new Error(`Unexpected API URL: ${url}`);
