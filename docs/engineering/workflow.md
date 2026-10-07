@@ -149,7 +149,12 @@ must:
    Bind the approval to the reviewed head SHA: the SHA in the bot comment or a
    review record unambiguously associated with that comment must match the
    current PR head. A missing/ambiguous SHA, or any new commit after that
-   review, invalidates the signal.
+   review, invalidates the signal. Bind it to the reviewed base SHA as well:
+   successful `codex-approval` statuses record the current PR base SHA. A base
+   retarget or base-commit change writes a failure marker and requires a fresh
+   Codex review; a thumbs-up additionally requires a review request recorded
+   after that marker. The workflow reconciles PR edits immediately and its
+   scheduled poll detects base-commit drift.
 
    A Codex `+1`/thumbs-up reaction can also be a technical approval signal only
    when it is on the PR itself and comes from the configured Codex review bot.

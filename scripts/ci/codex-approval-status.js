@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const STATUS_CONTEXT = 'codex-approval';
 const DEFAULT_BOT_LOGIN = 'chatgpt-codex-connector[bot]';
 const DELETED_FEEDBACK_DESCRIPTION = 'Codex review feedback was deleted; a fresh review is required.';
+const BASE_CHANGE_REVIEW_REQUIRED = 'base-change-review-required';
 const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
 const REVIEWED_SHA = /reviewed\s+(?:head|commit)(?:\s+sha)?\s*:\s*\*{0,2}\s*`?([a-f0-9]{7,40})`?/gi;
 const PULL_REQUEST_REVIEWS_QUERY = `
@@ -144,6 +145,17 @@ function recordedRequests(issueComments, headSha, allowedRequesters) {
   return requests;
 }
 
+function statusBaseSha(status) {
+  const match = String(status && status.description || '').match(/(?:^|[;\s])base-sha=([a-f0-9]{40})(?=$|[;\s])/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function isPullRequestBaseEdit(eventName, payload) {
+  return eventName === 'pull_request_target'
+    && payload && payload.action === 'edited'
+    && payload.changes && Object.prototype.hasOwnProperty.call(payload.changes, 'base');
+}
+
 /**
  * Evaluates the GitHub snapshot used by the required codex-approval status.
  * This policy only grants the Codex signal; mergeability, local validation,
@@ -172,6 +184,28 @@ function evaluateCodexApproval(snapshot, options = {}) {
   }
 
   const feedbackRevokedAt = timestamp(options.revokedAt);
+  const baseSha = snapshot.baseSha;
+  const priorApprovalBaseSha = snapshot.priorApprovalBaseSha;
+  const baseChangeInvalidation = snapshot.baseChangeInvalidation;
+  let baseChangeReviewAfter = null;
+  if (baseChangeInvalidation) {
+    if (!/^[a-f0-9]{40}$/i.test(baseSha || '')
+      || !/^[a-f0-9]{40}$/i.test(baseChangeInvalidation.baseSha || '')
+      || baseChangeInvalidation.baseSha.toLowerCase() !== baseSha.toLowerCase()) {
+      return result(false, null, 'The PR base-change invalidation could not be matched to the current base.', headSha);
+    }
+    baseChangeReviewAfter = timestamp(baseChangeInvalidation.createdAt);
+    if (baseChangeReviewAfter === null) {
+      return result(false, null, 'The PR base-change invalidation has no trustworthy timestamp.', headSha);
+    }
+  }
+  if (snapshot.priorApprovalExists === true
+    && (!/^[a-f0-9]{40}$/i.test(baseSha || '')
+      || !/^[a-f0-9]{40}$/i.test(priorApprovalBaseSha || '')
+      || priorApprovalBaseSha.toLowerCase() !== baseSha.toLowerCase())
+    && baseChangeReviewAfter === null) {
+    return result(false, null, 'The prior Codex approval was for a different PR base; a fresh review is required.', headSha);
+  }
 
   const botComments = issueComments.filter((comment) =>
     comment.user && sameLogin(comment.user.login, botLogin)
@@ -225,6 +259,18 @@ function evaluateCodexApproval(snapshot, options = {}) {
       && (latestReviewResponseTime === null || latestReviewResponseTime <= feedbackRevokedAt)) {
       return result(false, null, 'The latest Codex review predates deleted-feedback revocation; a fresh review is required.', headSha);
     }
+    if (baseChangeReviewAfter !== null
+      && (latestReviewResponseTime === null || latestReviewResponseTime <= baseChangeReviewAfter)) {
+      return result(false, null, 'The latest Codex review predates PR base-change invalidation; a fresh review is required.', headSha);
+    }
+    const laterContradictoryReaction = reactions.some((reaction) => {
+      if (reaction.content !== '-1' || !reaction.user || !sameLogin(reaction.user.login, botLogin)) return false;
+      const reactionTime = timestamp(reaction.created_at);
+      return reactionTime === null || latestReviewResponseTime === null || reactionTime >= latestReviewResponseTime;
+    });
+    if (laterContradictoryReaction) {
+      return result(false, null, 'A later or timestamp-ambiguous Codex thumbs-down supersedes the review approval.', headSha);
+    }
     const laterBotMessage = latestBotComment && activityIsNewer(latestBotComment, latestBotReview);
     if (laterBotMessage) {
       return result(false, null, 'A newer Codex bot response supersedes the approval comment.', headSha);
@@ -243,6 +289,9 @@ function evaluateCodexApproval(snapshot, options = {}) {
     return result(false, null, 'A PR-level reaction requires exactly one recorded request for the current head.', headSha);
   }
   const request = requests[0];
+  if (baseChangeReviewAfter !== null && request.createdAt <= baseChangeReviewAfter) {
+    return result(false, null, 'The recorded review request predates PR base-change invalidation; a fresh review is required.', headSha);
+  }
   const reviewAfterRequest = botComments.some((comment) =>
     (timestamp(comment.updated_at || comment.created_at) ?? -1) >= request.createdAt)
     || submittedReviews.some((review) =>
@@ -465,6 +514,43 @@ function trustedCodexStatuses(statuses) {
     .sort((left, right) => (timestamp(right.created_at) ?? -1) - (timestamp(left.created_at) ?? -1));
 }
 
+function priorApprovalBaseState(statuses, baseSha) {
+  const trusted = trustedCodexStatuses(statuses);
+  const latestSuccess = trusted.find((status) => status.state === 'success') || null;
+  const latestSuccessTime = latestSuccess ? timestamp(latestSuccess.created_at) : null;
+  const activeInvalidation = trusted.find((status) => {
+    if (status.state !== 'failure'
+      || !String(status.description || '').includes(BASE_CHANGE_REVIEW_REQUIRED)
+      || statusBaseSha(status) !== String(baseSha || '').toLowerCase()) return false;
+    const invalidationTime = timestamp(status.created_at);
+    return !latestSuccess || latestSuccessTime === null || invalidationTime === null
+      || invalidationTime >= latestSuccessTime;
+  }) || null;
+  const priorApprovalBaseSha = latestSuccess ? statusBaseSha(latestSuccess) : null;
+
+  if (activeInvalidation) {
+    return {
+      priorApprovalExists: Boolean(latestSuccess),
+      priorApprovalBaseSha,
+      baseChangeInvalidation: {
+        baseSha: String(baseSha).toLowerCase(),
+        createdAt: activeInvalidation.created_at,
+      },
+    };
+  }
+  if (!latestSuccess) return { priorApprovalExists: false, priorApprovalBaseSha: null };
+  if (priorApprovalBaseSha !== String(baseSha || '').toLowerCase()) {
+    return { priorApprovalExists: true, priorApprovalBaseSha, needsInvalidation: true };
+  }
+  return { priorApprovalExists: true, priorApprovalBaseSha };
+}
+
+function baseTaggedDescription(description, baseSha) {
+  if (!/^[a-f0-9]{40}$/i.test(baseSha || '')) return String(description || '').slice(0, 140);
+  const marker = `base-sha=${baseSha}; `;
+  return `${marker}${String(description || '').slice(0, 140 - marker.length)}`;
+}
+
 function latestDeletedFeedbackRevocation(statuses) {
   const marker = trustedCodexStatuses(statuses)
     .find((status) => status.state === 'failure'
@@ -572,13 +658,14 @@ async function selectPullRequestTargets({
 async function reconcilePullRequest(number, repository, options) {
   const prPath = `/repos/${repository.owner}/${repository.repo}/pulls/${number}`;
   let sha = /^[a-f0-9]{40}$/i.test(options.headSha || '') ? options.headSha : null;
+  let baseSha = null;
   const publish = (state, description) => publishCommitStatus({
     apiBaseUrl: options.apiBaseUrl,
     owner: repository.owner,
     repo: repository.repo,
     sha,
     state,
-    description,
+    description: baseTaggedDescription(description, baseSha),
     targetUrl: options.targetUrl,
     token: options.token,
     fetchImpl: options.fetchImpl,
@@ -597,12 +684,24 @@ async function reconcilePullRequest(number, repository, options) {
       throw new Error('The current PR head SHA is missing or invalid.');
     }
     sha = liveSha;
+    baseSha = pr.base.sha;
+    if (!/^[a-f0-9]{40}$/i.test(baseSha || '')) {
+      throw new Error('The current PR base SHA is missing or invalid.');
+    }
     const priorStatuses = await currentCodexStatuses(sha, repository, options);
     const latestStatus = trustedCodexStatuses(priorStatuses)[0] || null;
     const revokedAt = latestDeletedFeedbackRevocation(priorStatuses);
     if (!scheduled) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
+    }
+    const baseState = priorApprovalBaseState(priorStatuses, baseSha);
+    if (isPullRequestBaseEdit(options.eventName, options.eventPayload || {}) || baseState.needsInvalidation) {
+      await publish(
+        'failure',
+        `${BASE_CHANGE_REVIEW_REQUIRED}: the PR base changed; a fresh Codex review is required.`,
+      );
+      return;
     }
     const [commits, issueComments, reviewComments, reviews, pullRequestReactions] = await Promise.all([
       githubPages(`${prPath}/commits?per_page=100`, options),
@@ -618,6 +717,10 @@ async function reconcilePullRequest(number, repository, options) {
       reviewComments,
       reviews,
       pullRequestReactions,
+      baseSha,
+      priorApprovalExists: baseState.priorApprovalExists,
+      priorApprovalBaseSha: baseState.priorApprovalBaseSha,
+      baseChangeInvalidation: baseState.baseChangeInvalidation,
     }, {
       botLogin: options.botLogin,
       allowedRequesters: [repository.owner],

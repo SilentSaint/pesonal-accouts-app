@@ -465,6 +465,9 @@ test('Codex PR reactions are correlated to one tracked review request and head',
   assert.match(workflow, /on the PR itself and comes from the configured Codex review bot/i);
   assert.match(workflow, /reaction timestamp must be after the recorded request/i);
   assert.match(workflow, /current PR head must still match the tracked head/i);
+  assert.match(workflow, /bind it to the reviewed base SHA as well/i);
+  assert.match(workflow, /a base\s+retarget or base-commit change writes a failure marker and requires a fresh\s+Codex review/i);
+  assert.match(workflow, /a thumbs-up additionally requires a review request recorded\s+after that marker/i);
   assert.match(workflow, /multiple possible\s+requests or any head change make the association ambiguous/i);
   assert.match(workflow, /Reactions on review comments, reactions from the\s+owner\/other actors.*do not satisfy this gate/is);
 });
@@ -504,6 +507,12 @@ test('the selector skips cleanly until trusted main has the approval policy scri
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('a PR base edit triggers immediate Codex approval reconciliation', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+
+  assert.match(action, /pull_request_target:\s*\n\s*branches:\s*\[main\]\s*\n\s*types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
 });
 
 test('the Codex approval status bridge is least-privilege and never executes PR code', () => {
