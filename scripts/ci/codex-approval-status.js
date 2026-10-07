@@ -7,7 +7,8 @@ const STATUS_CONTEXT = 'codex-approval';
 const DEFAULT_BOT_LOGIN = 'chatgpt-codex-connector[bot]';
 const DELETED_FEEDBACK_DESCRIPTION = 'Codex review feedback was deleted; a fresh review is required.';
 const BASE_CHANGE_REVIEW_REQUIRED = 'base-change-review-required';
-const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
+const NEGATIVE_REACTION_REVIEW_REQUIRED = 'negative-reaction-review-required';
+const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*base=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
 const REVIEWED_SHA = /reviewed\s+(?:head|commit)(?:\s+sha)?\s*:\s*\*{0,2}\s*`?([a-f0-9]{7,40})`?/gi;
 const PULL_REQUEST_REVIEWS_QUERY = `
   query PullRequestApprovalReviews($owner: String!, $repo: String!, $number: Int!, $after: String) {
@@ -45,23 +46,32 @@ function sameLogin(left, right) {
     && left.toLowerCase() === right.toLowerCase();
 }
 
-function sortNewestFirst(items) {
+function reviewResponseCreatedAt(item) {
+  return timestamp(item.source === 'pull-request-review'
+    ? item.submitted_at
+    : item.created_at);
+}
+
+function sortReviewResponsesNewestFirst(items) {
   return [...items].sort((left, right) => {
-    const timeDifference = (timestamp(right.updated_at || right.created_at || right.submitted_at) ?? -1)
-      - (timestamp(left.updated_at || left.created_at || left.submitted_at) ?? -1);
+    const timeDifference = (reviewResponseCreatedAt(right) ?? -1) - (reviewResponseCreatedAt(left) ?? -1);
     if (timeDifference !== 0) return timeDifference;
     return Number(right.id || 0) - Number(left.id || 0);
   });
 }
 
 function activityIsNewer(candidate, reference) {
+  if (candidate === reference) return false;
   if (candidate.source === reference.source
     && candidate.id !== undefined && reference.id !== undefined
     && String(candidate.id) === String(reference.id)) return false;
-  const candidateTime = timestamp(candidate.updated_at || candidate.created_at || candidate.submitted_at);
-  const referenceTime = timestamp(reference.updated_at || reference.created_at || reference.submitted_at);
-  if (candidateTime === null || referenceTime === null) return true;
-  if (candidateTime !== referenceTime) return candidateTime > referenceTime;
+  const candidateCreatedAt = reviewResponseCreatedAt(candidate);
+  const referenceCreatedAt = reviewResponseCreatedAt(reference);
+  const candidateActivityAt = timestamp(candidate.updated_at) ?? candidateCreatedAt;
+  if (candidateCreatedAt === null || referenceCreatedAt === null || candidateActivityAt === null) return true;
+  if (candidateCreatedAt > referenceCreatedAt || candidateActivityAt > referenceCreatedAt) return true;
+  if (candidateActivityAt === referenceCreatedAt && candidateCreatedAt < referenceCreatedAt) return true;
+  if (candidateCreatedAt < referenceCreatedAt) return false;
   if (candidate.source !== reference.source) return true;
   const candidateId = Number(candidate.id);
   const referenceId = Number(reference.id);
@@ -126,7 +136,7 @@ function isUnambiguousApproval(body) {
     && nonSubstantiveRemainder.test(remainingText);
 }
 
-function recordedRequests(issueComments, headSha, allowedRequesters) {
+function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
   const requests = [];
   for (const comment of issueComments) {
     const login = comment.user && comment.user.login;
@@ -135,11 +145,15 @@ function recordedRequests(issueComments, headSha, allowedRequesters) {
     if (!/@codex\s+review\b/i.test(body)) continue;
     for (const match of body.matchAll(REVIEW_REQUEST_MARKER)) {
       if (match[1].toLowerCase() !== headSha.toLowerCase()) continue;
-      const cycle = Number(match[2]);
+      const requestBaseSha = match[2].toLowerCase();
+      if (requestBaseSha !== baseSha.toLowerCase()) continue;
+      const cycle = Number(match[3]);
       if (!Number.isInteger(cycle) || cycle < 1 || cycle > 10) continue;
-      const requestTime = timestamp(comment.updated_at || comment.created_at);
+      // A request is an immutable event. Editing an old marker must not make
+      // it look like a new request made after an invalidation.
+      const requestTime = timestamp(comment.created_at);
       if (requestTime === null) continue;
-      requests.push({ id: comment.id, headSha: match[1], cycle, createdAt: requestTime });
+      requests.push({ id: comment.id, headSha: match[1], baseSha: requestBaseSha, cycle, createdAt: requestTime });
     }
   }
   return requests;
@@ -163,6 +177,7 @@ function isPullRequestBaseEdit(eventName, payload) {
  */
 function evaluateCodexApproval(snapshot, options = {}) {
   const headSha = snapshot && snapshot.headSha;
+  const baseSha = snapshot && snapshot.baseSha;
   const commits = Array.isArray(snapshot && snapshot.commits) ? snapshot.commits : [];
   const issueComments = Array.isArray(snapshot && snapshot.issueComments) ? snapshot.issueComments : [];
   const reviewComments = Array.isArray(snapshot && snapshot.reviewComments) ? snapshot.reviewComments : [];
@@ -176,6 +191,9 @@ function evaluateCodexApproval(snapshot, options = {}) {
   if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
     return result(false, null, 'The current PR head SHA is missing or invalid.', headSha);
   }
+  if (!/^[a-f0-9]{40}$/i.test(baseSha || '')) {
+    return result(false, null, 'The current PR base SHA is missing or invalid.', headSha);
+  }
   if (!commits.some((commit) => commit.sha && commit.sha.toLowerCase() === headSha.toLowerCase())) {
     return result(false, null, 'The current head could not be verified in the PR commit list.', headSha);
   }
@@ -184,7 +202,7 @@ function evaluateCodexApproval(snapshot, options = {}) {
   }
 
   const feedbackRevokedAt = timestamp(options.revokedAt);
-  const baseSha = snapshot.baseSha;
+  const negativeReactionRevokedAt = timestamp(options.negativeReactionRevokedAt);
   const priorApprovalBaseSha = snapshot.priorApprovalBaseSha;
   const baseChangeInvalidation = snapshot.baseChangeInvalidation;
   let baseChangeReviewAfter = null;
@@ -206,12 +224,24 @@ function evaluateCodexApproval(snapshot, options = {}) {
     && baseChangeReviewAfter === null) {
     return result(false, null, 'The prior Codex approval was for a different PR base; a fresh review is required.', headSha);
   }
+  const requests = recordedRequests(issueComments, headSha, allowedRequesters, baseSha);
+  if (requests.length > 1) {
+    return result(false, null, 'Multiple review requests are bound to the current PR head and base.', headSha);
+  }
+  const currentBaseRequest = requests.length === 1 ? requests[0] : null;
+  const requiresCurrentBaseRequest = snapshot.priorApprovalExists !== true || baseChangeReviewAfter !== null;
+  if (requiresCurrentBaseRequest && !currentBaseRequest) {
+    return result(false, null, 'Exactly one review request bound to the current PR head and base is required.', headSha);
+  }
+  if (currentBaseRequest && baseChangeReviewAfter !== null
+    && currentBaseRequest.createdAt <= baseChangeReviewAfter) {
+    return result(false, null, 'The current-base review request predates a revocation; a fresh request is required.', headSha);
+  }
 
   const botComments = issueComments.filter((comment) =>
     comment.user && sameLogin(comment.user.login, botLogin)
     && !/<!--\s*codex-pull-request-review-summary\s*-->/i.test(comment.body || ''))
     .map((comment) => ({ ...comment, source: 'issue-comment' }));
-  const latestBotComment = sortNewestFirst(botComments)[0];
   const botReviewResponses = [
     ...botComments
       .filter((comment) => /\bcodex review\b|reviewed\s+(?:head|commit)\b/i.test(comment.body || ''))
@@ -232,65 +262,88 @@ function evaluateCodexApproval(snapshot, options = {}) {
         responseState: String(review.state || '').toUpperCase(),
       })),
   ];
-  const latestBotReview = sortNewestFirst(botReviewResponses)[0];
+  if (botReviewResponses.some((response) => reviewResponseCreatedAt(response) === null)) {
+    return result(false, null, 'Codex review activity has no trustworthy creation or submission time.', headSha);
+  }
+  const latestBotReview = sortReviewResponsesNewestFirst(botReviewResponses)[0];
   if (latestBotReview) {
-    const latestReviewTime = timestamp(
-      latestBotReview.updated_at || latestBotReview.created_at || latestBotReview.submitted_at,
-    );
-    const crossResourceTimestampTie = botReviewResponses.some((response) =>
-      response.source !== latestBotReview.source
-      && timestamp(response.updated_at || response.created_at || response.submitted_at) === latestReviewTime);
-    if (crossResourceTimestampTie) {
-      return result(false, null, 'Codex review activity has an ambiguous cross-resource timestamp tie.', headSha);
-    }
-    const unsubmittedReview = latestBotReview.source === 'pull-request-review'
-      && (!['COMMENTED', 'APPROVED'].includes(latestBotReview.responseState)
-        || timestamp(latestBotReview.submitted_at) === null);
-    if (!latestBotReview.currentHead
-      || unsubmittedReview
-      || ['CHANGES_REQUESTED', 'DISMISSED'].includes(latestBotReview.responseState)
-      || !isUnambiguousApproval(latestBotReview.responseBody)) {
-      return result(false, null, 'The latest Codex review is not an unambiguous current-head approval.', headSha);
-    }
+    const reviewCreatedTime = timestamp(latestBotReview.source === 'pull-request-review'
+      ? latestBotReview.submitted_at
+      : latestBotReview.created_at);
     const latestReviewResponseTime = timestamp(
       latestBotReview.updated_at || latestBotReview.created_at || latestBotReview.submitted_at,
     );
-    if (feedbackRevokedAt !== null
-      && (latestReviewResponseTime === null || latestReviewResponseTime <= feedbackRevokedAt)) {
-      return result(false, null, 'The latest Codex review predates deleted-feedback revocation; a fresh review is required.', headSha);
+    const reviewPredatesRequest = currentBaseRequest !== null
+      && reviewCreatedTime !== null
+      && reviewCreatedTime < currentBaseRequest.createdAt;
+    const reviewResponsePredatesRequest = currentBaseRequest !== null
+      && latestReviewResponseTime !== null
+      && latestReviewResponseTime < currentBaseRequest.createdAt;
+    if (reviewPredatesRequest && !reviewResponsePredatesRequest) {
+      return result(false, null, 'An older Codex review was edited or delivered after the recorded request.', headSha);
     }
-    if (baseChangeReviewAfter !== null
-      && (latestReviewResponseTime === null || latestReviewResponseTime <= baseChangeReviewAfter)) {
-      return result(false, null, 'The latest Codex review predates PR base-change invalidation; a fresh review is required.', headSha);
+    if (!reviewPredatesRequest) {
+      const latestReviewTime = reviewResponseCreatedAt(latestBotReview);
+      const crossResourceTimestampTie = botReviewResponses.some((response) =>
+        response.source !== latestBotReview.source
+        && reviewResponseCreatedAt(response) === latestReviewTime);
+      if (crossResourceTimestampTie) {
+        return result(false, null, 'Codex review activity has an ambiguous cross-resource timestamp tie.', headSha);
+      }
+      if (botReviewResponses.some((response) => activityIsNewer(response, latestBotReview))) {
+        return result(false, null, 'A later or edited Codex review response supersedes the approval.', headSha);
+      }
+      const unsubmittedReview = latestBotReview.source === 'pull-request-review'
+        && (!['COMMENTED', 'APPROVED'].includes(latestBotReview.responseState)
+          || timestamp(latestBotReview.submitted_at) === null);
+      if (!latestBotReview.currentHead
+        || unsubmittedReview
+        || ['CHANGES_REQUESTED', 'DISMISSED'].includes(latestBotReview.responseState)
+        || !isUnambiguousApproval(latestBotReview.responseBody)) {
+        return result(false, null, 'The latest Codex review is not an unambiguous current-head approval.', headSha);
+      }
+      if (currentBaseRequest) {
+        if (reviewCreatedTime === null || reviewCreatedTime <= currentBaseRequest.createdAt) {
+          return result(false, null, 'The latest Codex review does not follow the current-base request.', headSha);
+        }
+      }
+      if (feedbackRevokedAt !== null
+        && (reviewCreatedTime === null || reviewCreatedTime <= feedbackRevokedAt)) {
+        return result(false, null, 'The latest Codex review predates deleted-feedback revocation; a fresh review is required.', headSha);
+      }
+      if (baseChangeReviewAfter !== null
+        && (reviewCreatedTime === null || reviewCreatedTime <= baseChangeReviewAfter)) {
+        return result(false, null, 'The latest Codex review predates PR base-change invalidation; a fresh review is required.', headSha);
+      }
+      if (negativeReactionRevokedAt !== null
+        && (reviewCreatedTime === null || reviewCreatedTime <= negativeReactionRevokedAt)) {
+        return result(false, null, NEGATIVE_REACTION_REVIEW_REQUIRED, headSha);
+      }
+      const laterContradictoryReaction = reactions.some((reaction) => {
+        if (reaction.content !== '-1' || !reaction.user || !sameLogin(reaction.user.login, botLogin)) return false;
+        const reactionTime = timestamp(reaction.created_at);
+        return reactionTime === null || reviewCreatedTime === null || reactionTime >= reviewCreatedTime;
+      });
+      if (laterContradictoryReaction) {
+        return result(false, null, NEGATIVE_REACTION_REVIEW_REQUIRED, headSha);
+      }
+      const laterBotMessage = botComments.some((comment) => activityIsNewer(comment, latestBotReview));
+      if (laterBotMessage) {
+        return result(false, null, 'A newer Codex bot response supersedes the approval comment.', headSha);
+      }
+      const laterInlineBotComment = reviewComments.some((comment) =>
+        comment.user && sameLogin(comment.user.login, botLogin)
+        && activityIsNewer({ ...comment, source: 'review-comment' }, latestBotReview));
+      if (laterInlineBotComment) {
+        return result(false, null, 'A newer inline Codex review comment requires fresh review resolution.', headSha);
+      }
+      return result(true, 'review-comment', 'The latest Codex review clearly approves the current head.', headSha);
     }
-    const laterContradictoryReaction = reactions.some((reaction) => {
-      if (reaction.content !== '-1' || !reaction.user || !sameLogin(reaction.user.login, botLogin)) return false;
-      const reactionTime = timestamp(reaction.created_at);
-      return reactionTime === null || latestReviewResponseTime === null || reactionTime >= latestReviewResponseTime;
-    });
-    if (laterContradictoryReaction) {
-      return result(false, null, 'A later or timestamp-ambiguous Codex thumbs-down supersedes the review approval.', headSha);
-    }
-    const laterBotMessage = latestBotComment && activityIsNewer(latestBotComment, latestBotReview);
-    if (laterBotMessage) {
-      return result(false, null, 'A newer Codex bot response supersedes the approval comment.', headSha);
-    }
-    const laterInlineBotComment = reviewComments.some((comment) =>
-      comment.user && sameLogin(comment.user.login, botLogin)
-      && activityIsNewer({ ...comment, source: 'review-comment' }, latestBotReview));
-    if (laterInlineBotComment) {
-      return result(false, null, 'A newer inline Codex review comment requires fresh review resolution.', headSha);
-    }
-    return result(true, 'review-comment', 'The latest Codex review clearly approves the current head.', headSha);
   }
 
-  const requests = recordedRequests(issueComments, headSha, allowedRequesters);
-  if (requests.length !== 1) {
-    return result(false, null, 'A PR-level reaction requires exactly one recorded request for the current head.', headSha);
-  }
-  const request = requests[0];
-  if (baseChangeReviewAfter !== null && request.createdAt <= baseChangeReviewAfter) {
-    return result(false, null, 'The recorded review request predates PR base-change invalidation; a fresh review is required.', headSha);
+  const request = currentBaseRequest;
+  if (!request) {
+    return result(false, null, 'A PR-level reaction requires exactly one recorded request for the current head and base.', headSha);
   }
   const reviewAfterRequest = botComments.some((comment) =>
     (timestamp(comment.updated_at || comment.created_at) ?? -1) >= request.createdAt)
@@ -321,10 +374,13 @@ function evaluateCodexApproval(snapshot, options = {}) {
     return contradictoryTime === null || contradictoryTime >= reactionTime;
   });
   if (contradictoryBotReaction) {
-    return result(false, null, 'A later or timestamp-ambiguous Codex thumbs-down supersedes the approval reaction.', headSha);
+    return result(false, null, NEGATIVE_REACTION_REVIEW_REQUIRED, headSha);
   }
   if (feedbackRevokedAt !== null && reactionTime <= feedbackRevokedAt) {
     return result(false, null, 'The Codex thumbs-up predates deleted-feedback revocation; a fresh review is required.', headSha);
+  }
+  if (negativeReactionRevokedAt !== null && reactionTime <= negativeReactionRevokedAt) {
+    return result(false, null, NEGATIVE_REACTION_REVIEW_REQUIRED, headSha);
   }
   return result(true, 'pr-reaction', 'The Codex thumbs-up follows exactly one recorded request for the current head.', headSha);
 }
@@ -518,6 +574,9 @@ function priorApprovalBaseState(statuses, baseSha) {
   const trusted = trustedCodexStatuses(statuses);
   const latestSuccess = trusted.find((status) => status.state === 'success') || null;
   const latestSuccessTime = latestSuccess ? timestamp(latestSuccess.created_at) : null;
+  const latestObservedBaseStatus = trusted.find((status) =>
+    ['success', 'failure', 'error'].includes(status.state)
+    && statusBaseSha(status) !== null) || null;
   const activeInvalidation = trusted.find((status) => {
     if (status.state !== 'failure'
       || !String(status.description || '').includes(BASE_CHANGE_REVIEW_REQUIRED)
@@ -538,6 +597,14 @@ function priorApprovalBaseState(statuses, baseSha) {
       },
     };
   }
+  if (latestObservedBaseStatus
+    && statusBaseSha(latestObservedBaseStatus) !== String(baseSha || '').toLowerCase()) {
+    return {
+      priorApprovalExists: Boolean(latestSuccess),
+      priorApprovalBaseSha,
+      needsInvalidation: true,
+    };
+  }
   if (!latestSuccess) return { priorApprovalExists: false, priorApprovalBaseSha: null };
   if (priorApprovalBaseSha !== String(baseSha || '').toLowerCase()) {
     return { priorApprovalExists: true, priorApprovalBaseSha, needsInvalidation: true };
@@ -554,9 +621,25 @@ function baseTaggedDescription(description, baseSha) {
 function latestDeletedFeedbackRevocation(statuses) {
   const marker = trustedCodexStatuses(statuses)
     .find((status) => status.state === 'failure'
-      && status.description === DELETED_FEEDBACK_DESCRIPTION
+      && String(status.description || '').includes(DELETED_FEEDBACK_DESCRIPTION)
       && timestamp(status.created_at) !== null);
   return marker ? marker.created_at : null;
+}
+
+function latestNegativeReactionRevocation(statuses, baseSha) {
+  const latestRevocation = trustedCodexStatuses(statuses)
+    .find((status) => status.state === 'failure'
+      && String(status.description || '').includes(NEGATIVE_REACTION_REVIEW_REQUIRED)) || null;
+  if (!latestRevocation) return null;
+  const revocationTime = timestamp(latestRevocation.created_at);
+  const latestSuccess = trustedCodexStatuses(statuses)
+    .find((status) => status.state === 'success'
+      && statusBaseSha(status) === String(baseSha || '').toLowerCase()) || null;
+  const successTime = latestSuccess ? timestamp(latestSuccess.created_at) : null;
+  if (revocationTime === null || !latestSuccess || successTime === null || revocationTime >= successTime) {
+    return latestRevocation.created_at || null;
+  }
+  return null;
 }
 
 function eventPullRequestNumber(eventName, payload) {
@@ -691,6 +774,7 @@ async function reconcilePullRequest(number, repository, options) {
     const priorStatuses = await currentCodexStatuses(sha, repository, options);
     const latestStatus = trustedCodexStatuses(priorStatuses)[0] || null;
     const revokedAt = latestDeletedFeedbackRevocation(priorStatuses);
+    const negativeReactionRevokedAt = latestNegativeReactionRevocation(priorStatuses, baseSha);
     if (!scheduled) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
@@ -727,10 +811,25 @@ async function reconcilePullRequest(number, repository, options) {
       eventName: options.eventName,
       eventPayload: options.eventPayload,
       revokedAt,
+      negativeReactionRevokedAt,
     });
     const finalState = approval.authorized ? 'success' : 'failure';
-    if (!scheduled || !latestStatus || latestStatus.state !== finalState) {
-      await publish(finalState, approval.reason);
+    const observedNegativeReaction = pullRequestReactions.some((reaction) =>
+      reaction.content === '-1'
+      && reaction.user
+      && sameLogin(reaction.user.login, options.botLogin || DEFAULT_BOT_LOGIN));
+    const mustPersistNegativeReactionRevocation = !approval.authorized
+      && (approval.reason === NEGATIVE_REACTION_REVIEW_REQUIRED
+        || negativeReactionRevokedAt !== null
+        || observedNegativeReaction);
+    const statusDescription = mustPersistNegativeReactionRevocation
+      && !String(approval.reason).includes(NEGATIVE_REACTION_REVIEW_REQUIRED)
+      ? `${NEGATIVE_REACTION_REVIEW_REQUIRED}: ${approval.reason}`
+      : approval.reason;
+    if (!scheduled || !latestStatus || latestStatus.state !== finalState
+      || (mustPersistNegativeReactionRevocation
+        && !String(latestStatus.description || '').includes(NEGATIVE_REACTION_REVIEW_REQUIRED))) {
+      await publish(finalState, statusDescription);
     }
   } catch (error) {
     if (sha) {

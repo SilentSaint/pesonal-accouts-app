@@ -26,11 +26,15 @@ function review(body, sha = headSha, login = bot, id = 1) {
   };
 }
 
-function request(head = headSha, createdAt = '2026-10-06T10:00:00Z') {
+function request(head = headSha, createdAt = '2026-10-06T10:00:00Z', base = otherSha) {
+  return { ...requestForBase(base, head, createdAt), id: 2 };
+}
+
+function requestForBase(base, head = headSha, createdAt = '2026-10-06T10:00:00Z', cycle = 1) {
   return {
-    id: 2,
+    id: 3,
     user: { login: requestAuthor },
-    body: `@codex review\n<!-- codex-review-request: head=${head}; cycle=1 -->`,
+    body: `@codex review\n<!-- codex-review-request: head=${head}; base=${base}; cycle=${cycle} -->`,
     created_at: createdAt,
   };
 }
@@ -48,11 +52,14 @@ function pullRequestReview(body, commitId = headSha, submittedAt = '2026-10-06T1
 function snapshot(overrides = {}) {
   return {
     headSha,
+    baseSha: otherSha,
     commits: [{ sha: headSha }],
     issueComments: [review("Codex Review: Didn't find any major issues. Keep it up!")],
     reviewComments: [],
     reviews: [],
     pullRequestReactions: [],
+    priorApprovalExists: true,
+    priorApprovalBaseSha: otherSha,
     ...overrides,
   };
 }
@@ -82,6 +89,11 @@ test('a complete positive Codex review for the exact current head qualifies', ()
       body,
     );
   }
+});
+
+test('approval evaluation fails closed when the current PR base SHA is unavailable', () => {
+  assert.equal(evaluateCodexApproval(snapshot({ baseSha: undefined })).authorized, false,
+    'a head-only approval cannot prove which base was reviewed');
 });
 
 test('a current-head pull-request review qualifies and a later negative review revokes older approval', () => {
@@ -143,7 +155,7 @@ test('a current-head approval requires a fresh Codex signal after the PR base ch
   };
   assert.equal(evaluateCodexApproval(snapshot({
     ...baseChange,
-    issueComments: [approvalAfterBaseChange],
+    issueComments: [requestForBase(otherSha, headSha, '2026-10-06T10:03:30Z'), approvalAfterBaseChange],
   })).authorized, true, 'a fresh exact-head review after base invalidation can authorize');
 
   assert.equal(evaluateCodexApproval(snapshot({
@@ -159,7 +171,7 @@ test('a current-head approval requires a fresh Codex signal after the PR base ch
 
   assert.equal(evaluateCodexApproval(snapshot({
     ...baseChange,
-    issueComments: [{ ...request(), created_at: '2026-10-06T10:04:00Z' }],
+    issueComments: [requestForBase(otherSha, headSha, '2026-10-06T10:04:00Z')],
     pullRequestReactions: [{
       id: 4,
       user: { login: bot },
@@ -167,6 +179,77 @@ test('a current-head approval requires a fresh Codex signal after the PR base ch
       created_at: '2026-10-06T10:05:00Z',
     }],
   })).authorized, true, 'a new request and thumbs-up after base invalidation can authorize');
+});
+
+test('a review approval requires request evidence bound to the live base without status history', () => {
+  const approval = review("Codex Review: Didn't find any major issues.");
+  const priorRequest = requestForBase(previousBaseSha);
+  const currentBaseRequest = requestForBase(otherSha);
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    priorApprovalExists: false,
+    priorApprovalBaseSha: null,
+    issueComments: [priorRequest, approval],
+  })).authorized, false, 'an approval cannot borrow a previous-base request before the first status exists');
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    priorApprovalExists: false,
+    priorApprovalBaseSha: null,
+    issueComments: [currentBaseRequest, approval],
+  })).authorized, true, 'a current-head approval follows a request explicitly bound to the live base');
+});
+
+test('duplicate current-base review requests never authorize an approval', () => {
+  const duplicateRequests = [
+    requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 1),
+    requestForBase(otherSha, headSha, '2026-10-06T10:01:00Z', 2),
+  ];
+  const approval = review("Codex Review: Didn't find any major issues.");
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [...duplicateRequests, approval],
+  })).authorized, false,
+  'multiple markers for the same head/base are ambiguous even when status history previously established the base');
+});
+
+test('a post-base-change review requires a new current-base request, not a later edit to an old approval', () => {
+  const baseChange = {
+    baseSha: otherSha,
+    priorApprovalExists: true,
+    priorApprovalBaseSha: previousBaseSha,
+    baseChangeInvalidation: {
+      baseSha: otherSha,
+      createdAt: '2026-10-06T10:03:00Z',
+    },
+  };
+  const oldRequest = requestForBase(previousBaseSha, headSha, '2026-10-06T10:00:00Z');
+  const editedOldApproval = {
+    ...review("Codex Review: Didn't find any major issues."),
+    created_at: '2026-10-06T10:02:00Z',
+    updated_at: '2026-10-06T10:04:00Z',
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    ...baseChange,
+    issueComments: [
+      oldRequest,
+      requestForBase(otherSha, headSha, '2026-10-06T10:03:30Z'),
+      editedOldApproval,
+    ],
+  })).authorized, false, 'editing or delivering an old approval after invalidation does not bind it to the new base');
+
+  const newRequest = requestForBase(otherSha, headSha, '2026-10-06T10:04:00Z', 2);
+  const freshApproval = {
+    ...review("Codex Review: Didn't find any major issues.", headSha, bot, 4),
+    created_at: '2026-10-06T10:05:00Z',
+    updated_at: '2026-10-06T10:05:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    ...baseChange,
+    issueComments: [oldRequest, newRequest, editedOldApproval, freshApproval],
+  })).authorized, true, 'a response after a new request associated with the live base can authorize');
 });
 
 test('an unsubmitted pending Codex review cannot authorize the current head', () => {
@@ -311,6 +394,64 @@ test('a newer negative Codex response invalidates an older positive review', () 
   assert.equal(evaluateCodexApproval(snapshot({
     issueComments: [positive, unstructuredNegative],
   })).authorized, false, 'a later bot response cannot be ignored because its format is unexpected');
+
+  const editedOlderApproval = { ...positive, updated_at: '2026-10-06T10:06:00Z' };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [editedOlderApproval, negative],
+  })).authorized, false, 'editing an older approval cannot mask a later actionable review');
+
+  const editedOlderSubmittedApproval = {
+    ...pullRequestReview("Codex Review: Didn't find any major issues.", headSha, '2026-10-06T10:02:00Z'),
+    updated_at: '2026-10-06T10:06:00Z',
+  };
+  const newerActionableSubmission = pullRequestReview(
+    'Codex Review: Please fix the boundary case.',
+    headSha,
+    '2026-10-06T10:04:00Z',
+  );
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [],
+    reviews: [editedOlderSubmittedApproval, newerActionableSubmission],
+  })).authorized, false, 'editing an older submitted approval cannot mask a later actionable review');
+});
+
+test('editing an older approval cannot hide newer unstructured or inline feedback', () => {
+  const editedApproval = {
+    ...review('Codex Review: LGTM', headSha, bot, 20),
+    created_at: '2026-10-06T10:02:00Z',
+    updated_at: '2026-10-06T10:06:00Z',
+  };
+  const newerUnstructuredFeedback = {
+    id: 21,
+    user: { login: bot },
+    body: 'The retry path still needs a fix.',
+    created_at: '2026-10-06T10:04:00Z',
+    updated_at: '2026-10-06T10:04:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [editedApproval, newerUnstructuredFeedback],
+  })).authorized, false, 'an edit cannot hide a newer top-level finding');
+
+  const newerInlineFeedback = { ...newerUnstructuredFeedback, id: 22 };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [editedApproval],
+    reviewComments: [newerInlineFeedback],
+  })).authorized, false, 'an edit cannot hide a newer inline finding');
+
+  const editedSubmittedApproval = {
+    ...pullRequestReview('Codex Review: LGTM', headSha, '2026-10-06T10:02:00Z'),
+    id: 23,
+    updated_at: '2026-10-06T10:06:00Z',
+  };
+  const newerSubmittedApproval = {
+    ...pullRequestReview("Codex Review: Didn't find any major issues.", headSha, '2026-10-06T10:04:00Z'),
+    id: 24,
+    updated_at: '2026-10-06T10:04:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [],
+    reviews: [editedSubmittedApproval, newerSubmittedApproval],
+  })).authorized, false, 'an edit to an older submitted review cannot hide later approval activity');
 });
 
 test('a later issue comment revokes a review even when GitHub resource IDs collide', () => {
@@ -366,6 +507,16 @@ test('same-second feedback from different GitHub resources fails closed', () => 
     issueComments: [approval],
     reviews: [submittedRejection],
   })).authorized, false, 'IDs from issue comments and submitted reviews do not order a timestamp tie');
+
+  const editedApproval = { ...approval, updated_at: '2026-10-06T10:06:00Z' };
+  const sameTimeChangesRequested = {
+    ...pullRequestReview('Codex Review: Please fix the retry path.', headSha, approval.created_at, 'CHANGES_REQUESTED'),
+    updated_at: '2026-10-06T10:02:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [editedApproval],
+    reviews: [sameTimeChangesRequested],
+  })).authorized, false, 'an edit cannot break a tie between cross-resource review responses');
 });
 
 test('a PR-level Codex thumbs-up qualifies only after one recorded request for the unchanged head', () => {
@@ -390,6 +541,29 @@ test('a PR-level Codex thumbs-up qualifies only after one recorded request for t
   })).authorized, false, 'multiple matching requests are ambiguous');
 
   assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    issueComments: [
+      requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 1),
+      requestForBase(otherSha, headSha, '2026-10-06T10:02:00Z', 2),
+    ],
+    pullRequestReactions: [{ ...reactions[0], created_at: '2026-10-06T10:03:00Z' }],
+  })).authorized, false, 'multiple requests for the same head and base remain ambiguous');
+
+  const earlierReview = {
+    ...review("Codex Review: Didn't find any major issues."),
+    created_at: '2026-10-06T09:58:00Z',
+    updated_at: '2026-10-06T09:58:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    priorApprovalExists: true,
+    priorApprovalBaseSha: otherSha,
+    issueComments: [earlierReview, requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z')],
+    pullRequestReactions: [{ ...reactions[0], created_at: '2026-10-06T10:03:00Z' }],
+  })).authorized, true,
+  'a new thumbs-up can authorize after the unique request even when an earlier review response remains visible');
+
+  assert.equal(evaluateCodexApproval(snapshot({
     issueComments: [request(otherSha)],
     pullRequestReactions: reactions,
   })).authorized, false, 'a request for another head is stale');
@@ -401,12 +575,13 @@ test('a PR-level Codex thumbs-up qualifies only after one recorded request for t
 
   const editedAfterReaction = {
     ...request(),
-    updated_at: '2026-10-06T10:04:00Z',
+    created_at: '2026-10-06T10:04:00Z',
+    updated_at: '2026-10-06T10:05:00Z',
   };
   assert.equal(evaluateCodexApproval(snapshot({
     issueComments: [editedAfterReaction],
     pullRequestReactions: reactions,
-  })).authorized, false, 'an edited request marker must be timestamped at its latest edit');
+  })).authorized, false, 'editing a marker cannot make an earlier reaction follow the request');
 
   assert.equal(evaluateCodexApproval(snapshot({
     issueComments: [{ ...request(), body: '<!-- codex-review-request: head=' + headSha + '; cycle=1 -->' }],
@@ -486,6 +661,239 @@ test('a later or timestamp-ambiguous Codex thumbs-down revokes comment and submi
       }],
     })).authorized, true, 'an earlier thumbs-down does not supersede a later approval');
   }
+
+  const editedApprovals = [
+    { issueComments: [{
+      ...review("Codex Review: Didn't find any major issues."),
+      created_at: '2026-10-06T10:02:00Z',
+      updated_at: '2026-10-06T10:04:00Z',
+    }] },
+    { issueComments: [], reviews: [{
+      ...pullRequestReview("Codex Review: Didn't find any major issues.", headSha, '2026-10-06T10:02:00Z'),
+      updated_at: '2026-10-06T10:04:00Z',
+    }] },
+  ];
+  for (const approval of editedApprovals) {
+    assert.equal(evaluateCodexApproval(snapshot({
+      ...approval,
+      pullRequestReactions: [{
+        id: 6,
+        user: { login: bot },
+        content: '-1',
+        created_at: '2026-10-06T10:03:00Z',
+      }],
+    })).authorized, false, 'editing an earlier approval cannot mask a later thumbs-down');
+  }
+});
+
+test('a persisted thumbs-down revocation blocks removed feedback until a fresh base-bound review', () => {
+  const oldRequest = requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z');
+  const oldApproval = {
+    ...review("Codex Review: Didn't find any major issues."),
+    created_at: '2026-10-06T10:02:00Z',
+    updated_at: '2026-10-06T10:02:00Z',
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    issueComments: [oldRequest, oldApproval],
+    pullRequestReactions: [],
+  }), { negativeReactionRevokedAt: '2026-10-06T10:03:00Z' }).authorized, false,
+  'removing a previously observed thumbs-down cannot restore the earlier approval');
+
+  const freshApproval = {
+    ...review("Codex Review: Didn't find any major issues.", headSha, bot, 4),
+    created_at: '2026-10-06T10:05:00Z',
+    updated_at: '2026-10-06T10:05:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    issueComments: [oldRequest, oldApproval, freshApproval],
+    pullRequestReactions: [],
+  }), { negativeReactionRevokedAt: '2026-10-06T10:03:00Z' }).authorized, true,
+  'a newly submitted approval after the revocation can restore authorization');
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: otherSha,
+    issueComments: [oldRequest],
+    pullRequestReactions: [{
+      id: 6,
+      user: { login: bot },
+      content: '+1',
+      created_at: '2026-10-06T10:05:00Z',
+    }],
+  }), { negativeReactionRevokedAt: '2026-10-06T10:03:00Z' }).authorized, true,
+  'a newer thumbs-up can clear the persisted revocation after the single recorded request');
+});
+
+test('scheduled reconciliation persists a negative-reaction revocation until a fresh review', async () => {
+  const statusHistory = [{
+    context: STATUS_CONTEXT,
+    state: 'success',
+    created_at: '2026-10-06T10:03:00Z',
+    description: `base-sha=${otherSha}; prior approval`,
+    creator: { login: 'github-actions[bot]' },
+  }];
+  const oldRequest = requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z');
+  const oldApproval = {
+    ...review("Codex Review: Didn't find any major issues."),
+    created_at: '2026-10-06T10:02:00Z',
+    updated_at: '2026-10-06T10:02:00Z',
+  };
+  let issueComments = [oldRequest, oldApproval];
+  let pullRequestReactions = [{
+    id: 5,
+    user: { login: bot },
+    content: '-1',
+    created_at: '2026-10-06T10:04:00Z',
+  }];
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([...statusHistory]);
+    if (url.includes('/statuses/')) {
+      const status = JSON.parse(options.body);
+      published.push(status);
+      statusHistory.unshift({
+        context: STATUS_CONTEXT,
+        state: status.state,
+        created_at: status.state === 'pending' ? '2026-10-06T10:05:00Z' : '2026-10-06T10:05:01Z',
+        description: status.description,
+        creator: { login: 'github-actions[bot]' },
+      });
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) return responseFor(issueComments);
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor(pullRequestReactions);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+  const options = {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    botLogin: bot,
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    ...options,
+    eventName: 'schedule',
+  });
+  assert.equal(published.at(-1).state, 'failure');
+  assert.match(published.at(-1).description, /negative-reaction-review-required/);
+
+  published.length = 0;
+  pullRequestReactions = [];
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    ...options,
+    eventName: 'schedule',
+  });
+  assert.deepEqual(published, [], 'the scheduled poll cannot restore success after the reaction disappears');
+  assert.match(statusHistory[0].description, /negative-reaction-review-required/);
+
+  issueComments = [
+    ...issueComments,
+    {
+      ...review('Codex Review: Please fix the retry boundary.', headSha, bot, 6),
+      created_at: '2026-10-06T10:06:00Z',
+      updated_at: '2026-10-06T10:06:00Z',
+    },
+  ];
+  published.length = 0;
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    ...options,
+    eventName: 'pull_request_review',
+  });
+  assert.deepEqual(published.map(status => status.state), ['pending', 'failure']);
+  assert.match(published.at(-1).description, /negative-reaction-review-required/);
+
+  published.length = 0;
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    ...options,
+    eventName: 'schedule',
+  });
+  assert.deepEqual(published, [], 'polling does not rewrite an unchanged failure with an active revocation');
+
+  issueComments = [
+    ...issueComments,
+    {
+      ...review("Codex Review: Didn't find any major issues.", headSha, bot, 6),
+      created_at: '2026-10-06T10:07:00Z',
+      updated_at: '2026-10-06T10:07:00Z',
+    },
+  ];
+  published.length = 0;
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    ...options,
+    eventName: 'pull_request_review',
+  });
+  assert.deepEqual(published.map(status => status.state), ['pending', 'success']);
+  assert.match(published.at(-1).description, /base-sha=/);
+});
+
+test('a fresh current-base review clears a negative-reaction revocation from an earlier base', async () => {
+  const statusHistory = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'failure',
+      created_at: '2026-10-06T10:03:00Z',
+      description: `base-sha=${previousBaseSha}; negative-reaction-review-required: prior review was revoked`,
+      creator: { login: 'github-actions[bot]' },
+    },
+    {
+      context: STATUS_CONTEXT,
+      state: 'success',
+      created_at: '2026-10-06T10:04:00Z',
+      description: `base-sha=${otherSha}; prior current-base approval`,
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+  const issueComments = [
+    requestForBase(otherSha, headSha, '2026-10-06T10:05:00Z', 2),
+    {
+      ...review("Codex Review: Didn't find any major issues.", headSha, bot, 7),
+      created_at: '2026-10-06T10:06:00Z',
+      updated_at: '2026-10-06T10:06:00Z',
+    },
+  ];
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([...statusHistory]);
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) return responseFor(issueComments);
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    botLogin: bot,
+    eventName: 'pull_request_review',
+  });
+
+  assert.deepEqual(published.map(status => status.state), ['pending', 'success']);
+  assert.match(published.at(-1).description, new RegExp(`base-sha=${otherSha};`));
 });
 
 test('a later actionable inline Codex comment blocks the review-comment signal', () => {
@@ -598,7 +1006,7 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) return responseFor([
       review("Codex Review: Didn't find any major issues. Keep it up!"),
-      requestComment,
+      requestForBase(otherSha, headSha, requestComment.created_at),
     ]);
     if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
       nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
@@ -703,6 +1111,43 @@ test('a base retarget invalidates an old review even before the policy has recor
     'the prior-base review must not be read as approval after a base retarget');
 });
 
+test('scheduled reconciliation detects base drift from a failure status without a prior success', async () => {
+  const calls = [];
+  const oldBaseFailure = {
+    context: STATUS_CONTEXT,
+    state: 'failure',
+    created_at: '2026-10-06T10:02:00Z',
+    description: `base-sha=${previousBaseSha}; Codex approval was not verified.`,
+    creator: { login: 'github-actions[bot]' },
+  };
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([oldBaseFailure]);
+    if (url.includes('/statuses/')) return responseFor({});
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'schedule',
+    botLogin: bot,
+  });
+
+  const statuses = calls.filter((call) => call.options.method === 'POST' && call.url.includes('/statuses/'))
+    .map((call) => JSON.parse(call.options.body));
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].state, 'failure');
+  assert.match(statuses[0].description, /base-change-review-required/);
+  assert.equal(calls.some((call) => call.url.endsWith('/pulls/177/commits?per_page=100')), false,
+    'base drift is invalidated before preexisting approval feedback can be examined');
+});
+
 test('a fresh review after the persisted base invalidation restores the current-base status', async () => {
   const postStates = [];
   const priorStatuses = [
@@ -733,11 +1178,14 @@ test('a fresh review after the persisted base invalidation restores the current-
     }
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) {
-      return responseFor([{
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:03:30Z'),
+        {
         ...review("Codex Review: Didn't find any major issues."),
         created_at: '2026-10-06T10:04:00Z',
         updated_at: '2026-10-06T10:04:00Z',
-      }]);
+        },
+      ]);
     }
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
@@ -821,10 +1269,11 @@ test('deleting Codex feedback cannot restore an older approval', async () => {
     context: 'codex-approval',
     state: 'success',
     created_at: '2026-10-06T10:03:00Z',
-    description: 'The prior Codex review was authorized.',
+    description: `base-sha=${otherSha}; The prior Codex review was authorized.`,
     creator: { login: 'github-actions[bot]' },
   }];
   let currentReview = review('Codex Review: LGTM', headSha, bot, 10);
+  let currentRequest = requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z');
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/177')) {
@@ -847,7 +1296,7 @@ test('deleting Codex feedback cannot restore an older approval', async () => {
     }
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) {
-      return responseFor([currentReview]);
+      return responseFor([currentRequest, currentReview]);
     }
     if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
     if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
@@ -1004,7 +1453,10 @@ test('the five-minute reconciler does not rewrite an unchanged status on every p
     }
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) {
-      return responseFor([review("Codex Review: Didn't find any major issues. Keep it up!")]);
+      return responseFor([
+        requestForBase(otherSha),
+        review("Codex Review: Didn't find any major issues. Keep it up!"),
+      ]);
     }
     if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
       nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
@@ -1045,7 +1497,10 @@ test('a same-context success from another app is not treated as the trusted stat
     }
     if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
     if (url.endsWith('/issues/177/comments?per_page=100')) {
-      return responseFor([review("Codex Review: Didn't find any major issues. Keep it up!")]);
+      return responseFor([
+        requestForBase(otherSha),
+        review("Codex Review: Didn't find any major issues. Keep it up!"),
+      ]);
     }
     if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
       nodes: [], pageInfo: { hasNextPage: false, endCursor: null },

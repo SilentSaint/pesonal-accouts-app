@@ -111,16 +111,21 @@ review response rather than reporting completion or handing off. The watcher
 must:
 
 1. On creation, verify that Codex review was triggered. If no review is pending
-   or present, request `@codex review` once; do not create duplicate requests
-   when GitHub already started the automatic review. For each request, record
-   the request timestamp and full head SHA; record the reviewed SHA when a response
-   arrives. For a PR-level reaction signal, include this machine-readable marker
-   in the top-level request comment before triggering review:
-   `<!-- codex-review-request: head=<40-character-head-sha>; cycle=<1-10> -->`.
-   Use the GitHub API's comment creation/update timestamp; editing a marker
-   restarts its timestamp. Only a marker written by the repository owner is
-   eligible; keep one request marker per reviewed head. Track the base branch
-   SHA alongside the reviewed head SHA.
+   or present, request `@codex review` once; do not create a duplicate while
+   GitHub has already started an automatic review. If no trusted successful
+   status establishes the current base (or a base-change invalidation is active),
+   an automatic review without a prior base-bound request cannot authorize the
+   initial status. Wait for that review to finish, then make one fresh,
+   marker-backed request. For each explicit request, record its timestamp and
+   full head SHA; record the reviewed SHA when a response arrives. Include this
+   machine-readable marker in the top-level request comment before triggering
+   each explicit review:
+   `<!-- codex-review-request: head=<40-character-head-sha>; base=<40-character-base-sha>; cycle=<1-10> -->`.
+   Use the GitHub API's comment creation timestamp as the request time; editing
+   an older request must never make it fresh. Only a marker written by the
+   repository owner is eligible, and there must be exactly one request marker
+   for each reviewed head/base pair. Track the base branch SHA alongside the
+   reviewed head SHA.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -165,10 +170,12 @@ must:
    hand it to the owner. Reactions on review comments, reactions from the
    owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
-   Treat a Codex comment or reaction as evidence only, not merge-time
-   authorization. Before merging, require an active server-side required status
-   check or native approval, bound to the exact verified `expected_head_sha` and
-   enforced for the authenticated merge identity through the merge operation.
+   A Codex comment or reaction by itself is evidence, not merge-time
+   authorization; the active server-side `codex-approval` required status is
+   the merge-time enforcement of the owner's delegated signal. Before merging,
+   require an active server-side required status check or native approval,
+   bound to the exact verified `expected_head_sha` and enforced for the
+   authenticated merge identity through the merge operation.
    That gate must invalidate authorization when a new negative Codex response
    arrives or the qualifying signal is withdrawn; a final signal snapshot or a
    previously successful but no longer current check is insufficient. If the
@@ -264,6 +271,27 @@ across scheduled runs; the reconciler reads trusted status history, so an older
 approval that remains visible in GitHub cannot restore authorization.
 Only a current-head Codex approval or reaction recorded after that marker can
 restore the status to success.
+
+The approval evaluator requires a verified current base SHA. If trusted status
+history does not establish a successful approval on that same base, or a
+base-change invalidation is active, the evidence must follow exactly one
+request marker bound to the exact PR head and current base SHA. A PR-level
+thumbs-up always requires exactly one such marker. An older or previous-base
+request, an edited old review, or a response delivered after a marker but
+originally submitted before it cannot qualify. When trusted history already
+establishes the same base, a fresh unambiguous exact-head Codex review comment
+can qualify without an additional request marker.
+
+A Codex thumbs-down is also a revocation. Because GitHub does not emit reaction
+removal events, the scheduled reconciler persists a
+`negative-reaction-review-required` failure marker when it observes one. That
+marker remains active if the reaction is later removed and can be cleared only
+by a newer qualifying Codex approval or thumbs-up for the current head and
+live base. A base change still requires a new base-bound request and review.
+Compare a reaction with the review's immutable creation or submission time;
+editing an older approval must not mask a later thumbs-down. Distinct review
+responses are ordered by creation/submission time; editing an older approval
+must not reorder it ahead of a later actionable review.
 
 At merge time, the agent must also verify a completed successful run of this
 workflow for the target PR after its latest Codex review activity, or a
