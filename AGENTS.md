@@ -76,12 +76,9 @@ All agents working on the backlog MUST follow these rules:
    to `main`.
 3. **PR validation**: open a pull request against GitHub `main` after the
    local Docker verifier validates the exact revision under review.
-4. **Owner-authorized merge**: follow the canonical engineering workflow in
-   `docs/engineering/workflow.md` for merge authority and gates. The repository
-   owner grants standing authorization for the agent to merge when a qualifying
-   current-head Codex signal and every required merge gate pass. Ambiguous or
-   incomplete evidence leaves the PR unmerged and is handed to the owner; agents
-   must not bypass branch protection or the guarded release path.
+4. **Merge authority**: follow the [canonical engineering workflow](docs/engineering/workflow.md#pull-requests-and-merge)
+   for merge authorization and all merge gates; this document does not duplicate
+   or override that policy.
 5. **Least-privilege access**: agent credentials should be limited to the
    required GitHub read/write and pull-request operations. Do not grant
    production deployment, Terraform apply, IAM administration, or account
@@ -105,12 +102,6 @@ new browser login.
 ### 5. Local Verification and AWS Deployment Boundary
 * **Canonical validation**: Run `scripts/ci/verify-local-docker` for the reproducible full gate, or `scripts/ci/verify-local` when the pinned toolchain is installed directly.
 * **No hosted validation dependency**: CodeBuild and GitHub Actions are not required for validation. Do not restore a hosted buildspec or workflow as a prerequisite for a change.
-  The `codex-approval` Actions status is a required merge-authorization policy
-  gate only; it is not a build/test result and never replaces the local Docker
-  gate. Before merging, verify that the latest Codex approval workflow run for
-  this PR (or a successful scheduled run that covers it) completed after the
-  latest Codex review activity. A failed or unmappable run blocks merging even
-  if an older `codex-approval` status remains green.
 * **Non-mutating gate**: Local verification must not receive AWS credentials or run Terraform apply, S3 publication, Lambda updates, or CloudFront invalidation.
 * **Explicit deployment**: Production deployment is a separate owner-approved operation. Keep deployment credentials and release commands outside the local verification scripts.
 

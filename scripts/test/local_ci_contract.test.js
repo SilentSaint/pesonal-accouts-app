@@ -300,7 +300,7 @@ test('Codex review comments accept clear equivalent approval wording for the rev
   assert.match(workflow, /any new commit after that\s+review.*invalidates the signal/is);
 });
 
-test('qualifying Codex approval grants conditional agent merge authority', () => {
+test('the canonical workflow is the sole source of conditional agent merge authority', () => {
   const agents = read('AGENTS.md');
   const workflow = read('docs/engineering/workflow.md');
 
@@ -309,14 +309,12 @@ test('qualifying Codex approval grants conditional agent merge authority', () =>
     /GitHub repository `SilentSaint\/pesonal-accouts-app` as\s+the\s+canonical integration surface/i,
   );
   assert.match(agents, /GitHub read\/write and pull-request operations/i);
-  assert.match(agents, /canonical engineering workflow in\s+`docs\/engineering\/workflow\.md`/i);
+  assert.match(agents, /canonical engineering workflow\]\(docs\/engineering\/workflow\.md#pull-requests-and-merge\)/i);
   assert.doesNotMatch(agents, /AWS CodeCommit repository in `ap-south-2` as the\s+canonical integration surface/i);
   assert.doesNotMatch(agents, /required CodeCommit read\/write and pull-request operations/i);
-  assert.match(agents, /owner grants standing\s+authorization for the agent to merge/i);
-  assert.match(
-    agents,
-    /qualifying\s+current-head Codex signal and\s+every required merge gate pass/i,
-  );
+  assert.match(agents, /Merge authority\*\*:\s*follow the \[canonical engineering workflow\]/i);
+  assert.doesNotMatch(agents, /owner grants standing authorization for the agent to merge/i);
+  assert.doesNotMatch(agents, /codex-approval Actions status is a required merge-authorization policy gate/i);
   assert.match(workflow, /owner grants standing authorization for the agent to merge/i);
   assert.match(workflow, /qualifying current-head Codex approval and every merge gate below pass/i);
   assert.doesNotMatch(agents, /only the repository owner reviews and merges/i);

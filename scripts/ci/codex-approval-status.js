@@ -59,6 +59,7 @@ function activityIsNewer(candidate, reference) {
   const referenceTime = timestamp(reference.updated_at || reference.created_at || reference.submitted_at);
   if (candidateTime === null || referenceTime === null) return true;
   if (candidateTime !== referenceTime) return candidateTime > referenceTime;
+  if (candidate.source !== reference.source) return true;
   const candidateId = Number(candidate.id);
   const referenceId = Number(reference.id);
   if (!Number.isSafeInteger(candidateId) || !Number.isSafeInteger(referenceId)) return true;
@@ -93,8 +94,8 @@ function isUnambiguousApproval(body) {
     /\bthis (?:PR|pull request) is approved\b/i,
     /\bthis is approved\b/i,
     /\b(?:didn't|did not) find (?:any )?(?:(?:major|significant|blocking) )?issues?\b/i,
-    /\bno (?:(?:major|significant|blocking|open|actionable) )?issues?\b/i,
-    /\bno (?:actionable )?findings?\b/i,
+    /\bno (?:(?:major|significant|blocking|open|actionable) )?issues?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?found)?\b/i,
+    /\bno (?:actionable )?findings?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?found)?\b/i,
     /\bnothing major to address\b/i,
     /\b(?:don't|do not) see any issues?\b/i,
     /\bLGTM\b/i,
@@ -163,16 +164,21 @@ function evaluateCodexApproval(snapshot, options = {}) {
   if (!commits.some((commit) => commit.sha && commit.sha.toLowerCase() === headSha.toLowerCase())) {
     return result(false, null, 'The current head could not be verified in the PR commit list.', headSha);
   }
+  if (isDeletedCodexFeedback(options.eventName, options.eventPayload || {}, botLogin)) {
+    return result(false, null, 'Codex review feedback was deleted; a fresh review is required.', headSha);
+  }
 
   const botComments = issueComments.filter((comment) =>
     comment.user && sameLogin(comment.user.login, botLogin)
-    && !/<!--\s*codex-pull-request-review-summary\s*-->/i.test(comment.body || ''));
+    && !/<!--\s*codex-pull-request-review-summary\s*-->/i.test(comment.body || ''))
+    .map((comment) => ({ ...comment, source: 'issue-comment' }));
   const latestBotComment = sortNewestFirst(botComments)[0];
   const botReviewResponses = [
     ...botComments
       .filter((comment) => /\bcodex review\b|reviewed\s+(?:head|commit)\b/i.test(comment.body || ''))
       .map((comment) => ({
         ...comment,
+        source: 'issue-comment',
         currentHead: reviewedHead(comment.body, commits, headSha),
         responseBody: comment.body,
         responseState: 'COMMENTED',
@@ -181,16 +187,27 @@ function evaluateCodexApproval(snapshot, options = {}) {
       .filter((review) => review.user && sameLogin(review.user.login, botLogin))
       .map((review) => ({
         ...review,
+        source: 'pull-request-review',
         currentHead: reviewSubmissionHeadMatches(review, commits, headSha),
         responseBody: review.body,
         responseState: String(review.state || '').toUpperCase(),
       })),
   ];
-  const latestBotReview = sortNewestFirst(botReviewResponses.filter((response) => response.currentHead))[0];
+  const latestBotReview = sortNewestFirst(botReviewResponses)[0];
   if (latestBotReview) {
-    if (['CHANGES_REQUESTED', 'DISMISSED'].includes(latestBotReview.responseState)
+    const latestReviewTime = timestamp(
+      latestBotReview.updated_at || latestBotReview.created_at || latestBotReview.submitted_at,
+    );
+    const crossResourceTimestampTie = botReviewResponses.some((response) =>
+      response.source !== latestBotReview.source
+      && timestamp(response.updated_at || response.created_at || response.submitted_at) === latestReviewTime);
+    if (crossResourceTimestampTie) {
+      return result(false, null, 'Codex review activity has an ambiguous cross-resource timestamp tie.', headSha);
+    }
+    if (!latestBotReview.currentHead
+      || ['CHANGES_REQUESTED', 'DISMISSED'].includes(latestBotReview.responseState)
       || !isUnambiguousApproval(latestBotReview.responseBody)) {
-      return result(false, null, 'The latest current-head Codex review is not an unambiguous approval.', headSha);
+      return result(false, null, 'The latest Codex review is not an unambiguous current-head approval.', headSha);
     }
     const laterBotMessage = latestBotComment && latestBotComment.id !== latestBotReview.id
       && activityIsNewer(latestBotComment, latestBotReview);
@@ -199,7 +216,7 @@ function evaluateCodexApproval(snapshot, options = {}) {
     }
     const laterInlineBotComment = reviewComments.some((comment) =>
       comment.user && sameLogin(comment.user.login, botLogin)
-      && activityIsNewer(comment, latestBotReview));
+      && activityIsNewer({ ...comment, source: 'review-comment' }, latestBotReview));
     if (laterInlineBotComment) {
       return result(false, null, 'A newer inline Codex review comment requires fresh review resolution.', headSha);
     }
@@ -431,6 +448,14 @@ function eventPullRequestNumber(eventName, payload) {
   return null;
 }
 
+function isDeletedCodexFeedback(eventName, payload, botLogin) {
+  if (payload.action !== 'deleted'
+    || !['issue_comment', 'pull_request_review_comment'].includes(eventName)
+    || !Number.isSafeInteger(eventPullRequestNumber(eventName, payload))) return false;
+  return Boolean(payload.comment && payload.comment.user
+    && sameLogin(payload.comment.user.login, botLogin));
+}
+
 function parseRepository(fullName) {
   const parts = String(fullName || '').split('/');
   if (parts.length !== 2 || !parts.every(Boolean)) throw new Error('GITHUB_REPOSITORY is invalid.');
@@ -529,7 +554,12 @@ async function reconcilePullRequest(number, repository, options) {
       reviewComments,
       reviews,
       pullRequestReactions,
-    }, { botLogin: options.botLogin, allowedRequesters: [repository.owner] });
+    }, {
+      botLogin: options.botLogin,
+      allowedRequesters: [repository.owner],
+      eventName: options.eventName,
+      eventPayload: options.eventPayload,
+    });
     const finalState = approval.authorized ? 'success' : 'failure';
     if (!scheduled || await currentCodexStatus(sha, repository, options) !== finalState) {
       await publish(finalState, approval.reason);
@@ -552,6 +582,9 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
   if (!token) throw new Error('GITHUB_TOKEN is unavailable.');
   const apiBaseUrl = env.GITHUB_API_URL || 'https://api.github.com';
   const eventName = env.GITHUB_EVENT_NAME || '';
+  const eventPayload = env.GITHUB_EVENT_PATH
+    ? JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'))
+    : {};
   const number = Number(env.CODEX_PR_NUMBER);
   if (!Number.isSafeInteger(number) || number < 1) throw new Error('CODEX_PR_NUMBER is invalid.');
   const options = {
@@ -560,6 +593,7 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
     fetchImpl,
     botLogin: env.CODEX_REVIEW_BOT_LOGIN || DEFAULT_BOT_LOGIN,
     eventName,
+    eventPayload,
     headSha: env.CODEX_PR_HEAD_SHA,
     targetUrl: env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID
       ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
