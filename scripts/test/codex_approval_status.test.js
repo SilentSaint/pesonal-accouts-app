@@ -73,6 +73,7 @@ test('a complete positive Codex review for the exact current head qualifies', ()
     'Codex Review: I approve this PR.',
     'Codex Review: This is approved.',
     'Codex Review: This pull request is approved.',
+    'Codex Review: No major issues found.',
   ]) {
     assert.equal(
       evaluateCodexApproval(snapshot({ issueComments: [review(body)] })).authorized,
@@ -118,6 +119,25 @@ test('a current-head pull-request review qualifies and a later negative review r
   })).authorized, false, 'a newer empty review submission must not inherit an older approval');
 });
 
+test('a later review tied to an older head supersedes an earlier current-head approval', () => {
+  const currentHeadApproval = pullRequestReview(
+    "Codex Review: Didn't find any major issues. Keep it up!",
+    headSha,
+    '2026-10-06T10:04:00Z',
+  );
+  const staleHeadRejection = pullRequestReview(
+    'Codex Review: The older change still has an unsafe retry case.',
+    otherSha,
+    '2026-10-06T10:05:00Z',
+    'CHANGES_REQUESTED',
+  );
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [],
+    reviews: [currentHeadApproval, staleHeadRejection],
+  })).authorized, false);
+});
+
 test('a unique abbreviated reviewed commit is accepted only when it resolves to the current head', () => {
   const comment = review("Codex Review: Didn't find any major issues. Keep it up!", headSha.slice(0, 12));
   assert.equal(evaluateCodexApproval(snapshot({ issueComments: [comment] })).authorized, true);
@@ -148,6 +168,7 @@ test('praise alone, mixed/actionable feedback, wrong authors, and stale heads fa
     'Codex Review: Looks good, assuming CI passes.',
     'Codex Review: If CI checks pass, LGTM.',
     'Codex Review: No major issues except the retry path can hang.',
+    'Codex Review: No major issues found, but the retry path can hang.',
     'Codex Review: Looks good if you add a timeout before merging.',
   ]) {
     assert.equal(evaluateCodexApproval(snapshot({ issueComments: [review(body)] })).authorized, false, body);
@@ -200,6 +221,30 @@ test('a same-second later Codex message fails closed using its higher GitHub id'
     updated_at: approved.updated_at,
   };
   assert.equal(evaluateCodexApproval(snapshot({ issueComments: [approved, followUp] })).authorized, false);
+});
+
+test('same-second feedback from different GitHub resources fails closed', () => {
+  const approval = review('Codex Review: LGTM', headSha, bot, 10);
+  const inlineRejection = {
+    id: 9,
+    user: { login: bot },
+    body: 'The retry path still needs a fix.',
+    created_at: approval.created_at,
+    updated_at: approval.updated_at,
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [approval],
+    reviewComments: [inlineRejection],
+  })).authorized, false, 'IDs from comments and inline reviews do not order a timestamp tie');
+
+  const submittedRejection = {
+    ...pullRequestReview('Codex Review: Please fix the retry path.'),
+    id: 9,
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [approval],
+    reviews: [submittedRejection],
+  })).authorized, false, 'IDs from issue comments and submitted reviews do not order a timestamp tie');
 });
 
 test('a PR-level Codex thumbs-up qualifies only after one recorded request for the unchanged head', () => {
@@ -465,6 +510,54 @@ test('an edit to an older current-head review supersedes a newer Codex approval'
   });
 
   assert.deepEqual(statuses, ['pending', 'failure']);
+});
+
+test('deleting Codex feedback cannot restore an older approval', async () => {
+  const statuses = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+    }
+    if (url.includes('/statuses/')) {
+      statuses.push(JSON.parse(options.body).state);
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([review('Codex Review: LGTM', headSha, bot, 10)]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    eventPayload: {
+      action: 'deleted',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: { id: 9, user: { login: bot }, body: 'Codex Review: Please fix the retry bug.' },
+    },
+    botLogin: bot,
+  });
+
+  assert.deepEqual(statuses, ['pending', 'failure']);
+  assert.equal(evaluateCodexApproval(snapshot(), {
+    botLogin: bot,
+    eventName: 'pull_request_review_comment',
+    eventPayload: {
+      action: 'deleted',
+      pull_request: { number: 177 },
+      comment: { id: 8, user: { login: bot }, body: 'The retry path still needs a fix.' },
+    },
+  }).authorized, false, 'deleting an inline Codex comment also requires a fresh review');
 });
 
 test('a failed GitHub snapshot replaces prior success with an error status', async () => {
