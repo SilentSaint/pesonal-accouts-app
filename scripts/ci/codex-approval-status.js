@@ -513,18 +513,16 @@ async function selectPullRequestTargets({
       if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
         throw new Error('Deleted feedback revocation head SHA is missing or invalid.');
       }
-      if (pullRequest.state === 'open' && pullRequest.base && pullRequest.base.ref === 'main') {
-        await publishCommitStatus({
-          apiBaseUrl,
-          owner: repository.owner,
-          repo: repository.repo,
-          sha: headSha,
-          state: 'failure',
-          description: DELETED_FEEDBACK_DESCRIPTION,
-          token,
-          fetchImpl,
-        });
-      }
+      await publishCommitStatus({
+        apiBaseUrl,
+        owner: repository.owner,
+        repo: repository.repo,
+        sha: headSha,
+        state: 'failure',
+        description: DELETED_FEEDBACK_DESCRIPTION,
+        token,
+        fetchImpl,
+      });
       return [{ number: targetedNumber, head_sha: headSha }];
     }
     if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
