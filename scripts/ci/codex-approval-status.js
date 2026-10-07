@@ -495,11 +495,38 @@ async function selectPullRequestTargets({
   repository,
   apiBaseUrl = 'https://api.github.com',
   token,
+  botLogin = DEFAULT_BOT_LOGIN,
   fetchImpl = globalThis.fetch,
 } = {}) {
   const targetedNumber = eventPullRequestNumber(eventName, payload);
   if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
     let headSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
+    if (isDeletedCodexFeedback(eventName, payload, botLogin)) {
+      if (!repository || !repository.owner || !repository.repo || !token) {
+        throw new Error('Deleted feedback revocation configuration is incomplete.');
+      }
+      const pullRequest = await githubJson(
+        `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
+        { apiBaseUrl, token, fetchImpl },
+      );
+      headSha = pullRequest.head && pullRequest.head.sha;
+      if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
+        throw new Error('Deleted feedback revocation head SHA is missing or invalid.');
+      }
+      if (pullRequest.state === 'open' && pullRequest.base && pullRequest.base.ref === 'main') {
+        await publishCommitStatus({
+          apiBaseUrl,
+          owner: repository.owner,
+          repo: repository.repo,
+          sha: headSha,
+          state: 'failure',
+          description: DELETED_FEEDBACK_DESCRIPTION,
+          token,
+          fetchImpl,
+        });
+      }
+      return [{ number: targetedNumber, head_sha: headSha }];
+    }
     if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
       if (!repository || !repository.owner || !repository.repo || !token) {
         throw new Error('Pull-request target head could not be verified.');
@@ -646,6 +673,7 @@ if (require.main === module) {
         repository,
         apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
         token: process.env.GITHUB_TOKEN,
+        botLogin: process.env.CODEX_REVIEW_BOT_LOGIN || DEFAULT_BOT_LOGIN,
       });
       const output = `pr_targets=${JSON.stringify(targets)}\n`;
       if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);

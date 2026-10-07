@@ -242,14 +242,18 @@ also reconciles PR-level reactions. Scheduled and manual runs fan out across
 open PRs, and each open PR is reconciled in its own per-PR concurrency group;
 an event for one PR cannot cancel another PR's status revocation. A newer run
 may replace an older run only for the same PR, then re-reads that PR's current
-GitHub snapshot. Its GitHub Actions token is limited to reading repository/PR
-metadata and writing commit statuses. The job checks out trusted `main` policy
-code only; it never checks out or executes PR code. This status represents only
+GitHub snapshot. Before emitting a reconciliation target, the selector records
+deleted Codex feedback against the live PR head, so replacing or cancelling the
+later matrix job cannot erase that revocation. Its GitHub Actions token is
+limited to reading repository/PR metadata and writing commit statuses. Both jobs
+check out trusted `main` policy code only; neither checks out or executes PR
+code. This status represents only
 the Codex authorization signal, not the local Docker gate or other merge
 requirements.
 
-Deleting Codex-authored feedback publishes a failure status with a durable
-deleted-feedback revocation marker in its description. This marker persists
+Deleting Codex-authored feedback immediately publishes a failure status with a
+durable deleted-feedback revocation marker in its description before the
+reconcile job enters its per-PR concurrency queue. This marker persists
 across scheduled runs; the reconciler reads trusted status history, so an older
 approval that remains visible in GitHub cannot restore authorization.
 Only a current-head Codex approval or reaction recorded after that marker can

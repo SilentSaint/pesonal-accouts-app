@@ -777,6 +777,39 @@ test('a same-context success from another app is not treated as the trusted stat
   assert.deepEqual(postStates, ['success']);
 });
 
+test('target selection persists deleted bot feedback before reconciliation can be superseded', async () => {
+  const calls = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const targets = await selectPullRequestTargets({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'deleted',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: { id: 9, user: { login: bot }, body: 'The retry path still needs a fix.' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith('/pulls/177')) {
+        return responseFor({ state: 'open', base: { ref: 'main' }, head: { sha: headSha } });
+      }
+      if (url.endsWith(`/statuses/${headSha}`)) return responseFor({});
+      throw new Error(`Unexpected API URL: ${url}`);
+    },
+  });
+
+  assert.deepEqual(targets, [{ number: 177, head_sha: headSha }]);
+  const revocation = calls.find((call) => call.options.method === 'POST');
+  assert.ok(revocation, 'the deletion must be recorded before the matrix reconciliation is queued');
+  assert.deepEqual(JSON.parse(revocation.options.body), {
+    state: 'failure',
+    context: STATUS_CONTEXT,
+    description: 'Codex review feedback was deleted; a fresh review is required.',
+  });
+});
+
 test('review events preserve a fallback head SHA while scheduled discovery selects open main PR heads', async () => {
   const repository = { owner: 'SilentSaint', repo: 'pesonal-accouts-app' };
   const calls = [];

@@ -557,3 +557,10 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(workflow, /green status by itself is therefore never enough/i);
   assert.match(workflow, /initial policy installation therefore needs the owner's normal bootstrap merge/i);
 });
+
+test('the selector can persist deletion revocation before the reconcile matrix', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const selectorJob = action.split('\n  reconcile:\n')[0];
+
+  assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
+});
