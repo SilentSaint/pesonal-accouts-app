@@ -36,6 +36,7 @@ function requestForBase(base, head = headSha, createdAt = '2026-10-06T10:00:00Z'
     user: { login: requestAuthor },
     body: `@codex review\n<!-- codex-review-request: head=${head}; base=${base}; cycle=${cycle} -->`,
     created_at: createdAt,
+    updated_at: createdAt,
   };
 }
 
@@ -44,6 +45,7 @@ function pullRequestReview(body, commitId = headSha, submittedAt = '2026-10-06T1
     user: { login: bot },
     body: body ? `${body}\n\n**Reviewed commit:** \`${commitId.slice(0, 12)}\`` : '',
     commit_id: commitId,
+    review_created_at: submittedAt,
     submitted_at: submittedAt,
     state,
   };
@@ -250,6 +252,74 @@ test('a post-base-change review requires a new current-base request, not a later
     ...baseChange,
     issueComments: [oldRequest, newRequest, editedOldApproval, freshApproval],
   })).authorized, true, 'a response after a new request associated with the live base can authorize');
+});
+
+test('a review created before base invalidation cannot authorize when submitted afterward', () => {
+  const currentBaseSha = 'd'.repeat(40);
+  const pendingOldBaseReview = {
+    ...pullRequestReview(
+      "Codex Review: Didn't find any major issues.",
+      headSha,
+      '2026-10-06T10:04:00Z',
+    ),
+    review_created_at: '2026-10-06T10:02:00Z',
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    baseSha: currentBaseSha,
+    priorApprovalExists: true,
+    priorApprovalBaseSha: previousBaseSha,
+    baseChangeInvalidation: {
+      baseSha: currentBaseSha,
+      createdAt: '2026-10-06T10:02:30Z',
+    },
+    issueComments: [requestForBase(currentBaseSha, headSha, '2026-10-06T10:03:00Z', 2)],
+    reviews: [pendingOldBaseReview],
+  })).authorized, false,
+  'submission time cannot make a review that began before invalidation count as fresh');
+});
+
+test('a request marker inserted by editing an older comment cannot authorize a prior review', () => {
+  const editedRequest = {
+    ...request(),
+    updated_at: '2026-10-06T10:03:00Z',
+  };
+  const alreadyCompletedReview = {
+    ...review("Codex Review: Didn't find any major issues."),
+    created_at: '2026-10-06T10:02:00Z',
+    updated_at: '2026-10-06T10:02:00Z',
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    priorApprovalExists: false,
+    priorApprovalBaseSha: null,
+    issueComments: [editedRequest, alreadyCompletedReview],
+  })).authorized, false,
+  'the comment’s original creation time is not evidence that its edited-in marker triggered the review');
+});
+
+test('a same-second review cannot qualify when request timestamp precision is coarser', () => {
+  const sameSecondRequest = {
+    ...request(),
+    created_at: '2026-10-06T10:02:00Z',
+    updated_at: '2026-10-06T10:02:00Z',
+  };
+  const reviewStartedLaterWithinThatSecond = {
+    ...pullRequestReview(
+      "Codex Review: Didn't find any major issues.",
+      headSha,
+      '2026-10-06T10:02:00.500Z',
+    ),
+    review_created_at: '2026-10-06T10:02:00.250Z',
+  };
+
+  assert.equal(evaluateCodexApproval(snapshot({
+    priorApprovalExists: false,
+    priorApprovalBaseSha: null,
+    issueComments: [sameSecondRequest],
+    reviews: [reviewStartedLaterWithinThatSecond],
+  })).authorized, false,
+  'a finer-grained review timestamp cannot prove its start followed a coarser request timestamp');
 });
 
 test('an unsubmitted pending Codex review cannot authorize the current head', () => {
@@ -1207,6 +1277,73 @@ test('a fresh review after the persisted base invalidation restores the current-
   assert.ok(postStates[1].description.includes(`base-sha=${otherSha}`));
 });
 
+test('reconciliation rejects a late submission whose review was created before base invalidation', async () => {
+  const postStates = [];
+  const priorStatuses = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'success',
+      created_at: '2026-10-06T10:02:00Z',
+      description: `base-sha=${previousBaseSha}; prior approval`,
+      creator: { login: 'github-actions[bot]' },
+    },
+    {
+      context: STATUS_CONTEXT,
+      state: 'failure',
+      created_at: '2026-10-06T10:03:00Z',
+      description: `base-sha=${otherSha}; base-change-review-required: fresh review required`,
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor(priorStatuses);
+    if (url.includes('/statuses/')) {
+      postStates.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([requestForBase(otherSha, headSha, '2026-10-06T10:03:30Z', 2)]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) {
+      const query = JSON.parse(options.body).query;
+      assert.match(query, /\bcreatedAt\b/, 'the review query must fetch immutable review creation time');
+      return responseFor({ data: { repository: { pullRequest: { reviews: {
+        nodes: [{
+          fullDatabaseId: '53',
+          author: { login: bot },
+          body: "Codex Review: Didn't find any major issues.",
+          state: 'COMMENTED',
+          commit: { oid: headSha },
+          createdAt: '2026-10-06T10:02:30Z',
+          submittedAt: '2026-10-06T10:04:00Z',
+          updatedAt: '2026-10-06T10:04:00Z',
+          lastEditedAt: null,
+        }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      } } } } });
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.deepEqual(postStates.map((status) => status.state), ['pending', 'failure']);
+  assert.match(postStates[1].description, /An older Codex review was edited or delivered after the recorded request/);
+});
+
 test('an edit to an older current-head review supersedes a newer Codex approval', async () => {
   const statuses = [];
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
@@ -1216,6 +1353,7 @@ test('an edit to an older current-head review supersedes a newer Codex approval'
     body: 'Codex Review: Please fix the retry boundary.',
     state: 'COMMENTED',
     commit: { oid: headSha },
+    createdAt: '2026-10-06T10:01:00Z',
     submittedAt: '2026-10-06T10:02:00Z',
     updatedAt: '2026-10-06T10:06:00Z',
     lastEditedAt: '2026-10-06T10:06:00Z',
@@ -1226,6 +1364,7 @@ test('an edit to an older current-head review supersedes a newer Codex approval'
     body: "Codex Review: Didn't find any major issues. Keep it up!",
     state: 'COMMENTED',
     commit: { oid: headSha },
+    createdAt: '2026-10-06T10:03:00Z',
     submittedAt: '2026-10-06T10:04:00Z',
     updatedAt: '2026-10-06T10:04:00Z',
     lastEditedAt: null,
