@@ -76,12 +76,9 @@ All agents working on the backlog MUST follow these rules:
    to `main`.
 3. **PR validation**: open a pull request against GitHub `main` after the
    local Docker verifier validates the exact revision under review.
-4. **Owner-authorized merge**: follow the canonical engineering workflow in
-   `docs/engineering/workflow.md` for merge authority and gates. The repository
-   owner grants standing authorization for the agent to merge when a qualifying
-   current-head Codex signal and every required merge gate pass. Ambiguous or
-   incomplete evidence leaves the PR unmerged and is handed to the owner; agents
-   must not bypass branch protection or the guarded release path.
+4. **Merge authority**: follow the [canonical engineering workflow](docs/engineering/workflow.md#pull-requests-and-merge)
+   for merge authorization and all merge gates; this document does not duplicate
+   or override that policy.
 5. **Least-privilege access**: agent credentials should be limited to the
    required GitHub read/write and pull-request operations. Do not grant
    production deployment, Terraform apply, IAM administration, or account

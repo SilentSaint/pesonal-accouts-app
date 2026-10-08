@@ -11,6 +11,29 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
 
+function workflowStepScript(workflow, stepName, nextJobName) {
+  const stepStart = workflow.indexOf(`      - name: ${stepName}\n`);
+  assert.notEqual(stepStart, -1, `workflow step ${stepName} must exist`);
+  const stepEnd = workflow.indexOf(`\n  ${nextJobName}:`, stepStart);
+  assert.notEqual(stepEnd, -1, `workflow job ${nextJobName} must follow ${stepName}`);
+  const step = workflow.slice(stepStart, stepEnd);
+  const run = step.match(/^        run: (.*)$/m);
+  assert.ok(run, `${stepName} must define a run command`);
+  if (run[1] !== '|') return run[1];
+
+  const bodyStart = step.indexOf(run[0]) + run[0].length + 1;
+  const body = [];
+  for (const line of step.slice(bodyStart).split('\n')) {
+    if (line.trim() === '') {
+      body.push('');
+      continue;
+    }
+    if (!line.startsWith('          ')) break;
+    body.push(line.slice(10));
+  }
+  return body.join('\n').replace(/\n+$/, '');
+}
+
 test('dependency retry helper retries transient commands with bounded backoff', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-retry-'));
   const stateFile = path.join(tempRoot, 'attempts');
@@ -258,7 +281,7 @@ test('Codex PR review automation stays bound to the reviewed current head', () =
   assert.match(workflow, /all review\s+conversations are resolved before merge/i);
   assert.doesNotMatch(workflow, /no actionable\s+review conversations remain unresolved/i);
   assert.match(workflow, /full local\s+Docker gate passes on the exact current head/);
-  assert.match(workflow, /track(?:ed)?\s+the\s+base branch SHA alongside the reviewed head SHA/i);
+  assert.match(workflow, /Track the base branch\s+SHA alongside the\s+reviewed head SHA/i);
 });
 
 test('Codex review comments accept clear equivalent approval wording for the reviewed head', () => {
@@ -277,7 +300,7 @@ test('Codex review comments accept clear equivalent approval wording for the rev
   assert.match(workflow, /any new commit after that\s+review.*invalidates the signal/is);
 });
 
-test('qualifying Codex approval grants conditional agent merge authority', () => {
+test('the canonical workflow is the sole source of conditional agent merge authority', () => {
   const agents = read('AGENTS.md');
   const workflow = read('docs/engineering/workflow.md');
 
@@ -286,14 +309,12 @@ test('qualifying Codex approval grants conditional agent merge authority', () =>
     /GitHub repository `SilentSaint\/pesonal-accouts-app` as\s+the\s+canonical integration surface/i,
   );
   assert.match(agents, /GitHub read\/write and pull-request operations/i);
-  assert.match(agents, /canonical engineering workflow in\s+`docs\/engineering\/workflow\.md`/i);
+  assert.match(agents, /canonical engineering workflow\]\(docs\/engineering\/workflow\.md#pull-requests-and-merge\)/i);
   assert.doesNotMatch(agents, /AWS CodeCommit repository in `ap-south-2` as the\s+canonical integration surface/i);
   assert.doesNotMatch(agents, /required CodeCommit read\/write and pull-request operations/i);
-  assert.match(agents, /owner grants standing\s+authorization for the agent to merge/i);
-  assert.match(
-    agents,
-    /qualifying\s+current-head Codex signal and\s+every required merge gate pass/i,
-  );
+  assert.match(agents, /Merge authority\*\*:\s*follow the \[canonical engineering workflow\]/i);
+  assert.doesNotMatch(agents, /owner grants standing authorization for the agent to merge/i);
+  assert.doesNotMatch(agents, /codex-approval Actions status is a required merge-authorization policy gate/i);
   assert.match(workflow, /owner grants standing authorization for the agent to merge/i);
   assert.match(workflow, /qualifying current-head Codex approval and every merge gate below pass/i);
   assert.doesNotMatch(agents, /only the repository owner reviews and merges/i);
@@ -310,7 +331,7 @@ test('mutable Codex signals require server-enforced authorization at merge time'
 
   assert.match(
     workflow,
-    /treat a Codex comment or reaction as evidence only, not merge-time\s+authorization/i,
+    /Codex comment or reaction by itself is evidence, not merge-time\s+authorization; the active server-side `codex-approval` required status is\s+the merge-time enforcement/i,
   );
   assert.match(
     workflow,
@@ -337,6 +358,8 @@ test('merge gate fails closed on incomplete review or validation evidence', () =
     /full local\s+Docker gate passes on the exact current head without AWS credentials or\s+production mutations/i,
   );
   assert.match(workflow, /all required checks are acceptable/i);
+  assert.match(workflow, /codexReconciliationSucceeded=false/i);
+  assert.match(workflow, /failed\s+target-selection\/reconcile job, missing or unassociated workflow run/i);
   assert.match(workflow, /any configured\s+maintainer-approval requirement is satisfied/i);
   assert.match(workflow, /missing,\s+failing, or stale required check fails closed/i);
   assert.match(
@@ -437,11 +460,120 @@ test('merge queue completion gates the exact merge-group revision', () => {
 test('Codex PR reactions are correlated to one tracked review request and head', () => {
   const workflow = read('docs/engineering/workflow.md');
 
-  assert.match(workflow, /record\s+the request timestamp and head SHA/i);
+  assert.match(workflow, /For each explicit request, record its timestamp and\s+full head SHA/i);
+  assert.match(workflow, /automatic review without a prior base-bound request cannot authorize the\s+initial status[\s\S]*make one fresh,\s+marker-backed request/i);
   assert.match(workflow, /associate it with exactly one recorded\s+review request/i);
   assert.match(workflow, /on the PR itself and comes from the configured Codex review bot/i);
   assert.match(workflow, /reaction timestamp must be after the recorded request/i);
   assert.match(workflow, /current PR head must still match the tracked head/i);
+  assert.match(workflow, /bind it to the reviewed base SHA as well/i);
+  assert.match(workflow, /a base\s+retarget or base-commit change writes a failure marker and requires a fresh\s+Codex review/i);
+  assert.match(workflow, /a thumbs-up additionally requires a review request recorded\s+after that marker/i);
   assert.match(workflow, /multiple possible\s+requests or any head change make the association ambiguous/i);
   assert.match(workflow, /Reactions on review comments, reactions from the\s+owner\/other actors.*do not satisfy this gate/is);
+});
+
+test('the selector skips cleanly until trusted main has the approval policy script', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const workflow = read('docs/engineering/workflow.md');
+  const selectorScript = workflowStepScript(
+    action,
+    'Select PRs for independent reconciliation',
+    'reconcile',
+  );
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-policy-bootstrap-'));
+  const outputFile = path.join(tempRoot, 'github-output');
+
+  try {
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', selectorScript], {
+      cwd: tempRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputFile,
+        PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}`,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(outputFile, 'utf8'), 'pr_targets=[]\n');
+    assert.match(
+      action,
+      /if:\s*\$\{\{\s*needs\.select-pull-requests\.outputs\.pr_targets\s*!=\s*''\s*&&\s*needs\.select-pull-requests\.outputs\.pr_targets\s*!=\s*'\[\]'\s*\}\}/,
+    );
+    assert.match(
+      workflow,
+      /bootstrap no-op does not publish\s+`codex-approval` and does not satisfy `codexReconciliationSucceeded`/i,
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a PR base edit triggers immediate Codex approval reconciliation', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+
+  assert.match(action, /pull_request_target:\s*\n\s*branches:\s*\[main\]\s*\n\s*types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
+});
+
+test('the Codex approval status bridge is least-privilege and never executes PR code', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const bridge = read('scripts/ci/codex-approval-status.js');
+  const workflow = read('docs/engineering/workflow.md');
+
+  assert.match(action, /issue_comment:/);
+  assert.match(action, /pull_request_target:/);
+  assert.match(action, /pull_request_review:/);
+  assert.match(action, /pull_request_review_comment:/);
+  assert.match(action, /schedule:/);
+  assert.match(action, /select-pull-requests:/);
+  assert.match(action, /--select-pr-targets/);
+  assert.match(action, /pr_targets:\s*\$\{\{\s*steps\.select\.outputs\.pr_targets\s*\}\}/);
+  assert.match(action, /matrix:[\s\S]*target:\s*\$\{\{\s*fromJSON\(needs\.select-pull-requests\.outputs\.pr_targets\)\s*\}\}/);
+  assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.number\s*\}\}/);
+  assert.match(action, /CODEX_PR_NUMBER:\s*\$\{\{\s*matrix\.target\.number\s*\}\}/);
+  assert.match(action, /CODEX_PR_HEAD_SHA:\s*\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
+  assert.doesNotMatch(action, /group:\s*codex-approval-reconcile/);
+  assert.match(action, /contents:\s*read/);
+  assert.match(action, /issues:\s*read/);
+  assert.match(action, /pull-requests:\s*read/);
+  assert.match(action, /statuses:\s*write/);
+  assert.match(action, /actions\/checkout@[a-f0-9]{40}/);
+  assert.match(action, /ref:\s*refs\/heads\/main/);
+  assert.match(action, /scripts\/ci\/codex-approval-status\.js/);
+  assert.doesNotMatch(action, /head\.sha.*ref:|pull_request\.head\.ref/);
+  assert.doesNotMatch(action, /npm (?:install|ci)|bash .*\.sh/);
+
+  assert.match(bridge, /const STATUS_CONTEXT = 'codex-approval'/);
+  assert.match(bridge, /statuses\/\$\{sha\}/);
+  assert.match(bridge, /query PullRequestApprovalReviews/);
+  assert.match(bridge, /lastEditedAt/);
+  assert.match(bridge, /updatedAt/);
+  assert.match(bridge, /updated_at:\s*review\.lastEditedAt\s*\|\|\s*review\.updatedAt\s*\|\|\s*review\.submittedAt/);
+  assert.match(bridge, /await publish\('pending'/);
+  assert.match(bridge, /await publish\('error'/);
+  assert.match(bridge, /DELETED_FEEDBACK_DESCRIPTION/);
+  assert.match(bridge, /latestDeletedFeedbackRevocation/);
+  assert.match(bridge, /revokedAt/);
+  assert.match(bridge, /allowedRequesters: \[repository\.owner\]/);
+  assert.match(bridge, /sameLogin\(status\.creator\.login, 'github-actions\[bot\]'\)/);
+  assert.match(workflow, /machine-readable marker[\s\S]*codex-review-request: head=<40-character-head-sha>; base=<40-character-base-sha>; cycle=<1-10>/i);
+  assert.match(workflow, /`codex-approval` commit status on the exact PR head SHA/i);
+  assert.match(workflow, /each open PR is reconciled in its own per-PR concurrency group/i);
+  assert.match(workflow, /repository owner must configure an active[\s\S]*ruleset requiring the `codex-approval` status/i);
+  assert.match(workflow, /standard Actions and webhook events do not include PR reaction\s+creation\/removal/i);
+  assert.match(workflow, /deleted-feedback revocation marker[\s\S]*persists\s+across scheduled runs/i);
+  assert.match(workflow, /negative-reaction-review-required[\s\S]*remains active if the reaction is later removed/i);
+  assert.match(workflow, /editing an older approval must not mask a later thumbs-down/i);
+  assert.match(workflow, /Distinct review\s+responses are ordered by creation\/submission time[\s\S]*not reorder it ahead of a later actionable review/i);
+  assert.match(workflow, /polls reactions every five minutes/i);
+  assert.match(workflow, /green status by itself is therefore never enough/i);
+  assert.match(workflow, /initial policy installation therefore needs the owner's normal bootstrap merge/i);
+});
+
+test('the selector can persist deletion revocation before the reconcile matrix', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const selectorJob = action.split('\n  reconcile:\n')[0];
+
+  assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
 });
