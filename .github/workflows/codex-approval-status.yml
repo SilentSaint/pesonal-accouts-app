@@ -20,6 +20,11 @@ permissions: {}
 
 jobs:
   select-pull-requests:
+    # Deletion-triggered status revocations must share the affected PR's lock
+    # with reconciliation so a stale success cannot be published afterward.
+    concurrency:
+      group: codex-approval-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

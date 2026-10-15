@@ -576,4 +576,8 @@ test('the selector can persist deletion revocation before the reconcile matrix',
   const selectorJob = action.split('\n  reconcile:\n')[0];
 
   assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
+  assert.match(
+    selectorJob,
+    /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*github\.event\.issue\.number\s*\|\|\s*github\.event\.pull_request\.number\s*\|\|\s*github\.event\.number\s*\|\|\s*github\.run_id\s*\}\}/,
+  );
 });
