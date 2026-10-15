@@ -571,13 +571,18 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(workflow, /initial policy installation therefore needs the owner's normal bootstrap merge/i);
 });
 
-test('the selector can persist deletion revocation before the reconcile matrix', () => {
+test('a deleted Codex feedback event remains queued until it records its revocation', () => {
   const action = read('.github/workflows/codex-approval-status.yml');
   const selectorJob = action.split('\n  reconcile:\n')[0];
+  const reconcileJob = action.split('\n  reconcile:\n')[1];
 
   assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
   assert.match(
     selectorJob,
     /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*github\.event\.issue\.number\s*\|\|\s*github\.event\.pull_request\.number\s*\|\|\s*github\.event\.number\s*\|\|\s*github\.run_id\s*\}\}/,
   );
+  assert.match(selectorJob, /queue:\s*max/);
+  assert.match(selectorJob, /cancel-in-progress:\s*false/);
+  assert.match(reconcileJob, /queue:\s*max/);
+  assert.match(reconcileJob, /cancel-in-progress:\s*false/);
 });
