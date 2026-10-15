@@ -23,47 +23,48 @@ have an active human destination.
 
 ## Release gate and deployment
 
-`CI/CD & Operational Quality Gates` runs on every pull request and main-branch push:
+### Canonical local verification and release
 
+The project follows a local-first engineering and release model (see `docs/operations/local-verification.md` and `docs/engineering/workflow.md`). Validation does not depend on hosted CI/CD (GitHub Actions or CodeBuild).
+
+1. **Non-mutating verification gate**:
+   Every change is validated locally before merging:
+   ```bash
+   scripts/ci/verify-local-docker --no-build
+   ```
+   This runs Java tests, Node.js/Lambda tests, local/release contracts, Terraform validation, Flutter analysis/tests, and Playwright browser E2E checks in an isolated Docker container with empty AWS credentials.
+
+2. **Guarded production release hatch**:
+   The owner-approved production release boundary is `scripts/manual_production_deploy.sh`. This manual deployment hatch requires explicit owner authorization (`PRODUCTION_DEPLOY_APPROVED=YES`), a clean checkout on `main` matching `origin/main`, executes `scripts/ci/verify-local-docker --pull`, asserts AWS account identity, and runs `scripts/deploy_and_build.sh`:
+   ```bash
+   export AWS_REGION=ap-south-2
+   export AWS_ACCOUNT_ID='727118420276'
+   PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
+   ```
+
+### Historical and conditional hosted workflows
+
+> [!NOTE]
+> The hosted GitHub Actions workflows below represent historical context from earlier iterations and temporary manual deployment hatch procedures during a GitHub Actions billing outage. Hosted validation is retired and is not required for project delivery or production deployment.
+
+Historically, `CI/CD & Operational Quality Gates` ran in hosted GitHub Actions:
 1. Java tests, Flutter analysis/tests, and a release web build.
 2. Playwright browser E2E against that release bundle.
 3. Deterministic Node.js Lambda source/archive parity and Lambda archive tests.
 4. A disposable DynamoDB Local table creation, transactional write, and read.
 5. Terraform formatting and configuration validation.
 
-`Production Deployment` is the manual deployment hatch for the temporary GitHub Actions
-billing outage. It is deliberately narrow:
-
+Similarly, hosted `Production Deployment` was an Actions workflow dispatch hatch for the temporary GitHub Actions billing outage:
 1. The workflow must be dispatched for `main`; another branch is rejected.
 2. The dispatcher must select the explicit `yes` approval input.
-3. The protected `production` environment must require your GitHub approval.
+3. The protected `production` environment must require your GitHub approval (with required reviewers).
 4. Repository branch protection must require changes to arrive through a merged PR.
 5. The reusable CI workflow must pass before the publish job can begin.
 
-This means the hosted hatch deploys only the reviewed contents of `main`, and does not
-provide a branch-based production bypass. If GitHub Actions is unavailable because of
-account restrictions, use the owner-approved local release sequence below. Ordinary local
-validation is not production deployment approval.
+The billing incident context is preserved for historical audit; operational releases use the canonical guarded local hatch above.
 
-After approval, the publish job verifies the assumed AWS account before applying Terraform.
-It builds a deployment marker containing the immutable Git SHA, waits for CloudFront
-invalidation, and fetches that marker from CloudFront. It also verifies the unauthenticated
-API health endpoint. A failed identity check, gate, invalidation, marker fetch, or smoke
-check stops the deployment.
 
-The billing problem is an operational dependency, not a reason to weaken the release
-boundary. Record any GitHub Actions billing/account incident in the deployment notes and
-re-check Actions availability before relying on this hatch.
-
-When GitHub Actions is unavailable, the owner-approved local fallback is:
-
-```bash
-export AWS_REGION=ap-south-2
-export AWS_ACCOUNT_ID='<expected-production-account-id>'
-PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
-```
-
-Before using the fallback, load the refreshable local AWS profile described in
+Before running the release hatch, load the refreshable local AWS profile described in
 `docs/operations/aws-development-auth.md` and confirm the identity with
 `aws sts get-caller-identity`. Do not place credentials in the repository or export
 short-lived access-key values into a shell profile.
