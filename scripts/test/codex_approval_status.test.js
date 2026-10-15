@@ -1104,6 +1104,116 @@ test('reconciliation writes pending then the evaluated status to the live PR hea
     < calls.findIndex((call) => call.url.endsWith('/pulls/177/commits?per_page=100')));
 });
 
+test('a deletion revocation during reconciliation cannot be overwritten by a stale approval', async () => {
+  const statusHistory = [];
+  const responseFor = (json) => ({
+    ok: true,
+    json: async () => json,
+    headers: { get: () => null },
+  });
+  let releaseCommitSnapshot;
+  let signalCommitSnapshotStarted;
+  const commitSnapshotStarted = new Promise((resolve) => {
+    signalCommitSnapshotStarted = resolve;
+  });
+  const commitSnapshotGate = new Promise((resolve) => {
+    releaseCommitSnapshot = resolve;
+  });
+  let commitSnapshotBlocked = false;
+  let statusTimestamp = Date.parse('2026-10-12T08:00:00Z');
+
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) {
+      return responseFor(statusHistory);
+    }
+    if (url.endsWith(`/statuses/${headSha}`) && options.method === 'POST') {
+      const status = JSON.parse(options.body);
+      statusHistory.push({
+        ...status,
+        created_at: new Date(statusTimestamp).toISOString(),
+        creator: { login: 'github-actions[bot]' },
+      });
+      statusTimestamp += 1_000;
+      return responseFor(status);
+    }
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({
+        state: 'open',
+        base: { ref: 'main', sha: otherSha },
+        head: { sha: headSha },
+      });
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) {
+      if (!commitSnapshotBlocked) {
+        commitSnapshotBlocked = true;
+        signalCommitSnapshotStarted();
+        await commitSnapshotGate;
+      }
+      return responseFor([{ sha: headSha }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        review("Codex Review: Didn't find any major issues. Keep it up!"),
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: {
+          repository: {
+            pullRequest: {
+              reviews: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            },
+          },
+        },
+      });
+    }
+    throw new Error(`Unexpected request: ${options.method ?? 'GET'} ${url}`);
+  };
+
+  const reconciliation = reconcilePullRequest(177, {
+    owner: 'SilentSaint',
+    repo: 'pesonal-accouts-app',
+  }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'token',
+    eventName: 'schedule',
+    botLogin: bot,
+    fetchImpl,
+  });
+
+  await commitSnapshotStarted;
+  await selectPullRequestTargets({
+    owner: 'SilentSaint',
+    repo: 'pesonal-accouts-app',
+    eventName: 'issue_comment',
+    payload: {
+      action: 'deleted',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: {
+        id: 42,
+        user: { login: 'chatgpt-codex-connector[bot]' },
+        body: 'Codex review feedback',
+      },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'token',
+    fetchImpl,
+  });
+
+  assert.equal(statusHistory.at(-1)?.state, 'failure');
+  assert.match(statusHistory.at(-1)?.description ?? '', /Codex review feedback was deleted/);
+
+  releaseCommitSnapshot();
+  await reconciliation;
+
+  assert.equal(statusHistory.at(-1)?.state, 'failure');
+  assert.match(statusHistory.at(-1)?.description ?? '', /deleted-feedback revocation/);
+});
+
 test('reconciliation invalidates a prior approval when the live PR base SHA changes', async () => {
   const calls = [];
   const priorStatus = {

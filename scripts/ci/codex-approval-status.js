@@ -816,7 +816,7 @@ async function reconcilePullRequest(number, repository, options) {
       pullRequestReviews(number, repository, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/reactions?per_page=100`, options),
     ]);
-    const approval = evaluateCodexApproval({
+    const approvalSnapshot = {
       headSha: sha,
       commits,
       issueComments,
@@ -827,14 +827,27 @@ async function reconcilePullRequest(number, repository, options) {
       priorApprovalExists: baseState.priorApprovalExists,
       priorApprovalBaseSha: baseState.priorApprovalBaseSha,
       baseChangeInvalidation: baseState.baseChangeInvalidation,
-    }, {
+    };
+    const approvalOptions = {
       botLogin: options.botLogin,
       allowedRequesters: [repository.owner],
       eventName: options.eventName,
       eventPayload: options.eventPayload,
       revokedAt,
       negativeReactionRevokedAt,
-    });
+    };
+    let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
+    if (approval.authorized) {
+      // A deletion event can revoke feedback after this reconciliation read the
+      // status history. Recheck revocation markers before publishing success so
+      // an in-flight approval cannot overwrite the deletion-triggered failure.
+      const publishStatuses = await currentCodexStatuses(sha, repository, options);
+      approval = evaluateCodexApproval(approvalSnapshot, {
+        ...approvalOptions,
+        revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
+        negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, baseSha),
+      });
+    }
     const finalState = approval.authorized ? 'success' : 'failure';
     const observedNegativeReaction = pullRequestReactions.some((reaction) =>
       reaction.content === '-1'
