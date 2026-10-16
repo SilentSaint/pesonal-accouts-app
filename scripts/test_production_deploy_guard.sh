@@ -82,6 +82,18 @@ set -e
 test "$concurrent_status" -ne 0
 grep -Fq 'another production release is currently in progress' <<<"$concurrent_output"
 
+grep -Fq 'ROLLBACK_TARGET_SHA' "$manual_hatch"
+grep -Fq 'git merge-base --is-ancestor' "$manual_hatch"
+grep -Fq 'ROLLBACK_TARGET_SHA' "$deploy_script"
+grep -Fq 'git -C "$ROOT_DIR" merge-base --is-ancestor' "$deploy_script"
+
+set +e
+invalid_rollback_output="$(PRODUCTION_DEPLOY_APPROVED=YES ROLLBACK_TARGET_SHA=invalid-sha bash "$manual_hatch" 2>&1)"
+invalid_rollback_status=$?
+set -e
+test "$invalid_rollback_status" -ne 0
+grep -Fq 'invalid ROLLBACK_TARGET_SHA' <<<"$invalid_rollback_output"
+
 set +e
 unguarded_output="$(env -u AET_GUARDED_RELEASE bash "$deploy_script" 2>&1)"
 unguarded_status=$?

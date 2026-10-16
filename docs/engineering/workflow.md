@@ -240,20 +240,22 @@ the issue rather than closing speculatively.
 
 Production deployment is a separate, owner-approved operation. It may deploy
 only a commit SHA contained in `main`, built from a clean checkout that exactly
-matches `origin/main`. It must prevent concurrent deployments (serializing the
-complete release operation from validation through post-apply publication and
-verification via the release lock), use the guarded local release hatch
-(`scripts/manual_production_deploy.sh`) with explicit owner authorization
-(`PRODUCTION_DEPLOY_APPROVED=YES`), target the verified production AWS account
-and region, execute the complete local Docker verification gate before any AWS
-mutation, build immutable artifacts before applying the saved Terraform plan,
-verify post-apply output consistency, publish the web artifact and invalidate
-CloudFront, execute live deployment marker and health smoke checks, and record
-the deployed SHA while preserving a known-good SHA for rollback.
+matches `origin/main` (or a preserved known-good ancestor commit SHA contained
+in `origin/main` during an owner-approved rollback). It must prevent concurrent
+deployments (serializing the complete release operation from validation through
+post-apply publication and verification via the release lock), use the guarded
+local release hatch (`scripts/manual_production_deploy.sh`) with explicit owner
+authorization (`PRODUCTION_DEPLOY_APPROVED=YES`), target the verified production
+AWS account and region, execute the complete local Docker verification gate
+before any AWS mutation, build immutable artifacts before applying the saved
+Terraform plan, verify post-apply output consistency, publish the web artifact
+and invalidate CloudFront, execute live deployment marker and health smoke checks,
+and record the deployed SHA while preserving a known-good SHA for rollback.
 
 Do not deploy from a pull request or a dirty workspace. A rollback deploys a
-known-good commit SHA through the same guarded release hatch and records the
-resulting production verification.
+preserved known-good commit SHA contained in `main` through the same guarded
+release hatch using `ROLLBACK_TARGET_SHA=<known-good-sha>` from a clean checkout
+at that revision and records the resulting production verification.
 
 ## Current baseline dependency
 

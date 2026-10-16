@@ -19,16 +19,34 @@ if ! flock -n 200; then
   exit 1
 fi
 
-test "$(git branch --show-current)" = "main" || {
-  echo "Refusing production deployment: checkout must be on main." >&2
-  exit 1
-}
-
 git fetch --quiet origin main
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
-  echo "Refusing production deployment: local main must exactly match origin/main." >&2
-  exit 1
-}
+
+if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+  target_rev="$(git rev-parse --verify "${ROLLBACK_TARGET_SHA}^{commit}" 2>/dev/null)" || {
+    echo "Refusing rollback deployment: invalid ROLLBACK_TARGET_SHA '$ROLLBACK_TARGET_SHA'." >&2
+    exit 1
+  }
+  if ! git merge-base --is-ancestor "$target_rev" origin/main; then
+    echo "Refusing rollback deployment: commit $target_rev is not contained in origin/main." >&2
+    exit 1
+  fi
+  local_rev="$(git rev-parse HEAD)"
+  if [[ "$local_rev" != "$target_rev" ]]; then
+    echo "Refusing rollback deployment: local HEAD ($local_rev) does not match ROLLBACK_TARGET_SHA ($target_rev)." >&2
+    exit 1
+  fi
+  export ROLLBACK_TARGET_SHA="$target_rev"
+else
+  test "$(git branch --show-current)" = "main" || {
+    echo "Refusing production deployment: checkout must be on main." >&2
+    exit 1
+  }
+
+  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+    echo "Refusing production deployment: local main must exactly match origin/main." >&2
+    exit 1
+  }
+fi
 
 test -z "$(git status --porcelain)" || {
   echo "Refusing production deployment: working tree must be clean." >&2

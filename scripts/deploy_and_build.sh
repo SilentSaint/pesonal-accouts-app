@@ -11,9 +11,25 @@ if [[ "${AET_GUARDED_RELEASE:-}" != "YES" ]]; then
   exit 1
 fi
 
-if [[ "$(git -C "$ROOT_DIR" branch --show-current)" != "main" ]]; then
-  echo "Refusing deployment: checkout must be on main." >&2
-  exit 1
+if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+  rollback_rev="$(git -C "$ROOT_DIR" rev-parse --verify "${ROLLBACK_TARGET_SHA}^{commit}" 2>/dev/null)" || {
+    echo "Refusing deployment: invalid ROLLBACK_TARGET_SHA '$ROLLBACK_TARGET_SHA'." >&2
+    exit 1
+  }
+  if ! git -C "$ROOT_DIR" merge-base --is-ancestor "$rollback_rev" origin/main; then
+    echo "Refusing deployment: commit $rollback_rev is not contained in origin/main." >&2
+    exit 1
+  fi
+  current_rev="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  if [[ "$current_rev" != "$rollback_rev" ]]; then
+    echo "Refusing deployment: HEAD ($current_rev) does not match ROLLBACK_TARGET_SHA ($rollback_rev)." >&2
+    exit 1
+  fi
+else
+  if [[ "$(git -C "$ROOT_DIR" branch --show-current)" != "main" ]]; then
+    echo "Refusing deployment: checkout must be on main." >&2
+    exit 1
+  fi
 fi
 
 test -z "$(git -C "$ROOT_DIR" status --porcelain)" || {
