@@ -20,6 +20,15 @@ if ! flock -n 200; then
 fi
 
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+  if [[ "$ROLLBACK_TARGET_SHA" == "PREVIOUS" ]]; then
+    if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
+      ROLLBACK_TARGET_SHA="$(grep -o '"previous_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+    fi
+    if [[ -z "$ROLLBACK_TARGET_SHA" ]]; then
+      echo "Refusing rollback deployment: no previous known-good commit recorded in release metadata." >&2
+      exit 1
+    fi
+  fi
   target_rev="$(git rev-parse --verify "${ROLLBACK_TARGET_SHA}^{commit}" 2>/dev/null)" || {
     echo "Refusing rollback deployment: invalid ROLLBACK_TARGET_SHA '$ROLLBACK_TARGET_SHA'." >&2
     exit 1

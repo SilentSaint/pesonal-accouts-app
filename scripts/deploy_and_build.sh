@@ -104,13 +104,32 @@ distribution_id="$(planned_output cloudfront_distribution_id)"
 cloudfront_url="$(planned_output cloudfront_web_url)"
 
 echo "[3/6] Building the reviewed web and Android artifacts before AWS mutation..."
+previous_commit=""
+if [[ -n "${bucket:-}" ]]; then
+  existing_marker="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>/dev/null || true)"
+  if [[ -n "$existing_marker" ]]; then
+    previous_commit="$(printf '%s' "$existing_marker" | grep -o '"commit":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+  fi
+fi
+if [[ -z "$previous_commit" && -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
+  previous_commit="$(grep -o '"current_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+fi
+
 api_base_url="${api_url%/}/api"
 (
   cd "$ROOT_DIR/frontend"
   flutter build web --release --no-wasm-dry-run \
     --dart-define=API_BASE_URL="$api_base_url" \
     --dart-define=WEBSOCKET_SYNC_URL="$websocket_url"
-  printf '{"commit":"%s"}\n' "$release_commit" > build/web/deployment-version.json
+  if [[ -n "$previous_commit" ]]; then
+    printf '{"commit":"%s","previous_commit":"%s"}\n' "$release_commit" "$previous_commit" > build/web/deployment-version.json
+    printf '{"current_commit":"%s","previous_commit":"%s","deployed_at":"%s"}\n' \
+      "$release_commit" "$previous_commit" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > build/web/release-metadata.json
+  else
+    printf '{"commit":"%s"}\n' "$release_commit" > build/web/deployment-version.json
+    printf '{"current_commit":"%s","deployed_at":"%s"}\n' \
+      "$release_commit" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > build/web/release-metadata.json
+  fi
   flutter build apk --target-platform android-arm64 --debug \
     --android-skip-build-dependency-validation \
     --dart-define=API_BASE_URL="$api_base_url" \
@@ -160,6 +179,9 @@ echo "[6/6] Verifying the live deployment..."
 release_marker_url="${cloudfront_url%/}/deployment-version.json?release=$release_commit"
 curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
   "$release_marker_url" | grep -F "\"commit\":\"$release_commit\""
+release_metadata_url="${cloudfront_url%/}/release-metadata.json?release=$release_commit"
+curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
+  "$release_metadata_url" | grep -F "\"current_commit\":\"$release_commit\""
 curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
   "${api_url%/}/api/health"
 
@@ -167,10 +189,14 @@ mkdir -p "$ROOT_DIR/dev_builds"
 cp -r "$ROOT_DIR/frontend/build/web" "$ROOT_DIR/dev_builds/web-v1.0.1+2"
 cp "$ROOT_DIR/frontend/build/app/outputs/flutter-apk/app-debug.apk" \
   "$ROOT_DIR/dev_builds/app-v1.0.1+2-debug.apk"
+if [[ -f "$ROOT_DIR/frontend/build/web/release-metadata.json" ]]; then
+  cp "$ROOT_DIR/frontend/build/web/release-metadata.json" "$ROOT_DIR/dev_builds/release-metadata.json"
+fi
 
 echo "=========================================================="
 echo " Guarded deployment and live smoke verification completed"
 echo " Mobile APK deliverable: $ROOT_DIR/dev_builds/app-v1.0.1+2-debug.apk"
 echo " Web bundle deliverable: $ROOT_DIR/dev_builds/web-v1.0.1+2"
+echo " Release metadata: $ROOT_DIR/dev_builds/release-metadata.json"
 echo " API endpoint: ${api_url%/}"
 echo "=========================================================="

@@ -151,6 +151,12 @@ set -euo pipefail
 printf 'aws %s\\n' "$*" >> "$AET_TEST_LOG"
 if [[ "\${1:-}" == sts ]]; then
   printf '727118420276\\n'
+elif [[ "\${1:-}" == s3 && "\${2:-}" == cp ]]; then
+  if [[ -n "\${AET_TEST_EXISTING_S3_MARKER:-}" ]]; then
+    printf '%s\\n' "$AET_TEST_EXISTING_S3_MARKER"
+  else
+    exit 1
+  fi
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
   printf 'invalidation-123\\n'
 fi
@@ -167,6 +173,12 @@ if [[ "$*" == *deployment-version.json* ]]; then
     printf '{"commit":"%s"}\\n' "$ROLLBACK_TARGET_SHA"
   else
     printf '{"commit":"release-sha"}\\n'
+  fi
+elif [[ "$*" == *release-metadata.json* ]]; then
+  if [[ -n "\${ROLLBACK_TARGET_SHA:-}" ]]; then
+    printf '{"current_commit":"%s"}\\n' "$ROLLBACK_TARGET_SHA"
+  else
+    printf '{"current_commit":"release-sha"}\\n'
   fi
 else
   printf '{"status":"ok"}\\n'
@@ -388,4 +400,41 @@ test('rollback deployment cleanly replaces existing destination directory and fi
     removeFixture(fixture);
   }
 });
+
+test('persists current and previous release metadata rotating the deployed SHA into durable record', () => {
+  const fixture = createFixture();
+  try {
+    // 1. Simulate forward deploy when previous release was deployed at known-good-sha-111
+    const result = runDeployment(fixture, {
+      AET_TEST_EXISTING_S3_MARKER: '{"commit":"known-good-sha-111"}',
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+    // Verify dev_builds/release-metadata.json was created and has both current and previous SHAs
+    const metadataPath = path.join(fixture.fixture, 'dev_builds', 'release-metadata.json');
+    assert.ok(fs.existsSync(metadataPath), 'dev_builds/release-metadata.json must exist');
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    assert.equal(metadata.current_commit, 'release-sha');
+    assert.equal(metadata.previous_commit, 'known-good-sha-111');
+    assert.ok(metadata.deployed_at, 'deployed_at timestamp must be present');
+
+    // Verify deployment-version.json also preserved the previous commit
+    const markerPath = path.join(fixture.fixture, 'dev_builds', 'web-v1.0.1+2', 'deployment-version.json');
+    assert.ok(fs.existsSync(markerPath), 'dev_builds/web-v1.0.1+2/deployment-version.json must exist');
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    assert.equal(marker.commit, 'release-sha');
+    assert.equal(marker.previous_commit, 'known-good-sha-111');
+
+    // 2. Simulate rollback using ROLLBACK_TARGET_SHA=PREVIOUS
+    const rollbackResult = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_HEAD_SHA: 'known-good-sha-111',
+    });
+    assert.equal(rollbackResult.status, 0, `${rollbackResult.stdout}\n${rollbackResult.stderr}`);
+    assert.match(rollbackResult.stdout, /Rollback release deliverables preserved at .*\/dev_builds/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
 
