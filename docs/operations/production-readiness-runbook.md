@@ -136,21 +136,22 @@ apply with `-lock=false`.
 
 ## Backup and restore verification
 
-The DynamoDB table has point-in-time recovery, encryption at rest, and production-only
-deletion protection enabled. `Verify DynamoDB Backup Restore` runs monthly at 03:00 UTC
-on the first day of the month and can be manually dispatched for a protected, audited
-verification.
+The DynamoDB table has point-in-time recovery (PITR), encryption at rest, and production-only
+deletion protection enabled in Terraform.
 
-The workflow:
+> [!NOTE]
+> The scheduled GitHub Actions workflow `Verify DynamoDB Backup Restore` (`.github/workflows/verify-dynamodb-restore.yml`) has been retired alongside hosted CI/CD. The verification procedure below is preserved as historical context and operational guidance for manual AWS backup/restore tests:
 
-1. Fails unless it is running in the expected AWS account and PITR is enabled.
-2. Takes an isolated on-demand backup.
-3. Restores it to a uniquely named verification table.
+Historical automated verification procedure:
+
+1. Fails unless running in the expected AWS account and PITR is enabled.
+2. Takes an isolated on-demand backup (`aws dynamodb create-backup`).
+3. Restores it to a uniquely named verification table (`aws dynamodb restore-table-from-backup`).
 4. Waits for `ACTIVE` and compares its key schema to the source table.
 5. Deletes the verification table and temporary backup even after a failed check.
 
-The workflow never scans or logs financial records. Investigate any failure before
-re-running it; do not delete the source table or disable PITR as remediation.
+Operational restore testing must never scan or log financial records. Investigate any failure
+before re-running it; do not delete the source production table or disable PITR.
 
 ## Alarm response
 
