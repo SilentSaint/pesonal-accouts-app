@@ -238,14 +238,19 @@ the issue rather than closing speculatively.
 
 ## Deployment contract
 
-Production deployment is a separate, protected workflow. It may deploy only a
-SHA contained in `main`, built from a clean checkout. It must use GitHub Actions
-OIDC for AWS rather than persistent credentials, target a protected production
-environment, prevent concurrent deployments, record the deployed SHA, execute
-post-deployment smoke checks, and preserve a known-good SHA for rollback.
+Production deployment is a separate, owner-approved operation. It may deploy
+only a commit SHA contained in `main`, built from a clean checkout that exactly
+matches `origin/main`. It must use the guarded local release hatch
+(`scripts/manual_production_deploy.sh`) with explicit owner authorization
+(`PRODUCTION_DEPLOY_APPROVED=YES`), target the verified production AWS account
+and region, execute the complete local Docker verification gate before any AWS
+mutation, build immutable artifacts before applying the saved Terraform plan,
+verify post-apply output consistency, publish the web artifact and invalidate
+CloudFront, execute live deployment marker and health smoke checks, and record
+the deployed SHA while preserving a known-good SHA for rollback.
 
 Do not deploy from a pull request or a dirty workspace. A rollback deploys a
-known-good commit SHA through the same protected workflow and records the
+known-good commit SHA through the same guarded release hatch and records the
 resulting production verification.
 
 ## Current baseline dependency
