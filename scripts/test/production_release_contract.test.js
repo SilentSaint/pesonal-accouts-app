@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 
 const root = path.resolve(__dirname, '../..');
 const deployScriptSource = path.join(root, 'scripts', 'deploy_and_build.sh');
+const manualDeployScriptSource = path.join(root, 'scripts', 'manual_production_deploy.sh');
 
 function writeExecutable(file, contents) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -21,11 +22,18 @@ function createFixture() {
   const planJson = path.join(fixture, 'plan.json');
 
   fs.writeFileSync(log, '');
-  fs.mkdirSync(path.join(fixture, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(fixture, 'scripts', 'ci'), { recursive: true });
   fs.mkdirSync(path.join(fixture, 'terraform'), { recursive: true });
   fs.mkdirSync(path.join(fixture, 'frontend'), { recursive: true });
   fs.copyFileSync(deployScriptSource, path.join(fixture, 'scripts', 'deploy_and_build.sh'));
   fs.chmodSync(path.join(fixture, 'scripts', 'deploy_and_build.sh'), 0o755);
+  fs.copyFileSync(manualDeployScriptSource, path.join(fixture, 'scripts', 'manual_production_deploy.sh'));
+  fs.chmodSync(path.join(fixture, 'scripts', 'manual_production_deploy.sh'), 0o755);
+
+  writeExecutable(
+    path.join(fixture, 'scripts', 'ci', 'verify-local-docker'),
+    '#!/usr/bin/env bash\nprintf "verify-local-docker %s\\n" "$*" >> "$AET_TEST_LOG"\n',
+  );
 
   writeExecutable(
     path.join(fixture, 'backend', 'lambda', 'build.sh'),
@@ -43,8 +51,41 @@ set -euo pipefail
 printf 'git %s\\n' "$*" >> "$AET_TEST_LOG"
 case "$*" in
   *"branch --show-current") printf 'main\\n' ;;
-  *"rev-parse HEAD") printf 'release-sha\\n' ;;
-  *"status --porcelain") ;;
+  *"rev-parse --verify"*)
+    printf '%s\\n' "\${ROLLBACK_TARGET_SHA:-release-sha}"
+    ;;
+  *"rev-parse HEAD")
+    if [[ "$PWD" == *aet-rollback-worktree* || "$*" == *aet-rollback-worktree* ]]; then
+      printf '%s\\n' "\${ROLLBACK_TARGET_SHA:-release-sha}"
+    else
+      printf '%s\\n' "\${AET_TEST_HEAD_SHA:-release-sha}"
+    fi
+    ;;
+  *"rev-parse origin/main")
+    printf '%s\\n' "\${AET_TEST_HEAD_SHA:-release-sha}"
+    ;;
+  *"merge-base --is-ancestor"*)
+    ;;
+  *"fetch"*)
+    ;;
+  *"status --porcelain"*)
+    ;;
+  *"worktree add"*)
+    worktree_dir=""
+    for arg in "$@"; do
+      if [[ "$arg" == /tmp/* || "$arg" == *aet-rollback-worktree* ]]; then
+        worktree_dir="$arg"
+        break
+      fi
+    done
+    if [[ -n "$worktree_dir" ]]; then
+      mkdir -p "$worktree_dir/scripts" "$worktree_dir/terraform" "$worktree_dir/frontend"
+      cp "$AET_TEST_FIXTURE_DIR/scripts/deploy_and_build.sh" "$worktree_dir/scripts/deploy_and_build.sh"
+      cp -r "$AET_TEST_FIXTURE_DIR/backend" "$worktree_dir/backend"
+    fi
+    ;;
+  *"worktree remove"*)
+    ;;
 esac
 `,
   );
@@ -95,10 +136,10 @@ if [[ "\${1:-}" == build && "\${2:-}" == web ]]; then
     exit 37
   fi
   mkdir -p build/web
-  printf 'web\\n' > build/web/index.html
+  printf '%s\\n' "\${AET_TEST_WEB_CONTENT:-web}" > build/web/index.html
 elif [[ "\${1:-}" == build && "\${2:-}" == apk ]]; then
   mkdir -p build/app/outputs/flutter-apk
-  printf 'apk\\n' > build/app/outputs/flutter-apk/app-debug.apk
+  printf '%s\\n' "\${AET_TEST_APK_CONTENT:-apk}" > build/app/outputs/flutter-apk/app-debug.apk
 fi
 `,
   );
@@ -122,7 +163,11 @@ fi
 set -euo pipefail
 printf 'curl %s\\n' "$*" >> "$AET_TEST_LOG"
 if [[ "$*" == *deployment-version.json* ]]; then
-  printf '{"commit":"release-sha"}\\n'
+  if [[ -n "\${ROLLBACK_TARGET_SHA:-}" ]]; then
+    printf '{"commit":"%s"}\\n' "$ROLLBACK_TARGET_SHA"
+  else
+    printf '{"commit":"release-sha"}\\n'
+  fi
 else
   printf '{"status":"ok"}\\n'
 fi
@@ -160,6 +205,26 @@ function runDeployment(fixture, overrides = {}) {
   };
 
   return spawnSync(path.join(fixture.fixture, 'scripts', 'deploy_and_build.sh'), [], {
+    cwd: fixture.fixture,
+    env: environment,
+    encoding: 'utf8',
+  });
+}
+
+function runManualDeploy(fixture, overrides = {}) {
+  const environment = {
+    ...process.env,
+    PATH: `${fixture.bin}:${process.env.PATH}`,
+    PRODUCTION_DEPLOY_APPROVED: 'YES',
+    AET_TEST_FIXTURE_DIR: fixture.fixture,
+    AET_TEST_LOG: fixture.log,
+    AET_TEST_PLAN_JSON: fixture.planJson,
+    AWS_REGION: 'ap-south-2',
+    AWS_ACCOUNT_ID: '727118420276',
+    ...overrides,
+  };
+
+  return spawnSync(path.join(fixture.fixture, 'scripts', 'manual_production_deploy.sh'), [], {
     cwd: fixture.fixture,
     env: environment,
     encoding: 'utf8',
@@ -278,3 +343,49 @@ test('refuses deployment when AWS_ACCOUNT_ID is empty', () => {
     removeFixture(fixture);
   }
 });
+
+test('rollback deployment cleanly replaces existing destination directory and file removing obsolete assets', () => {
+  const fixture = createFixture();
+  try {
+    const existingWebDir = path.join(fixture.fixture, 'dev_builds', 'web-v1.0.1+2');
+    fs.mkdirSync(existingWebDir, { recursive: true });
+    fs.writeFileSync(path.join(existingWebDir, 'index.html'), 'stale-web-content\n');
+    fs.writeFileSync(path.join(existingWebDir, 'obsolete-bundle-asset.js'), 'obsolete-code\n');
+
+    const existingApkFile = path.join(fixture.fixture, 'dev_builds', 'app-v1.0.1+2-debug.apk');
+    fs.writeFileSync(existingApkFile, 'stale-apk-content\n');
+
+    const rollbackSha = 'rollback-sha-12345';
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: rollbackSha,
+      AET_TEST_HEAD_SHA: rollbackSha,
+      AET_TEST_WEB_CONTENT: 'rollback-web',
+      AET_TEST_APK_CONTENT: 'rollback-apk',
+    });
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Rollback release deliverables preserved at .*\/dev_builds/);
+
+    // Obsolete asset inside existing directory must disappear (clean replacement, no merge)
+    assert.equal(
+      fs.existsSync(path.join(existingWebDir, 'obsolete-bundle-asset.js')),
+      false,
+      'Obsolete files inside preserved directory should have been removed, not merged',
+    );
+
+    // Rollback web bundle content must replace stale index.html
+    assert.equal(
+      fs.readFileSync(path.join(existingWebDir, 'index.html'), 'utf8'),
+      'rollback-web\n',
+    );
+
+    // Rollback APK must replace stale APK file
+    assert.equal(
+      fs.readFileSync(existingApkFile, 'utf8'),
+      'rollback-apk\n',
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
