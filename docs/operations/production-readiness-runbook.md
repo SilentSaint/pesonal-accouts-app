@@ -8,7 +8,7 @@ Production releases are executed locally using the guarded release hatch (`scrip
 
 | Variable | Purpose |
 | --- | --- |
-| `AWS_REGION` | Target AWS region containing the production stack (e.g. `ap-south-2`). |
+| `AWS_REGION` | Target AWS region containing the production stack (e.g. `ap-south-2`); validated against pinned `EXPECTED_AWS_REGION`. |
 | `AWS_ACCOUNT_ID` | Expected AWS account ID (e.g. `727118420276`); the release hatch validates STS identity and fails on any mismatch. |
 | `PRODUCTION_DEPLOY_APPROVED=YES` | Explicit owner approval gate required to execute the release hatch. |
 
@@ -93,12 +93,13 @@ The local release has these fail-closed stages:
 
 1. The wrapper acquires the release lock (`${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock` via `flock`)
    to prevent concurrent deployments, requires explicit `PRODUCTION_DEPLOY_APPROVED=YES`, a clean working tree,
-   and the expected `AWS_REGION` and `AWS_ACCOUNT_ID`. For standard releases, it asserts checkout on `main`
-   matching `origin/main`; for rollbacks (`ROLLBACK_TARGET_SHA`), it asserts that the target commit is an ancestor
-   contained in `origin/main` and that the clean local HEAD matches that commit.
+   and validates `AWS_REGION` against pinned `EXPECTED_AWS_REGION` (`ap-south-2`) and `AWS_ACCOUNT_ID`. For standard
+   releases, it asserts checkout on `main` matching `origin/main`; for rollbacks (`ROLLBACK_TARGET_SHA`), it asserts
+   that the target commit is an ancestor contained in `origin/main` and that the clean local HEAD matches that commit.
 2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
    production AWS credentials disabled. A failed gate stops before the AWS identity check
-   or any AWS mutation; the working tree is checked again after validation.
+   or any AWS mutation; the working tree is checked again after validation, and `origin/main` currency is re-verified
+   from the remote to prevent race conditions if `main` advanced during validation.
 3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
    guarded deployment script only after the comparison succeeds.
 4. The deployment script builds Lambda artifacts, creates a saved Terraform plan, and

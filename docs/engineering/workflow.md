@@ -246,11 +246,14 @@ deployments (serializing the complete release operation from validation through
 post-apply publication and verification via the release lock), use the guarded
 local release hatch (`scripts/manual_production_deploy.sh`) with explicit owner
 authorization (`PRODUCTION_DEPLOY_APPROVED=YES`), target the verified production
-AWS account and region, execute the complete local Docker verification gate
-before any AWS mutation, build immutable artifacts before applying the saved
-Terraform plan, verify post-apply output consistency, publish the web artifact
-and invalidate CloudFront, execute live deployment marker and health smoke checks,
-and record the deployed SHA while preserving a known-good SHA for rollback.
+AWS account and pinned region (`ap-south-2`, configured via `AWS_REGION` and
+validated against `EXPECTED_AWS_REGION`), execute the complete local Docker
+verification gate before any AWS mutation, recheck `origin/main` currency after
+validation to prevent stale-deployment races, build immutable artifacts before
+applying the saved Terraform plan, verify post-apply output consistency, publish
+the web artifact and invalidate CloudFront, execute live deployment marker and
+health smoke checks, and record the deployed SHA while preserving a known-good
+SHA for rollback.
 
 Do not deploy from a pull request or a dirty workspace. A rollback deploys a
 preserved known-good commit SHA contained in `main` through the same guarded

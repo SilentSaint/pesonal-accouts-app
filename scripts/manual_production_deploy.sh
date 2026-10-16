@@ -67,8 +67,35 @@ test -z "$(git status --porcelain)" || {
   exit 1
 }
 
+if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+  git fetch --quiet origin main || {
+    echo "Refusing rollback deployment: failed to refresh origin/main from remote after validation." >&2
+    exit 1
+  }
+  if ! git merge-base --is-ancestor "$ROLLBACK_TARGET_SHA" origin/main; then
+    echo "Refusing rollback deployment: commit $ROLLBACK_TARGET_SHA is no longer contained in origin/main." >&2
+    exit 1
+  fi
+else
+  git fetch --quiet origin main || {
+    echo "Refusing production deployment: failed to refresh origin/main from remote after validation." >&2
+    exit 1
+  }
+  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+    echo "Refusing production deployment: origin/main advanced during verification (local HEAD is $(git rev-parse HEAD), remote is $(git rev-parse origin/main))." >&2
+    exit 1
+  }
+fi
+
+: "${EXPECTED_AWS_REGION:=ap-south-2}"
+
 if [[ -z "${AWS_REGION:-}" ]]; then
   echo "Refusing production deployment: AWS_REGION is required." >&2
+  exit 1
+fi
+
+if [[ "$AWS_REGION" != "$EXPECTED_AWS_REGION" ]]; then
+  echo "Refusing production deployment: expected AWS region $EXPECTED_AWS_REGION, got $AWS_REGION." >&2
   exit 1
 fi
 
