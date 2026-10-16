@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+ROOT_DIR="${TARGET_DIR:-$(dirname "$SCRIPT_DIR")}"
 TERRAFORM_DIR="$ROOT_DIR/terraform"
 
 if [[ "${AET_GUARDED_RELEASE:-}" != "YES" ]]; then
@@ -39,10 +39,10 @@ test -z "$(git -C "$ROOT_DIR" status --porcelain)" || {
 
 : "${AWS_REGION:?Refusing deployment: AWS_REGION is required.}"
 : "${AWS_ACCOUNT_ID:?Refusing deployment: AWS_ACCOUNT_ID is required.}"
-: "${EXPECTED_AWS_REGION:=ap-south-2}"
+readonly EXPECTED_AWS_REGION="ap-south-2"
 
-if [[ "$AWS_REGION" != "$EXPECTED_AWS_REGION" ]]; then
-  echo "Refusing deployment: expected AWS region $EXPECTED_AWS_REGION, got $AWS_REGION." >&2
+if [[ "${AWS_REGION:-}" != "$EXPECTED_AWS_REGION" ]]; then
+  echo "Refusing deployment: AWS_REGION must be $EXPECTED_AWS_REGION, got '${AWS_REGION:-empty}'." >&2
   exit 1
 fi
 

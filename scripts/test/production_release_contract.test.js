@@ -224,3 +224,30 @@ test('Terraform output drift stops publication after the saved plan is applied',
     removeFixture(fixture);
   }
 });
+
+test('refuses deployment when AWS_REGION does not match ap-south-2 even if EXPECTED_AWS_REGION is overridden', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AWS_REGION: 'us-east-1',
+      EXPECTED_AWS_REGION: 'us-east-1',
+    });
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /AWS_REGION must be ap-south-2, got 'us-east-1'/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when AWS_REGION is empty', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AWS_REGION: '',
+    });
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /AWS_REGION is required/);
+  } finally {
+    removeFixture(fixture);
+  }
+});

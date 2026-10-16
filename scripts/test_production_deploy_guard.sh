@@ -17,10 +17,13 @@ grep -Fq -- '--pull' "$manual_hatch"
 grep -Fq 'AWS_ACCOUNT_ID' "$manual_hatch"
 grep -Fq 'AWS_REGION' "$manual_hatch"
 grep -Fq 'EXPECTED_AWS_REGION' "$manual_hatch"
+grep -Fq 'readonly EXPECTED_AWS_REGION="ap-south-2"' "$manual_hatch"
+grep -Fq 'readonly RELEASE_LOCK_FILE="/tmp/automatic_expense_tracker_production_release.lock"' "$manual_hatch"
 grep -Fq 'AET_GUARDED_RELEASE=YES' "$manual_hatch"
 
 deploy_script="scripts/deploy_and_build.sh"
 grep -Fq 'EXPECTED_AWS_REGION' "$deploy_script"
+grep -Fq 'readonly EXPECTED_AWS_REGION="ap-south-2"' "$deploy_script"
 grep -Fq 'set -euo pipefail' "$deploy_script"
 grep -Fq 'terraform -chdir="$TERRAFORM_DIR" plan' "$deploy_script"
 grep -Fq 'terraform -chdir="$TERRAFORM_DIR" show -json' "$deploy_script"
@@ -54,7 +57,7 @@ test "$apply_line" -lt "$publish_line"
 lock_line="$(grep -nF 'flock' "$manual_hatch" | head -n1 | cut -d: -f1)"
 local_gate_line="$(grep -nF 'scripts/ci/verify-local-docker' "$manual_hatch" | head -n1 | cut -d: -f1)"
 aws_identity_line="$(grep -nF 'aws sts get-caller-identity' "$manual_hatch" | head -n1 | cut -d: -f1)"
-deploy_line="$(grep -nF 'exec "$SCRIPT_DIR/deploy_and_build.sh"' "$manual_hatch" | head -n1 | cut -d: -f1)"
+deploy_line="$(grep -nF '"$SCRIPT_DIR/deploy_and_build.sh"' "$manual_hatch" | head -n1 | cut -d: -f1)"
 
 test -n "$lock_line"
 test -n "$local_gate_line"
@@ -71,7 +74,7 @@ set -e
 test "$missing_approval_status" -ne 0
 grep -Fq 'explicit owner approval' <<<"$missing_approval_output"
 
-lock_file="${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock"
+lock_file="/tmp/automatic_expense_tracker_production_release.lock"
 set +e
 concurrent_output="$(
   exec 200>"$lock_file"

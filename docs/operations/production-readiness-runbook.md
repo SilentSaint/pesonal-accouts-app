@@ -54,9 +54,8 @@ The project follows a local-first engineering and release model (see `docs/opera
    ```
 
 3. **Guarded rollback release hatch**:
-   To roll back to an earlier known-good release commit, check out that commit and pass `ROLLBACK_TARGET_SHA`. The release hatch verifies that the target commit is an ancestor contained in `origin/main` and that the working tree is clean and checked out at that revision before running validation and deployment:
+   To roll back to an earlier known-good release commit, pass `ROLLBACK_TARGET_SHA` while staying on a clean checkout on `main`. The release driver on `main` verifies that the target commit is an ancestor contained in `origin/main`, provisions a detached worktree for the rollback target, runs validation against it, and executes deployment without requiring the operator to check out older commits in the primary workspace:
    ```bash
-   git checkout --detach <known-good-commit-sha>
    export AWS_REGION=ap-south-2
    export AWS_ACCOUNT_ID='727118420276'
    ROLLBACK_TARGET_SHA=<known-good-commit-sha> PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
@@ -91,11 +90,13 @@ short-lived access-key values into a shell profile.
 
 The local release has these fail-closed stages:
 
-1. The wrapper acquires the release lock (`${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock` via `flock`)
-   to prevent concurrent deployments, requires explicit `PRODUCTION_DEPLOY_APPROVED=YES`, a clean working tree,
-   and validates `AWS_REGION` against pinned `EXPECTED_AWS_REGION` (`ap-south-2`) and `AWS_ACCOUNT_ID`. For standard
-   releases, it asserts checkout on `main` matching `origin/main`; for rollbacks (`ROLLBACK_TARGET_SHA`), it asserts
-   that the target commit is an ancestor contained in `origin/main` and that the clean local HEAD matches that commit.
+1. The wrapper acquires the release lock (`/tmp/automatic_expense_tracker_production_release.lock` via `flock`)
+   on the designated release host to prevent concurrent deployments across sessions or callers, requires explicit
+   `PRODUCTION_DEPLOY_APPROVED=YES`, a clean working tree on `main` matching `origin/main`, and validates `AWS_REGION`
+   against pinned, readonly `EXPECTED_AWS_REGION` (`ap-south-2`, rejecting caller overrides) and `AWS_ACCOUNT_ID`. For standard
+   releases, it deploys the clean `main` revision; for rollbacks (`ROLLBACK_TARGET_SHA`), the driver on `main` asserts
+   that the target commit is an ancestor contained in `origin/main` and prepares an isolated temporary worktree to validate
+   and deploy that target revision.
 2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
    production AWS credentials disabled. A failed gate stops before the AWS identity check
    or any AWS mutation; the working tree is checked again after validation, and `origin/main` currency is re-verified

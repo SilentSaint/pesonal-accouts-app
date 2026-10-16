@@ -12,7 +12,7 @@ fi
 
 cd "$ROOT_DIR"
 
-RELEASE_LOCK_FILE="${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock"
+readonly RELEASE_LOCK_FILE="/tmp/automatic_expense_tracker_production_release.lock"
 exec 200>"$RELEASE_LOCK_FILE"
 if ! flock -n 200; then
   echo "Refusing production deployment: another production release is currently in progress." >&2
@@ -24,70 +24,81 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     echo "Refusing rollback deployment: invalid ROLLBACK_TARGET_SHA '$ROLLBACK_TARGET_SHA'." >&2
     exit 1
   }
-  git fetch --quiet origin main || {
-    echo "Refusing rollback deployment: failed to refresh origin/main from remote." >&2
-    exit 1
-  }
-  if ! git merge-base --is-ancestor "$target_rev" origin/main; then
-    echo "Refusing rollback deployment: commit $target_rev is not contained in origin/main." >&2
-    exit 1
-  fi
-  local_rev="$(git rev-parse HEAD)"
-  if [[ "$local_rev" != "$target_rev" ]]; then
-    echo "Refusing rollback deployment: local HEAD ($local_rev) does not match ROLLBACK_TARGET_SHA ($target_rev)." >&2
-    exit 1
-  fi
-  export ROLLBACK_TARGET_SHA="$target_rev"
-else
-  test "$(git branch --show-current)" = "main" || {
-    echo "Refusing production deployment: checkout must be on main." >&2
-    exit 1
-  }
-
-  git fetch --quiet origin main || {
-    echo "Refusing production deployment: failed to refresh origin/main from remote." >&2
-    exit 1
-  }
-  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
-    echo "Refusing production deployment: local main must exactly match origin/main." >&2
-    exit 1
-  }
 fi
+
+test "$(git branch --show-current)" = "main" || {
+  echo "Refusing production deployment: checkout must be on main." >&2
+  exit 1
+}
+
+git fetch --quiet origin main || {
+  echo "Refusing production deployment: failed to refresh origin/main from remote." >&2
+  exit 1
+}
+
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+  echo "Refusing production deployment: local main must exactly match origin/main." >&2
+  exit 1
+}
 
 test -z "$(git status --porcelain)" || {
   echo "Refusing production deployment: working tree must be clean." >&2
   exit 1
 }
 
+DEPLOY_TARGET_DIR="$ROOT_DIR"
+DEPLOY_TARGET_REV="$(git rev-parse HEAD)"
+
+if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+  if ! git merge-base --is-ancestor "$target_rev" origin/main; then
+    echo "Refusing rollback deployment: commit $target_rev is not contained in origin/main." >&2
+    exit 1
+  fi
+  DEPLOY_TARGET_REV="$target_rev"
+  DEPLOY_TARGET_DIR="$(mktemp -d /tmp/aet-rollback-worktree.XXXXXX)"
+  git worktree add --quiet --detach "$DEPLOY_TARGET_DIR" "$DEPLOY_TARGET_REV"
+  cleanup_rollback_worktree() {
+    if [[ -n "${DEPLOY_TARGET_DIR:-}" && -d "$DEPLOY_TARGET_DIR" ]]; then
+      git worktree remove --force "$DEPLOY_TARGET_DIR" 2>/dev/null || rm -rf "$DEPLOY_TARGET_DIR"
+    fi
+  }
+  trap cleanup_rollback_worktree EXIT
+  export ROLLBACK_TARGET_SHA="$DEPLOY_TARGET_REV"
+fi
+
 echo "Running the complete local Docker release gate before production deployment..."
-"$ROOT_DIR/scripts/ci/verify-local-docker" --pull
+LOCAL_VERIFIER_TARGET_DIR="$DEPLOY_TARGET_DIR" "$ROOT_DIR/scripts/ci/verify-local-docker" --pull
+
+if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+  test -z "$(git -C "$DEPLOY_TARGET_DIR" status --porcelain)" || {
+    echo "Refusing rollback deployment: local validation changed the target working tree." >&2
+    exit 1
+  }
+fi
 
 test -z "$(git status --porcelain)" || {
   echo "Refusing production deployment: local validation changed the working tree." >&2
   exit 1
 }
 
+git fetch --quiet origin main || {
+  echo "Refusing production deployment: failed to refresh origin/main from remote after validation." >&2
+  exit 1
+}
+
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+  echo "Refusing production deployment: origin/main advanced during verification (local HEAD is $(git rev-parse HEAD), remote is $(git rev-parse origin/main))." >&2
+  exit 1
+}
+
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
-  git fetch --quiet origin main || {
-    echo "Refusing rollback deployment: failed to refresh origin/main from remote after validation." >&2
-    exit 1
-  }
   if ! git merge-base --is-ancestor "$ROLLBACK_TARGET_SHA" origin/main; then
     echo "Refusing rollback deployment: commit $ROLLBACK_TARGET_SHA is no longer contained in origin/main." >&2
     exit 1
   fi
-else
-  git fetch --quiet origin main || {
-    echo "Refusing production deployment: failed to refresh origin/main from remote after validation." >&2
-    exit 1
-  }
-  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
-    echo "Refusing production deployment: origin/main advanced during verification (local HEAD is $(git rev-parse HEAD), remote is $(git rev-parse origin/main))." >&2
-    exit 1
-  }
 fi
 
-: "${EXPECTED_AWS_REGION:=ap-south-2}"
+readonly EXPECTED_AWS_REGION="ap-south-2"
 
 if [[ -z "${AWS_REGION:-}" ]]; then
   echo "Refusing production deployment: AWS_REGION is required." >&2
@@ -95,7 +106,7 @@ if [[ -z "${AWS_REGION:-}" ]]; then
 fi
 
 if [[ "$AWS_REGION" != "$EXPECTED_AWS_REGION" ]]; then
-  echo "Refusing production deployment: expected AWS region $EXPECTED_AWS_REGION, got $AWS_REGION." >&2
+  echo "Refusing production deployment: AWS_REGION must be $EXPECTED_AWS_REGION, got '$AWS_REGION'." >&2
   exit 1
 fi
 
@@ -118,5 +129,7 @@ fi
 
 export AET_GUARDED_RELEASE=YES
 
-echo "All manual deployment guards passed for $(git rev-parse HEAD) in AWS account $AWS_ACCOUNT_ID."
-exec "$SCRIPT_DIR/deploy_and_build.sh"
+echo "All manual deployment guards passed for $DEPLOY_TARGET_REV in AWS account $AWS_ACCOUNT_ID."
+deploy_status=0
+TARGET_DIR="$DEPLOY_TARGET_DIR" "$SCRIPT_DIR/deploy_and_build.sh" || deploy_status=$?
+exit "$deploy_status"

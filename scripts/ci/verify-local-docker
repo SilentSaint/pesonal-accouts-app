@@ -7,7 +7,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ORIGINAL_ARGS=("$@")
-ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)"
+ROOT_DIR="${LOCAL_VERIFIER_TARGET_DIR:-$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)}"
 DOCKERFILE_RELATIVE="ci/local-verification/Dockerfile"
 DOCKERFILE_PATH="$ROOT_DIR/$DOCKERFILE_RELATIVE"
 IMAGE_NAME="${LOCAL_VERIFICATION_IMAGE:-automatic-expense-tracker-ci:local}"
