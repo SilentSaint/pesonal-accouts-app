@@ -19,13 +19,14 @@ if ! flock -n 200; then
   exit 1
 fi
 
-git fetch --quiet origin main
-
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   target_rev="$(git rev-parse --verify "${ROLLBACK_TARGET_SHA}^{commit}" 2>/dev/null)" || {
     echo "Refusing rollback deployment: invalid ROLLBACK_TARGET_SHA '$ROLLBACK_TARGET_SHA'." >&2
     exit 1
   }
+  if git remote get-url origin >/dev/null 2>&1; then
+    git fetch --quiet origin main 2>/dev/null || true
+  fi
   if ! git merge-base --is-ancestor "$target_rev" origin/main; then
     echo "Refusing rollback deployment: commit $target_rev is not contained in origin/main." >&2
     exit 1
@@ -42,6 +43,9 @@ else
     exit 1
   }
 
+  if git remote get-url origin >/dev/null 2>&1; then
+    git fetch --quiet origin main 2>/dev/null || true
+  fi
   test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
     echo "Refusing production deployment: local main must exactly match origin/main." >&2
     exit 1
