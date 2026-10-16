@@ -8,6 +8,7 @@ manual_hatch="scripts/manual_production_deploy.sh"
 grep -Fq 'required reviewers' "$runbook"
 grep -Fq 'billing' "$runbook"
 grep -Fq 'manual deployment hatch' "$runbook"
+grep -Fq 'flock' "$manual_hatch"
 grep -Fq 'set -euo pipefail' "$manual_hatch"
 grep -Fq 'PRODUCTION_DEPLOY_APPROVED=YES' "$manual_hatch"
 grep -Fq 'origin/main' "$manual_hatch"
@@ -48,13 +49,16 @@ test "$show_line" -lt "$web_build_line"
 test "$web_build_line" -lt "$apply_line"
 test "$apply_line" -lt "$publish_line"
 
+lock_line="$(grep -nF 'flock' "$manual_hatch" | head -n1 | cut -d: -f1)"
 local_gate_line="$(grep -nF 'scripts/ci/verify-local-docker' "$manual_hatch" | head -n1 | cut -d: -f1)"
 aws_identity_line="$(grep -nF 'aws sts get-caller-identity' "$manual_hatch" | head -n1 | cut -d: -f1)"
 deploy_line="$(grep -nF 'exec "$SCRIPT_DIR/deploy_and_build.sh"' "$manual_hatch" | head -n1 | cut -d: -f1)"
 
+test -n "$lock_line"
 test -n "$local_gate_line"
 test -n "$aws_identity_line"
 test -n "$deploy_line"
+test "$lock_line" -lt "$local_gate_line"
 test "$local_gate_line" -lt "$aws_identity_line"
 test "$local_gate_line" -lt "$deploy_line"
 
@@ -64,6 +68,19 @@ missing_approval_status=$?
 set -e
 test "$missing_approval_status" -ne 0
 grep -Fq 'explicit owner approval' <<<"$missing_approval_output"
+
+lock_file="${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock"
+set +e
+concurrent_output="$(
+  exec 200>"$lock_file"
+  if flock -n 200; then
+    PRODUCTION_DEPLOY_APPROVED=YES bash "$manual_hatch" 2>&1
+  fi
+)"
+concurrent_status=$?
+set -e
+test "$concurrent_status" -ne 0
+grep -Fq 'another production release is currently in progress' <<<"$concurrent_output"
 
 set +e
 unguarded_output="$(env -u AET_GUARDED_RELEASE bash "$deploy_script" 2>&1)"

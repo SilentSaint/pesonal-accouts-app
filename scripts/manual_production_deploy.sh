@@ -12,6 +12,13 @@ fi
 
 cd "$ROOT_DIR"
 
+RELEASE_LOCK_FILE="${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock"
+exec 200>"$RELEASE_LOCK_FILE"
+if ! flock -n 200; then
+  echo "Refusing production deployment: another production release is currently in progress." >&2
+  exit 1
+fi
+
 test "$(git branch --show-current)" = "main" || {
   echo "Refusing production deployment: checkout must be on main." >&2
   exit 1

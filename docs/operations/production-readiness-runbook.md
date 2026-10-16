@@ -2,8 +2,26 @@
 
 ## Required production configuration
 
-Protect the GitHub `production` environment with required reviewers and configure these
-environment variables:
+### Canonical local release configuration
+
+Production releases are executed locally using the guarded release hatch (`scripts/manual_production_deploy.sh`) with explicit owner authorization. The release environment requires the following operator configuration:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_REGION` | Target AWS region containing the production stack (e.g. `ap-south-2`). |
+| `AWS_ACCOUNT_ID` | Expected AWS account ID (e.g. `727118420276`); the release hatch validates STS identity and fails on any mismatch. |
+| `PRODUCTION_DEPLOY_APPROVED=YES` | Explicit owner approval gate required to execute the release hatch. |
+
+Operational authentication uses local AWS credentials (e.g. via `scripts/aws-dev-auth.sh` or the `agent-login` SSO profile). Deployments must not run with ambient unverified credentials.
+
+After the first apply, confirm the email subscription sent for `budget-spending-alerts-prod` (or the configured environment) so operational alarms have an active human destination.
+
+### Historical hosted configuration (superseded)
+
+> [!NOTE]
+> Hosted CI/CD workflows and GitHub Actions deployment pipelines are retired. The configuration below documents the historical hosted environment setup previously used before the canonical local release model was adopted.
+
+In historical hosted automation, the GitHub `production` environment was protected with required reviewers and configured with these environment variables:
 
 | Variable | Purpose |
 | --- | --- |
@@ -12,14 +30,7 @@ environment variables:
 | `AWS_DEPLOY_ROLE_ARN` | OIDC-assumable, least-privilege deployment role. |
 | `DYNAMODB_TABLE_NAME` | Production table name used by the restore-verification workflow. |
 
-The deployment role must be trusted only for this repository's `production` environment.
-It needs scoped access to this stack's Terraform-managed resources, S3 web bucket,
-CloudFront distribution, and DynamoDB backup/restore operations. Do not configure
-long-lived AWS access keys in GitHub.
-
-After the first apply, confirm the email subscription sent for
-`budget-spending-alerts-prod` (or the configured environment) so operational alarms
-have an active human destination.
+The historical deployment role was trusted only for this repository's `production` environment. It required scoped access to this stack's Terraform-managed resources, S3 web bucket, CloudFront distribution, and DynamoDB backup/restore operations. Long-lived AWS access keys were never configured in GitHub.
 
 ## Release gate and deployment
 
@@ -71,8 +82,9 @@ short-lived access-key values into a shell profile.
 
 The local release has these fail-closed stages:
 
-1. The wrapper requires explicit `PRODUCTION_DEPLOY_APPROVED=YES`, a clean `main` checkout
-   exactly matching `origin/main`, and the expected `AWS_REGION` and `AWS_ACCOUNT_ID`.
+1. The wrapper acquires the release lock (`${TMPDIR:-/tmp}/automatic_expense_tracker_release.lock` via `flock`)
+   to prevent concurrent deployments, requires explicit `PRODUCTION_DEPLOY_APPROVED=YES`, a clean `main`
+   checkout exactly matching `origin/main`, and the expected `AWS_REGION` and `AWS_ACCOUNT_ID`.
 2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
    production AWS credentials disabled. A failed gate stops before the AWS identity check
    or any AWS mutation; the working tree is checked again after validation.

@@ -240,7 +240,9 @@ the issue rather than closing speculatively.
 
 Production deployment is a separate, owner-approved operation. It may deploy
 only a commit SHA contained in `main`, built from a clean checkout that exactly
-matches `origin/main`. It must use the guarded local release hatch
+matches `origin/main`. It must prevent concurrent deployments (serializing the
+complete release operation from validation through post-apply publication and
+verification via the release lock), use the guarded local release hatch
 (`scripts/manual_production_deploy.sh`) with explicit owner authorization
 (`PRODUCTION_DEPLOY_APPROVED=YES`), target the verified production AWS account
 and region, execute the complete local Docker verification gate before any AWS
