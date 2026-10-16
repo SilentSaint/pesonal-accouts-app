@@ -67,7 +67,11 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
 fi
 
 echo "Running the complete local Docker release gate before production deployment..."
-LOCAL_VERIFIER_TARGET_DIR="$DEPLOY_TARGET_DIR" "$ROOT_DIR/scripts/ci/verify-local-docker" --pull
+if [[ "$DEPLOY_TARGET_DIR" != "$ROOT_DIR" ]]; then
+  "$ROOT_DIR/scripts/ci/verify-local-docker" --rollback-worktree "$DEPLOY_TARGET_DIR" --pull
+else
+  "$ROOT_DIR/scripts/ci/verify-local-docker" --pull
+fi
 
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   test -z "$(git -C "$DEPLOY_TARGET_DIR" status --porcelain)" || {

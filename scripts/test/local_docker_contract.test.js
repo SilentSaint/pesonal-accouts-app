@@ -153,12 +153,41 @@ test('preflight uses the invoking checkout when Git repository overrides are exp
       {
         GIT_DIR: path.join(otherCheckout, '.git'),
         GIT_WORK_TREE: otherCheckout,
+        LOCAL_VERIFIER_TARGET_DIR: otherCheckout,
       },
     );
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, new RegExp(`Verification revision: ${expectedRevision.stdout.trim()}`));
     assert.doesNotMatch(result.stdout, new RegExp(`Verification revision: ${otherRevision.stdout.trim()}`));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('preflight validates an explicit rollback worktree when --rollback-worktree is passed', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-verifier-rollback-worktree-'));
+  const otherCheckout = createVerifierCheckout(tempRoot, 'rollback target commit');
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.GIT_DIR;
+  delete cleanEnv.GIT_WORK_TREE;
+  delete cleanEnv.GIT_COMMON_DIR;
+  delete cleanEnv.GIT_INDEX_FILE;
+  const otherRevision = spawnSync('git', ['-C', otherCheckout, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+    env: cleanEnv,
+  });
+
+  try {
+    assert.equal(otherRevision.status, 0, otherRevision.stderr);
+
+    const result = runWithFakeDocker(
+      'exit 0',
+      ['--preflight-only', '--cache-dir', '__CACHE_DIR__', '--rollback-worktree', otherCheckout],
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Verification revision: ${otherRevision.stdout.trim()}`));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
