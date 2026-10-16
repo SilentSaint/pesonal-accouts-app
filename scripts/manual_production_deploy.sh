@@ -147,7 +147,13 @@ TARGET_DIR="$DEPLOY_TARGET_DIR" "$SCRIPT_DIR/deploy_and_build.sh" || deploy_stat
 if [[ "$deploy_status" -eq 0 && "$DEPLOY_TARGET_DIR" != "$ROOT_DIR" ]]; then
   if [[ -d "$DEPLOY_TARGET_DIR/dev_builds" ]]; then
     mkdir -p "$ROOT_DIR/dev_builds"
-    cp -r "$DEPLOY_TARGET_DIR/dev_builds/." "$ROOT_DIR/dev_builds/"
+    for item in "$DEPLOY_TARGET_DIR/dev_builds"/*; do
+      if [[ -e "$item" ]]; then
+        basename_item="$(basename "$item")"
+        rm -rf "$ROOT_DIR/dev_builds/$basename_item"
+        cp -r "$item" "$ROOT_DIR/dev_builds/$basename_item"
+      fi
+    done
     echo "Rollback release deliverables preserved at $ROOT_DIR/dev_builds."
   fi
 fi
