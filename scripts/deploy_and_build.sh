@@ -106,13 +106,39 @@ cloudfront_url="$(planned_output cloudfront_web_url)"
 echo "[3/6] Building the reviewed web and Android artifacts before AWS mutation..."
 previous_commit=""
 if [[ -n "${bucket:-}" ]]; then
-  existing_marker="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>/dev/null || true)"
-  if [[ -n "$existing_marker" ]]; then
-    previous_commit="$(printf '%s' "$existing_marker" | grep -o '"commit":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+  s3_err_file="$(mktemp /tmp/aet-s3-read-err.XXXXXX)"
+  s3_marker_output=""
+  s3_status=0
+  s3_marker_output="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>"$s3_err_file")" || s3_status=$?
+  s3_read_error="$(cat "$s3_err_file" 2>/dev/null || true)"
+  rm -f "$s3_err_file"
+
+  if [[ "$s3_status" -eq 0 ]]; then
+    existing_commit="$(printf '%s' "$s3_marker_output" | grep -o '"commit":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+    existing_prev="$(printf '%s' "$s3_marker_output" | grep -o '"previous_commit":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+    if [[ "$existing_commit" == "$release_commit" ]]; then
+      previous_commit="$existing_prev"
+    else
+      previous_commit="$existing_commit"
+    fi
+  else
+    if grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
+      echo "No existing live deployment marker in S3 (initial bootstrap deployment)."
+      if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
+        existing_commit="$(grep -o '"current_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+        existing_prev="$(grep -o '"previous_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+        if [[ "$existing_commit" == "$release_commit" ]]; then
+          previous_commit="$existing_prev"
+        else
+          previous_commit="$existing_commit"
+        fi
+      fi
+    else
+      echo "Refusing deployment: failed to read live deployment marker from s3://$bucket/deployment-version.json." >&2
+      echo "$s3_read_error" >&2
+      exit 1
+    fi
   fi
-fi
-if [[ -z "$previous_commit" && -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
-  previous_commit="$(grep -o '"current_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null | head -n1 | cut -d: -f2 | tr -d '"' || true)"
 fi
 
 api_base_url="${api_url%/}/api"

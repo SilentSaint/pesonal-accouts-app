@@ -152,9 +152,16 @@ printf 'aws %s\\n' "$*" >> "$AET_TEST_LOG"
 if [[ "\${1:-}" == sts ]]; then
   printf '727118420276\\n'
 elif [[ "\${1:-}" == s3 && "\${2:-}" == cp ]]; then
-  if [[ -n "\${AET_TEST_EXISTING_S3_MARKER:-}" ]]; then
+  if [[ "\${AET_TEST_S3_CP_ERROR:-}" == "access-denied" ]]; then
+    echo 'fatal error: An error occurred (AccessDenied) when calling the GetObject operation: Access Denied' >&2
+    exit 1
+  elif [[ "\${AET_TEST_S3_CP_ERROR:-}" == "network-error" ]]; then
+    echo 'fatal error: Could not connect to the endpoint URL' >&2
+    exit 1
+  elif [[ -n "\${AET_TEST_EXISTING_S3_MARKER:-}" ]]; then
     printf '%s\\n' "$AET_TEST_EXISTING_S3_MARKER"
   else
+    echo 'fatal error: An error occurred (404) when calling the GetObject operation: Key "deployment-version.json" does not exist' >&2
     exit 1
   fi
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
@@ -436,5 +443,54 @@ test('persists current and previous release metadata rotating the deployed SHA i
     removeFixture(fixture);
   }
 });
+
+test('same-revision retry retains existing previous_commit instead of overwriting with current revision', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AET_TEST_EXISTING_S3_MARKER: JSON.stringify({
+        commit: 'release-sha',
+        previous_commit: 'known-good-ancestor-sha',
+      }),
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+    const metadataPath = path.join(fixture.fixture, 'dev_builds', 'release-metadata.json');
+    assert.ok(fs.existsSync(metadataPath));
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    assert.equal(metadata.current_commit, 'release-sha');
+    assert.equal(
+      metadata.previous_commit,
+      'known-good-ancestor-sha',
+      'Retry of release-sha must retain original previous_commit rather than overwriting with release-sha',
+    );
+
+    const markerPath = path.join(fixture.fixture, 'dev_builds', 'web-v1.0.1+2', 'deployment-version.json');
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    assert.equal(marker.commit, 'release-sha');
+    assert.equal(marker.previous_commit, 'known-good-ancestor-sha');
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when live deployment marker cannot be read from S3 due to permission or network failure', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AET_TEST_S3_CP_ERROR: 'access-denied',
+    });
+    const events = fs.readFileSync(fixture.log, 'utf8');
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing deployment: failed to read live deployment marker/);
+    assert.match(result.stderr, /AccessDenied/);
+    assert.doesNotMatch(events, /flutter build web/);
+    assert.doesNotMatch(events, /terraform .* apply/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
 
 
