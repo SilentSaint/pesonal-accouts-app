@@ -125,7 +125,7 @@ function isUnambiguousApproval(body) {
     /\bI approve (?:this|the) (?:PR|pull request)\b/i,
     /\bthis (?:PR|pull request) is approved\b/i,
     /\bthis is approved\b/i,
-    /\b(?:didn't|did not) find (?:any )?(?:(?:major|significant|blocking) )?issues?\b/i,
+    /\b(?:I\s+)?(?:didn't|did not) find (?:any )?(?:(?:major|significant|blocking) )?issues?\b/i,
     /\b(?:I found )?no (?:(?:major|significant|blocking|open|actionable) )?issues?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?(?:found|identified))?\b/i,
     /\bno (?:actionable )?findings?(?:\s+(?:(?:have|were|are)(?:\s+been)?\s+)?found)?\b/i,
     /\bnothing major to address\b/i,

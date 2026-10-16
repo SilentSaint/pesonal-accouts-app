@@ -84,6 +84,7 @@ test('a complete positive Codex review for the exact current head qualifies', ()
     'Codex Review: This is approved.',
     'Codex Review: This pull request is approved.',
     'Codex Review: No major issues found.',
+    "Codex Review: I didn't find any major issues.",
   ]) {
     assert.equal(
       evaluateCodexApproval(snapshot({ issueComments: [review(body)] })).authorized,
