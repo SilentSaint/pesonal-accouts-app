@@ -40,17 +40,23 @@ test -z "$(git -C "$ROOT_DIR" status --porcelain)" || {
 : "${AWS_REGION:?Refusing deployment: AWS_REGION is required.}"
 : "${AWS_ACCOUNT_ID:?Refusing deployment: AWS_ACCOUNT_ID is required.}"
 readonly EXPECTED_AWS_REGION="ap-south-2"
+readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
 
 if [[ "${AWS_REGION:-}" != "$EXPECTED_AWS_REGION" ]]; then
   echo "Refusing deployment: AWS_REGION must be $EXPECTED_AWS_REGION, got '${AWS_REGION:-empty}'." >&2
   exit 1
 fi
 
+if [[ "${AWS_ACCOUNT_ID:-}" != "$EXPECTED_AWS_ACCOUNT_ID" ]]; then
+  echo "Refusing deployment: AWS_ACCOUNT_ID must be $EXPECTED_AWS_ACCOUNT_ID, got '${AWS_ACCOUNT_ID:-empty}'." >&2
+  exit 1
+fi
+
 export AWS_DEFAULT_REGION="$AWS_REGION"
 
 actual_account="$(aws sts get-caller-identity --query Account --output text)"
-if [[ "$actual_account" != "$AWS_ACCOUNT_ID" ]]; then
-  echo "Refusing deployment: expected AWS account $AWS_ACCOUNT_ID, got $actual_account." >&2
+if [[ "$actual_account" != "$EXPECTED_AWS_ACCOUNT_ID" ]]; then
+  echo "Refusing deployment: expected AWS account $EXPECTED_AWS_ACCOUNT_ID, got $actual_account." >&2
   exit 1
 fi
 

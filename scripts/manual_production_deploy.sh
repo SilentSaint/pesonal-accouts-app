@@ -114,8 +114,15 @@ if [[ "$AWS_REGION" != "$EXPECTED_AWS_REGION" ]]; then
   exit 1
 fi
 
+readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
+
 if [[ -z "${AWS_ACCOUNT_ID:-}" ]]; then
   echo "Refusing production deployment: AWS_ACCOUNT_ID is required." >&2
+  exit 1
+fi
+
+if [[ "$AWS_ACCOUNT_ID" != "$EXPECTED_AWS_ACCOUNT_ID" ]]; then
+  echo "Refusing production deployment: AWS_ACCOUNT_ID must be $EXPECTED_AWS_ACCOUNT_ID, got '$AWS_ACCOUNT_ID'." >&2
   exit 1
 fi
 
@@ -126,14 +133,23 @@ actual_account="$(aws sts get-caller-identity --query Account --output text)" ||
   exit 1
 }
 
-if [[ "$actual_account" != "$AWS_ACCOUNT_ID" ]]; then
-  echo "Refusing production deployment: expected AWS account $AWS_ACCOUNT_ID, got $actual_account." >&2
+if [[ "$actual_account" != "$EXPECTED_AWS_ACCOUNT_ID" ]]; then
+  echo "Refusing production deployment: expected AWS account $EXPECTED_AWS_ACCOUNT_ID, got $actual_account." >&2
   exit 1
 fi
 
 export AET_GUARDED_RELEASE=YES
 
-echo "All manual deployment guards passed for $DEPLOY_TARGET_REV in AWS account $AWS_ACCOUNT_ID."
+echo "All manual deployment guards passed for $DEPLOY_TARGET_REV in AWS account $EXPECTED_AWS_ACCOUNT_ID."
 deploy_status=0
 TARGET_DIR="$DEPLOY_TARGET_DIR" "$SCRIPT_DIR/deploy_and_build.sh" || deploy_status=$?
+
+if [[ "$deploy_status" -eq 0 && "$DEPLOY_TARGET_DIR" != "$ROOT_DIR" ]]; then
+  if [[ -d "$DEPLOY_TARGET_DIR/dev_builds" ]]; then
+    mkdir -p "$ROOT_DIR/dev_builds"
+    cp -r "$DEPLOY_TARGET_DIR/dev_builds/." "$ROOT_DIR/dev_builds/"
+    echo "Rollback release deliverables preserved at $ROOT_DIR/dev_builds."
+  fi
+fi
+
 exit "$deploy_status"

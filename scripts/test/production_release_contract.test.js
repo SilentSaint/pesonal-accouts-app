@@ -109,7 +109,7 @@ fi
 set -euo pipefail
 printf 'aws %s\\n' "$*" >> "$AET_TEST_LOG"
 if [[ "\${1:-}" == sts ]]; then
-  printf '123\\n'
+  printf '727118420276\\n'
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
   printf 'invalidation-123\\n'
 fi
@@ -155,7 +155,7 @@ function runDeployment(fixture, overrides = {}) {
     AET_TEST_LOG: fixture.log,
     AET_TEST_PLAN_JSON: fixture.planJson,
     AWS_REGION: 'ap-south-2',
-    AWS_ACCOUNT_ID: '123',
+    AWS_ACCOUNT_ID: '727118420276',
     ...overrides,
   };
 
@@ -247,6 +247,33 @@ test('refuses deployment when AWS_REGION is empty', () => {
     });
     assert.notEqual(result.status, 0, result.stdout);
     assert.match(result.stderr, /AWS_REGION is required/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when AWS_ACCOUNT_ID does not match 727118420276 even if EXPECTED_AWS_ACCOUNT_ID is overridden', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AWS_ACCOUNT_ID: '999999999999',
+      EXPECTED_AWS_ACCOUNT_ID: '999999999999',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /AWS_ACCOUNT_ID must be 727118420276, got '999999999999'/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when AWS_ACCOUNT_ID is empty', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AWS_ACCOUNT_ID: '',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /AWS_ACCOUNT_ID is required/);
   } finally {
     removeFixture(fixture);
   }
