@@ -103,6 +103,26 @@ bucket="$(planned_output s3_web_bucket_name)"
 distribution_id="$(planned_output cloudfront_distribution_id)"
 cloudfront_url="$(planned_output cloudfront_web_url)"
 
+resolve_previous_commit() {
+  local existing_c="$1"
+  local existing_p="$2"
+  if [[ "$existing_c" == "$release_commit" ]]; then
+    echo "$existing_p"
+  elif [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
+    # In rollback mode, existing_commit is the rejected release being rolled back from.
+    # Never rotate the rejected release into previous_commit.
+    if [[ -n "$existing_p" && "$existing_p" != "$release_commit" && "$existing_p" != "$existing_c" ]]; then
+      if git -C "$ROOT_DIR" merge-base --is-ancestor "$existing_p" "$release_commit" 2>/dev/null; then
+        echo "$existing_p"
+        return
+      fi
+    fi
+    git -C "$ROOT_DIR" rev-parse --verify "${release_commit}~1^{commit}" 2>/dev/null || true
+  else
+    echo "$existing_c"
+  fi
+}
+
 echo "[3/6] Building the reviewed web and Android artifacts before AWS mutation..."
 previous_commit=""
 if [[ -n "${bucket:-}" ]]; then
@@ -121,11 +141,7 @@ if [[ -n "${bucket:-}" ]]; then
       echo "Raw marker content: $s3_marker_output" >&2
       exit 1
     fi
-    if [[ "$existing_commit" == "$release_commit" ]]; then
-      previous_commit="$existing_prev"
-    else
-      previous_commit="$existing_commit"
-    fi
+    previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev")"
   else
     if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
       echo "Refusing deployment: failed to read verified release marker from s3://$bucket/last-verified-release.json." >&2
@@ -149,11 +165,7 @@ if [[ -n "${bucket:-}" ]]; then
         echo "Raw marker content: $s3_marker_output" >&2
         exit 1
       fi
-      if [[ "$existing_commit" == "$release_commit" ]]; then
-        previous_commit="$existing_prev"
-      else
-        previous_commit="$existing_commit"
-      fi
+      previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev")"
     else
       if grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
         echo "No existing live deployment marker in S3 (initial bootstrap deployment)."
@@ -165,11 +177,7 @@ if [[ -n "${bucket:-}" ]]; then
               echo "Refusing deployment: local release metadata is malformed." >&2
               exit 1
             fi
-            if [[ "$existing_commit" == "$release_commit" ]]; then
-              previous_commit="$existing_prev"
-            else
-              previous_commit="$existing_commit"
-            fi
+            previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev")"
           fi
         fi
       else

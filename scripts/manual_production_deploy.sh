@@ -39,10 +39,51 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     fi
 
     # Query durable production metadata first
-    s3_verified="$(aws s3 cp "s3://$bucket/last-verified-release.json" - 2>/dev/null || true)"
-    s3_live="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>/dev/null || aws s3 cp "s3://$bucket/release-metadata.json" - 2>/dev/null || true)"
+    s3_verified_err_file="$(mktemp /tmp/aet-s3-verified-err.XXXXXX)"
+    s3_verified_status=0
+    s3_verified="$(aws s3 cp "s3://$bucket/last-verified-release.json" - 2>"$s3_verified_err_file")" || s3_verified_status=$?
+    s3_verified_err="$(cat "$s3_verified_err_file" 2>/dev/null || true)"
+    rm -f "$s3_verified_err_file"
 
-    # Fall back to local release metadata only if durable S3 metadata is absent
+    if [[ "$s3_verified_status" -ne 0 ]]; then
+      if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_verified_err"; then
+        echo "Refusing rollback deployment: failed to read verified release metadata from s3://$bucket/last-verified-release.json." >&2
+        echo "$s3_verified_err" >&2
+        exit 1
+      fi
+      s3_verified=""
+    fi
+
+    s3_live_err_file="$(mktemp /tmp/aet-s3-live-err.XXXXXX)"
+    s3_live_status=0
+    s3_live="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>"$s3_live_err_file")" || s3_live_status=$?
+    s3_live_err="$(cat "$s3_live_err_file" 2>/dev/null || true)"
+    rm -f "$s3_live_err_file"
+
+    if [[ "$s3_live_status" -ne 0 ]]; then
+      if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_live_err"; then
+        echo "Refusing rollback deployment: failed to read live release metadata from s3://$bucket/deployment-version.json." >&2
+        echo "$s3_live_err" >&2
+        exit 1
+      fi
+      s3_live=""
+      # Also check release-metadata.json in S3 as secondary fallback
+      s3_meta_err_file="$(mktemp /tmp/aet-s3-meta-err.XXXXXX)"
+      s3_meta_status=0
+      s3_live="$(aws s3 cp "s3://$bucket/release-metadata.json" - 2>"$s3_meta_err_file")" || s3_meta_status=$?
+      s3_meta_err="$(cat "$s3_meta_err_file" 2>/dev/null || true)"
+      rm -f "$s3_meta_err_file"
+      if [[ "$s3_meta_status" -ne 0 ]]; then
+        if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_meta_err"; then
+          echo "Refusing rollback deployment: failed to read release metadata from s3://$bucket/release-metadata.json." >&2
+          echo "$s3_meta_err" >&2
+          exit 1
+        fi
+        s3_live=""
+      fi
+    fi
+
+    # Fall back to local release metadata only if durable S3 metadata is confirmed absent
     if [[ -z "$s3_verified" && -z "$s3_live" ]]; then
       if [[ -f "$ROOT_DIR/dev_builds/last-verified-release.json" ]]; then
         s3_verified="$(cat "$ROOT_DIR/dev_builds/last-verified-release.json" 2>/dev/null || true)"
@@ -57,14 +98,14 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     verified_prev="$(jq -er '.previous_commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
 
     if [[ -n "$verified_commit" ]]; then
-      if [[ -n "$live_commit" && "$live_commit" != "$verified_commit" ]]; then
-        # Live release failed verification or differs from last verified release:
-        # Roll back directly to the verified commit
-        resolved_sha="$verified_commit"
-      else
-        # Live release is the verified release:
+      if [[ -n "$live_commit" && "$live_commit" == "$verified_commit" ]]; then
+        # Live release is confirmed to be the verified release:
         # Roll back to the previous verified release before it
         resolved_sha="$verified_prev"
+      else
+        # Live release is unverified, differs from last verified release, or live marker is absent:
+        # Roll back directly to the verified commit
+        resolved_sha="$verified_commit"
       fi
     elif [[ -n "$verified_prev" ]]; then
       resolved_sha="$verified_prev"

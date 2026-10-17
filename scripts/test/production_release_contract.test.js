@@ -732,5 +732,77 @@ test('manual deploy prefers durable S3 metadata over stale local dev_builds cach
   }
 });
 
+test('manual deploy fails closed when durable S3 metadata read fails due to permission or network failure', () => {
+  const fixture = createFixture();
+  try {
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_S3_CP_ERROR: 'access-denied',
+    });
+    const events = fs.readFileSync(fixture.log, 'utf8');
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: failed to read .* release metadata/);
+    assert.match(result.stderr, /AccessDenied/);
+    assert.doesNotMatch(events, /git worktree add/);
+    assert.doesNotMatch(events, /deploy_and_build\.sh/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('rollback deployment keeps rejected release out of the rollback pointer', () => {
+  const fixture = createFixture();
+  try {
+    const releaseA = 'verified-sha-aaa111';
+    const buggyReleaseB = 'buggy-sha-bbb222';
+
+    // 1. Release A deploys and passes verification
+    const resultA = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: releaseA,
+    });
+    assert.equal(resultA.status, 0, `${resultA.stdout}\n${resultA.stderr}`);
+
+    // 2. Release B deploys over A and passes verification
+    const resultB = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: buggyReleaseB,
+    });
+    assert.equal(resultB.status, 0, `${resultB.stdout}\n${resultB.stderr}`);
+
+    // Verify S3 marker now records buggyReleaseB as commit and releaseA as previous_commit
+    const s3VerifiedPath = path.join(fixture.s3Dir, 'last-verified-release.json');
+    const markerB = JSON.parse(fs.readFileSync(s3VerifiedPath, 'utf8'));
+    assert.equal(markerB.commit, buggyReleaseB);
+    assert.equal(markerB.previous_commit, releaseA);
+
+    // 3. Owner triggers rollback of buggyReleaseB to releaseA
+    const rollbackResult = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: releaseA,
+      AET_TEST_HEAD_SHA: releaseA,
+    });
+    assert.equal(rollbackResult.status, 0, `${rollbackResult.stdout}\n${rollbackResult.stderr}`);
+
+    // Verify that after rollback to releaseA, the rollback pointer DOES NOT point to buggyReleaseB
+    const markerAfterRollback = JSON.parse(fs.readFileSync(s3VerifiedPath, 'utf8'));
+    assert.equal(markerAfterRollback.commit, releaseA);
+    assert.notEqual(
+      markerAfterRollback.previous_commit,
+      buggyReleaseB,
+      'Rollback deployment must not rotate the rejected release B into previous_commit',
+    );
+
+    const localMetaPath = path.join(fixture.fixture, 'dev_builds', 'release-metadata.json');
+    const localMeta = JSON.parse(fs.readFileSync(localMetaPath, 'utf8'));
+    assert.equal(localMeta.current_commit, releaseA);
+    assert.notEqual(
+      localMeta.previous_commit,
+      buggyReleaseB,
+      'Local release metadata must not rotate rejected release B into previous_commit',
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
 
 
