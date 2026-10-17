@@ -19,15 +19,42 @@ if ! flock -n 200; then
   exit 1
 fi
 
+readonly EXPECTED_AWS_REGION="ap-south-2"
+readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
+
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   if [[ "$ROLLBACK_TARGET_SHA" == "PREVIOUS" ]]; then
-    if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
-      ROLLBACK_TARGET_SHA="$(grep -o '"previous_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+    resolved_sha=""
+    if [[ -f "$ROOT_DIR/dev_builds/last-verified-release.json" ]]; then
+      resolved_sha="$(jq -er '.previous_commit // empty' "$ROOT_DIR/dev_builds/last-verified-release.json" 2>/dev/null || true)"
     fi
-    if [[ -z "$ROLLBACK_TARGET_SHA" ]]; then
-      echo "Refusing rollback deployment: no previous known-good commit recorded in release metadata." >&2
+    if [[ -z "$resolved_sha" && -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
+      resolved_sha="$(jq -er '.previous_commit // empty' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
+    fi
+    if [[ -z "$resolved_sha" ]]; then
+      bucket="$(terraform -chdir="$ROOT_DIR/terraform" output -raw s3_web_bucket_name 2>/dev/null || true)"
+      if [[ -z "$bucket" || "$bucket" == "unknown-output" ]]; then
+        state_bucket="automatic-expense-tracker-terraform-state-$EXPECTED_AWS_ACCOUNT_ID"
+        state_key="production/terraform.tfstate"
+        bucket="$(aws s3 cp "s3://$state_bucket/$state_key" - 2>/dev/null | jq -er '.outputs.s3_web_bucket_name.value // empty' 2>/dev/null || true)"
+      fi
+      if [[ -z "$bucket" ]]; then
+        bucket="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-')].Name | [0]" --output text 2>/dev/null || true)"
+      fi
+      if [[ -z "$bucket" || "$bucket" == "None" ]]; then
+        bucket="web-bucket"
+      fi
+
+      s3_meta="$(aws s3 cp "s3://$bucket/last-verified-release.json" - 2>/dev/null || aws s3 cp "s3://$bucket/release-metadata.json" - 2>/dev/null || aws s3 cp "s3://$bucket/deployment-version.json" - 2>/dev/null || true)"
+      if [[ -n "$s3_meta" ]]; then
+        resolved_sha="$(jq -er '.previous_commit // empty' <<<"$s3_meta" 2>/dev/null || true)"
+      fi
+    fi
+    if [[ -z "$resolved_sha" ]]; then
+      echo "Refusing rollback deployment: no previous known-good commit recorded in local or durable release metadata." >&2
       exit 1
     fi
+    ROLLBACK_TARGET_SHA="$resolved_sha"
   fi
   target_rev="$(git rev-parse --verify "${ROLLBACK_TARGET_SHA}^{commit}" 2>/dev/null)" || {
     echo "Refusing rollback deployment: invalid ROLLBACK_TARGET_SHA '$ROLLBACK_TARGET_SHA'." >&2
@@ -111,8 +138,6 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   fi
 fi
 
-readonly EXPECTED_AWS_REGION="ap-south-2"
-
 if [[ -z "${AWS_REGION:-}" ]]; then
   echo "Refusing production deployment: AWS_REGION is required." >&2
   exit 1
@@ -122,8 +147,6 @@ if [[ "$AWS_REGION" != "$EXPECTED_AWS_REGION" ]]; then
   echo "Refusing production deployment: AWS_REGION must be $EXPECTED_AWS_REGION, got '$AWS_REGION'." >&2
   exit 1
 fi
-
-readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
 
 if [[ -z "${AWS_ACCOUNT_ID:-}" ]]; then
   echo "Refusing production deployment: AWS_ACCOUNT_ID is required." >&2

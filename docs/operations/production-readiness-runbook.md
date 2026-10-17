@@ -96,7 +96,7 @@ The local release has these fail-closed stages:
    `AWS_REGION` and `AWS_ACCOUNT_ID` strictly match pinned, readonly `EXPECTED_AWS_REGION` (`ap-south-2`) and
    `EXPECTED_AWS_ACCOUNT_ID` (`727118420276`, rejecting caller or ambient environment overrides). For standard
    releases, it deploys the clean `main` revision; for rollbacks (`ROLLBACK_TARGET_SHA=<sha>` or `ROLLBACK_TARGET_SHA=PREVIOUS`
-   to target the recorded known-good ancestor SHA from `release-metadata.json`), the driver on `main` asserts
+   to target the recorded known-good ancestor SHA from local or durable S3 release metadata `last-verified-release.json` / `release-metadata.json`), the driver on `main` asserts
    that the target commit is an ancestor contained in `origin/main`, prepares an isolated temporary worktree to validate
    and deploy that target revision, and preserves generated deliverables and release metadata before worktree cleanup.
 2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
@@ -113,9 +113,10 @@ The local release has these fail-closed stages:
    still equal the values used to build the artifacts, then publishes the web artifact.
    Terraform failure or output drift stops the sequence before publication.
 6. CloudFront invalidation is awaited, and the deployed marker (`deployment-version.json`), release metadata
-   (`release-metadata.json`), plus `${api_url}/api/health` are fetched with retries. Release metadata records both
-   `current_commit` and `previous_commit` and is durably preserved alongside release deliverables under
-   `dev_builds/release-metadata.json`. A failed publication, invalidation, marker check, or health check exits non-zero.
+   (`release-metadata.json`), plus `${api_url}/api/health` are fetched with retries. Only after all live smoke checks
+   succeed is the release certified as known-good and published to durable verified release metadata (`last-verified-release.json`)
+   in S3 and `dev_builds/`. If verification fails, the previously verified release is preserved as the rollback target, preventing
+   unverified revisions from being promoted. A failed publication, invalidation, marker check, or health check exits non-zero.
 
 Repository branch protection remains the control that ensures the `main` revision arrived
 through a merged PR. The command requires the owner to set the approval variable

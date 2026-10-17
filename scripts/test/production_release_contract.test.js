@@ -52,7 +52,12 @@ printf 'git %s\\n' "$*" >> "$AET_TEST_LOG"
 case "$*" in
   *"branch --show-current") printf 'main\\n' ;;
   *"rev-parse --verify"*)
-    printf '%s\\n' "\${ROLLBACK_TARGET_SHA:-release-sha}"
+    for arg in "$@"; do
+      if [[ "$arg" == "PREVIOUS^{commit}" ]]; then
+        exit 1
+      fi
+    done
+    printf '%s\n' "\${ROLLBACK_TARGET_SHA:-release-sha}"
     ;;
   *"rev-parse HEAD")
     if [[ "$PWD" == *aet-rollback-worktree* || "$*" == *aet-rollback-worktree* ]]; then
@@ -148,9 +153,9 @@ fi
     path.join(bin, 'aws'),
     `#!/usr/bin/env bash
 set -euo pipefail
-printf 'aws %s\\n' "$*" >> "$AET_TEST_LOG"
+printf 'aws %s\n' "$*" >> "$AET_TEST_LOG"
 if [[ "\${1:-}" == sts ]]; then
-  printf '727118420276\\n'
+  printf '727118420276\n'
 elif [[ "\${1:-}" == s3 && "\${2:-}" == cp ]]; then
   if [[ "\${AET_TEST_S3_CP_ERROR:-}" == "access-denied" ]]; then
     echo 'fatal error: An error occurred (AccessDenied) when calling the GetObject operation: Access Denied' >&2
@@ -158,14 +163,43 @@ elif [[ "\${1:-}" == s3 && "\${2:-}" == cp ]]; then
   elif [[ "\${AET_TEST_S3_CP_ERROR:-}" == "network-error" ]]; then
     echo 'fatal error: Could not connect to the endpoint URL' >&2
     exit 1
-  elif [[ -n "\${AET_TEST_EXISTING_S3_MARKER:-}" ]]; then
-    printf '%s\\n' "$AET_TEST_EXISTING_S3_MARKER"
-  else
-    echo 'fatal error: An error occurred (404) when calling the GetObject operation: Key "deployment-version.json" does not exist' >&2
-    exit 1
+  fi
+  src="\${3:-}"
+  dest="\${4:-}"
+  s3_dir="\${AET_TEST_S3_DIR:-}"
+  if [[ "$src" == s3://* && "$dest" == "-" ]]; then
+    target_key="\${src##*/}"
+    if [[ -n "$s3_dir" && -f "$s3_dir/$target_key" ]]; then
+      cat "$s3_dir/$target_key"
+    elif [[ "$target_key" == "last-verified-release.json" && -n "\${AET_TEST_VERIFIED_S3_MARKER:-}" ]]; then
+      printf '%s\n' "$AET_TEST_VERIFIED_S3_MARKER"
+    elif [[ -n "\${AET_TEST_EXISTING_S3_MARKER:-}" && "$target_key" != "last-verified-release.json" ]]; then
+      printf '%s\n' "$AET_TEST_EXISTING_S3_MARKER"
+    else
+      echo "fatal error: An error occurred (404) when calling the GetObject operation: Key \"$target_key\" does not exist" >&2
+      exit 1
+    fi
+  elif [[ "$dest" == s3://* ]]; then
+    target_key="\${dest##*/}"
+    if [[ -n "$s3_dir" ]]; then
+      mkdir -p "$s3_dir"
+      if [[ "$src" == "-" ]]; then
+        cat > "$s3_dir/$target_key"
+      else
+        cp "$src" "$s3_dir/$target_key"
+      fi
+    fi
+  fi
+elif [[ "\${1:-}" == s3 && "\${2:-}" == sync ]]; then
+  src="\${3:-}"
+  dest="\${4:-}"
+  s3_dir="\${AET_TEST_S3_DIR:-}"
+  if [[ -n "$s3_dir" && -d "$src" ]]; then
+    mkdir -p "$s3_dir"
+    cp -r "$src"/* "$s3_dir/" 2>/dev/null || true
   fi
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
-  printf 'invalidation-123\\n'
+  printf 'invalidation-123\n'
 fi
 `,
   );
@@ -174,21 +208,25 @@ fi
     path.join(bin, 'curl'),
     `#!/usr/bin/env bash
 set -euo pipefail
-printf 'curl %s\\n' "$*" >> "$AET_TEST_LOG"
+printf 'curl %s\n' "$*" >> "$AET_TEST_LOG"
+if [[ "\${AET_TEST_FAIL_HEALTH:-0}" == 1 && "$*" == */api/health* ]]; then
+  echo "500 Internal Server Error" >&2
+  exit 22
+fi
 if [[ "$*" == *deployment-version.json* ]]; then
   if [[ -n "\${ROLLBACK_TARGET_SHA:-}" ]]; then
-    printf '{"commit":"%s"}\\n' "$ROLLBACK_TARGET_SHA"
+    printf '{"commit":"%s"}\n' "$ROLLBACK_TARGET_SHA"
   else
-    printf '{"commit":"release-sha"}\\n'
+    printf '{"commit":"%s"}\n' "\${AET_TEST_HEAD_SHA:-release-sha}"
   fi
 elif [[ "$*" == *release-metadata.json* ]]; then
   if [[ -n "\${ROLLBACK_TARGET_SHA:-}" ]]; then
-    printf '{"current_commit":"%s"}\\n' "$ROLLBACK_TARGET_SHA"
+    printf '{"current_commit":"%s"}\n' "$ROLLBACK_TARGET_SHA"
   else
-    printf '{"current_commit":"release-sha"}\\n'
+    printf '{"current_commit":"%s"}\n' "\${AET_TEST_HEAD_SHA:-release-sha}"
   fi
 else
-  printf '{"status":"ok"}\\n'
+  printf '{"status":"ok"}\n'
 fi
 `,
   );
@@ -208,7 +246,10 @@ fi
     }),
   );
 
-  return { fixture, bin, log, planJson };
+  const s3Dir = path.join(fixture, 's3_storage');
+  fs.mkdirSync(s3Dir, { recursive: true });
+
+  return { fixture, bin, log, planJson, s3Dir };
 }
 
 function runDeployment(fixture, overrides = {}) {
@@ -218,6 +259,7 @@ function runDeployment(fixture, overrides = {}) {
     AET_GUARDED_RELEASE: 'YES',
     AET_TEST_LOG: fixture.log,
     AET_TEST_PLAN_JSON: fixture.planJson,
+    AET_TEST_S3_DIR: fixture.s3Dir,
     AWS_REGION: 'ap-south-2',
     AWS_ACCOUNT_ID: '727118420276',
     ...overrides,
@@ -238,6 +280,7 @@ function runManualDeploy(fixture, overrides = {}) {
     AET_TEST_FIXTURE_DIR: fixture.fixture,
     AET_TEST_LOG: fixture.log,
     AET_TEST_PLAN_JSON: fixture.planJson,
+    AET_TEST_S3_DIR: fixture.s3Dir,
     AWS_REGION: 'ap-south-2',
     AWS_ACCOUNT_ID: '727118420276',
     ...overrides,
@@ -483,10 +526,124 @@ test('refuses deployment when live deployment marker cannot be read from S3 due 
     const events = fs.readFileSync(fixture.log, 'utf8');
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Refusing deployment: failed to read live deployment marker/);
+    assert.match(result.stderr, /Refusing deployment: failed to read .* marker/);
     assert.match(result.stderr, /AccessDenied/);
     assert.doesNotMatch(events, /flutter build web/);
     assert.doesNotMatch(events, /terraform .* apply/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('preserves last verified release when a subsequent deployment fails live verification', () => {
+  const fixture = createFixture();
+  try {
+    // 1. Release A deploys and passes verification
+    const releaseA = 'verified-sha-aaa111';
+    const resultA = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: releaseA,
+    });
+    assert.equal(resultA.status, 0, `${resultA.stdout}\n${resultA.stderr}`);
+
+    // Durable verified marker must exist in S3 for release A
+    const verifiedMarkerFile = path.join(fixture.s3Dir, 'last-verified-release.json');
+    assert.ok(fs.existsSync(verifiedMarkerFile), 'last-verified-release.json must be published to S3');
+    const verifiedA = JSON.parse(fs.readFileSync(verifiedMarkerFile, 'utf8'));
+    assert.equal(verifiedA.commit, releaseA);
+
+    // 2. Release B builds, applies, publishes, but FAILS live health verification
+    const releaseB = 'failed-sha-bbb222';
+    const resultB = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: releaseB,
+      AET_TEST_FAIL_HEALTH: '1',
+    });
+    assert.notEqual(resultB.status, 0);
+
+    // S3 verified marker must NOT have promoted failed release B; must still point to verified release A
+    const verifiedAfterFail = JSON.parse(fs.readFileSync(verifiedMarkerFile, 'utf8'));
+    assert.equal(
+      verifiedAfterFail.commit,
+      releaseA,
+      'Failed release B must not overwrite verified release A in last-verified-release.json',
+    );
+
+    // 3. Subsequent release C deploys. It must adopt verified release A as previous_commit, NOT failed release B
+    const releaseC = 'next-sha-ccc333';
+    const resultC = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: releaseC,
+    });
+    assert.equal(resultC.status, 0, `${resultC.stdout}\n${resultC.stderr}`);
+
+    const metadataPath = path.join(fixture.fixture, 'dev_builds', 'release-metadata.json');
+    const metadataC = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    assert.equal(metadataC.current_commit, releaseC);
+    assert.equal(
+      metadataC.previous_commit,
+      releaseA,
+      'Release C must adopt last verified release A as previous_commit, not unverified release B',
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when live deployment marker is malformed or missing commit SHA', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AET_TEST_EXISTING_S3_MARKER: '{"commit":""}',
+    });
+    const events = fs.readFileSync(fixture.log, 'utf8');
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /malformed or missing a valid commit SHA/);
+    assert.doesNotMatch(events, /flutter build web/);
+    assert.doesNotMatch(events, /terraform .* apply/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('accepts valid deployment marker formatted with whitespace around colons', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AET_TEST_EXISTING_S3_MARKER: '{\n  "commit": "valid-sha-1111111",\n  "previous_commit": "ancestor-sha-0000000"\n}',
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+    const metadataPath = path.join(fixture.fixture, 'dev_builds', 'release-metadata.json');
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    assert.equal(metadata.current_commit, 'release-sha');
+    assert.equal(metadata.previous_commit, 'valid-sha-1111111');
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy resolves PREVIOUS from durable S3 metadata when local dev_builds is absent', () => {
+  const fixture = createFixture();
+  try {
+    // Ensure dev_builds directory does not exist locally (simulating fresh release host)
+    fs.rmSync(path.join(fixture.fixture, 'dev_builds'), { recursive: true, force: true });
+
+    // Seed durable verified release in S3
+    const remoteKnownGood = 'remote-known-good-sha-999';
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'last-verified-release.json'),
+      JSON.stringify({
+        commit: 'current-sha-888',
+        previous_commit: remoteKnownGood,
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_HEAD_SHA: remoteKnownGood,
+    });
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Rollback release deliverables preserved at .*\/dev_builds/);
   } finally {
     removeFixture(fixture);
   }

@@ -109,34 +109,74 @@ if [[ -n "${bucket:-}" ]]; then
   s3_err_file="$(mktemp /tmp/aet-s3-read-err.XXXXXX)"
   s3_marker_output=""
   s3_status=0
-  s3_marker_output="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>"$s3_err_file")" || s3_status=$?
+  s3_marker_output="$(aws s3 cp "s3://$bucket/last-verified-release.json" - 2>"$s3_err_file")" || s3_status=$?
   s3_read_error="$(cat "$s3_err_file" 2>/dev/null || true)"
   rm -f "$s3_err_file"
 
   if [[ "$s3_status" -eq 0 ]]; then
-    existing_commit="$(printf '%s' "$s3_marker_output" | grep -o '"commit":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)"
-    existing_prev="$(printf '%s' "$s3_marker_output" | grep -o '"previous_commit":"[^"]*"' | head -n1 | cut -d: -f2 | tr -d '"' || true)"
+    existing_commit="$(jq -er '.commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
+    existing_prev="$(jq -er '.previous_commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
+    if [[ ! "$existing_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+      echo "Refusing deployment: live verified release marker in s3://$bucket/last-verified-release.json is malformed or missing a valid commit SHA." >&2
+      echo "Raw marker content: $s3_marker_output" >&2
+      exit 1
+    fi
     if [[ "$existing_commit" == "$release_commit" ]]; then
       previous_commit="$existing_prev"
     else
       previous_commit="$existing_commit"
     fi
   else
-    if grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
-      echo "No existing live deployment marker in S3 (initial bootstrap deployment)."
-      if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
-        existing_commit="$(grep -o '"current_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null | head -n1 | cut -d: -f2 | tr -d '"' || true)"
-        existing_prev="$(grep -o '"previous_commit":"[^"]*"' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null | head -n1 | cut -d: -f2 | tr -d '"' || true)"
-        if [[ "$existing_commit" == "$release_commit" ]]; then
-          previous_commit="$existing_prev"
-        else
-          previous_commit="$existing_commit"
-        fi
-      fi
-    else
-      echo "Refusing deployment: failed to read live deployment marker from s3://$bucket/deployment-version.json." >&2
+    if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
+      echo "Refusing deployment: failed to read verified release marker from s3://$bucket/last-verified-release.json." >&2
       echo "$s3_read_error" >&2
       exit 1
+    fi
+
+    # Fall back to deployment-version.json if last-verified-release.json does not exist yet
+    s3_err_file="$(mktemp /tmp/aet-s3-read-err.XXXXXX)"
+    s3_marker_output=""
+    s3_status=0
+    s3_marker_output="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>"$s3_err_file")" || s3_status=$?
+    s3_read_error="$(cat "$s3_err_file" 2>/dev/null || true)"
+    rm -f "$s3_err_file"
+
+    if [[ "$s3_status" -eq 0 ]]; then
+      existing_commit="$(jq -er '.commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
+      existing_prev="$(jq -er '.previous_commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
+      if [[ ! "$existing_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+        echo "Refusing deployment: live deployment marker in s3://$bucket/deployment-version.json is malformed or missing a valid commit SHA." >&2
+        echo "Raw marker content: $s3_marker_output" >&2
+        exit 1
+      fi
+      if [[ "$existing_commit" == "$release_commit" ]]; then
+        previous_commit="$existing_prev"
+      else
+        previous_commit="$existing_commit"
+      fi
+    else
+      if grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
+        echo "No existing live deployment marker in S3 (initial bootstrap deployment)."
+        if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
+          existing_commit="$(jq -er '.current_commit // empty' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
+          existing_prev="$(jq -er '.previous_commit // empty' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
+          if [[ -n "$existing_commit" ]]; then
+            if [[ ! "$existing_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+              echo "Refusing deployment: local release metadata is malformed." >&2
+              exit 1
+            fi
+            if [[ "$existing_commit" == "$release_commit" ]]; then
+              previous_commit="$existing_prev"
+            else
+              previous_commit="$existing_commit"
+            fi
+          fi
+        fi
+      else
+        echo "Refusing deployment: failed to read live deployment marker from s3://$bucket/deployment-version.json." >&2
+        echo "$s3_read_error" >&2
+        exit 1
+      fi
     fi
   fi
 fi
@@ -190,6 +230,7 @@ assert_output_matches_plan cloudfront_web_url "$cloudfront_url"
 echo "[5/6] Publishing the web artifact and invalidating CloudFront..."
 aws s3 sync "$ROOT_DIR/frontend/build/web" "s3://$bucket" \
   --delete \
+  --exclude 'last-verified-release.json' \
   --cache-control 'no-cache, no-store, must-revalidate' \
   --region "$AWS_REGION"
 invalidation_id="$(aws cloudfront create-invalidation \
@@ -211,12 +252,32 @@ curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
 curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
   "${api_url%/}/api/health"
 
+verified_tmp="$(mktemp /tmp/aet-verified-release.XXXXXX)"
+if [[ -n "$previous_commit" ]]; then
+  printf '{"commit":"%s","previous_commit":"%s","verified_at":"%s"}\n' \
+    "$release_commit" "$previous_commit" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "$verified_tmp"
+else
+  printf '{"commit":"%s","verified_at":"%s"}\n' \
+    "$release_commit" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "$verified_tmp"
+fi
+aws s3 cp "$verified_tmp" "s3://$bucket/last-verified-release.json" \
+  --cache-control 'no-cache, no-store, must-revalidate' \
+  --region "$AWS_REGION"
+rm -f "$verified_tmp"
+
 mkdir -p "$ROOT_DIR/dev_builds"
 cp -r "$ROOT_DIR/frontend/build/web" "$ROOT_DIR/dev_builds/web-v1.0.1+2"
 cp "$ROOT_DIR/frontend/build/app/outputs/flutter-apk/app-debug.apk" \
   "$ROOT_DIR/dev_builds/app-v1.0.1+2-debug.apk"
 if [[ -f "$ROOT_DIR/frontend/build/web/release-metadata.json" ]]; then
   cp "$ROOT_DIR/frontend/build/web/release-metadata.json" "$ROOT_DIR/dev_builds/release-metadata.json"
+fi
+if [[ -n "$previous_commit" ]]; then
+  printf '{"commit":"%s","previous_commit":"%s","verified_at":"%s"}\n' \
+    "$release_commit" "$previous_commit" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "$ROOT_DIR/dev_builds/last-verified-release.json"
+else
+  printf '{"commit":"%s","verified_at":"%s"}\n' \
+    "$release_commit" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "$ROOT_DIR/dev_builds/last-verified-release.json"
 fi
 
 echo "=========================================================="
