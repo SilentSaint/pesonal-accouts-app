@@ -649,5 +649,88 @@ test('manual deploy resolves PREVIOUS from durable S3 metadata when local dev_bu
   }
 });
 
+test('manual deploy rolls back failed live release directly to last verified commit', () => {
+  const fixture = createFixture();
+  try {
+    const verifiedSha = 'verified-sha-aaa111';
+    const olderSha = 'older-sha-zzz000';
+    const failedLiveSha = 'failed-live-sha-bbb222';
+
+    // Seed durable verified release in S3 pointing to verifiedSha
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'last-verified-release.json'),
+      JSON.stringify({
+        commit: verifiedSha,
+        previous_commit: olderSha,
+      }),
+    );
+
+    // Seed live marker in S3 with failed unverified release
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: failedLiveSha,
+        previous_commit: verifiedSha,
+      }),
+    );
+
+    // Operator triggers ROLLBACK_TARGET_SHA=PREVIOUS on failed release
+    // It should target verifiedSha (the last known-good verified release), NOT olderSha
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_HEAD_SHA: verifiedSha,
+    });
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`All manual deployment guards passed for ${verifiedSha}`));
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy prefers durable S3 metadata over stale local dev_builds cache', () => {
+  const fixture = createFixture();
+  try {
+    // 1. Create stale local dev_builds metadata
+    const staleLocalDir = path.join(fixture.fixture, 'dev_builds');
+    fs.mkdirSync(staleLocalDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(staleLocalDir, 'last-verified-release.json'),
+      JSON.stringify({
+        commit: 'stale-sha-111',
+        previous_commit: 'obsolete-sha-000',
+      }),
+    );
+
+    // 2. Durable S3 metadata has fresh verified release
+    const durableVerified = 'durable-live-sha-222';
+    const durablePrev = 'remote-known-good-sha-333';
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'last-verified-release.json'),
+      JSON.stringify({
+        commit: durableVerified,
+        previous_commit: durablePrev,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: durableVerified,
+        previous_commit: durablePrev,
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_HEAD_SHA: durablePrev,
+    });
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`All manual deployment guards passed for ${durablePrev}`));
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
 
 

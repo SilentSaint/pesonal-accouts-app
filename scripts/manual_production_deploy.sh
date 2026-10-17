@@ -25,31 +25,53 @@ readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   if [[ "$ROLLBACK_TARGET_SHA" == "PREVIOUS" ]]; then
     resolved_sha=""
-    if [[ -f "$ROOT_DIR/dev_builds/last-verified-release.json" ]]; then
-      resolved_sha="$(jq -er '.previous_commit // empty' "$ROOT_DIR/dev_builds/last-verified-release.json" 2>/dev/null || true)"
+    bucket="$(terraform -chdir="$ROOT_DIR/terraform" output -raw s3_web_bucket_name 2>/dev/null || true)"
+    if [[ -z "$bucket" || "$bucket" == "unknown-output" ]]; then
+      state_bucket="automatic-expense-tracker-terraform-state-$EXPECTED_AWS_ACCOUNT_ID"
+      state_key="production/terraform.tfstate"
+      bucket="$(aws s3 cp "s3://$state_bucket/$state_key" - 2>/dev/null | jq -er '.outputs.s3_web_bucket_name.value // empty' 2>/dev/null || true)"
     fi
-    if [[ -z "$resolved_sha" && -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
-      resolved_sha="$(jq -er '.previous_commit // empty' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
+    if [[ -z "$bucket" ]]; then
+      bucket="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-')].Name | [0]" --output text 2>/dev/null || true)"
     fi
-    if [[ -z "$resolved_sha" ]]; then
-      bucket="$(terraform -chdir="$ROOT_DIR/terraform" output -raw s3_web_bucket_name 2>/dev/null || true)"
-      if [[ -z "$bucket" || "$bucket" == "unknown-output" ]]; then
-        state_bucket="automatic-expense-tracker-terraform-state-$EXPECTED_AWS_ACCOUNT_ID"
-        state_key="production/terraform.tfstate"
-        bucket="$(aws s3 cp "s3://$state_bucket/$state_key" - 2>/dev/null | jq -er '.outputs.s3_web_bucket_name.value // empty' 2>/dev/null || true)"
-      fi
-      if [[ -z "$bucket" ]]; then
-        bucket="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-')].Name | [0]" --output text 2>/dev/null || true)"
-      fi
-      if [[ -z "$bucket" || "$bucket" == "None" ]]; then
-        bucket="web-bucket"
-      fi
+    if [[ -z "$bucket" || "$bucket" == "None" ]]; then
+      bucket="web-bucket"
+    fi
 
-      s3_meta="$(aws s3 cp "s3://$bucket/last-verified-release.json" - 2>/dev/null || aws s3 cp "s3://$bucket/release-metadata.json" - 2>/dev/null || aws s3 cp "s3://$bucket/deployment-version.json" - 2>/dev/null || true)"
-      if [[ -n "$s3_meta" ]]; then
-        resolved_sha="$(jq -er '.previous_commit // empty' <<<"$s3_meta" 2>/dev/null || true)"
+    # Query durable production metadata first
+    s3_verified="$(aws s3 cp "s3://$bucket/last-verified-release.json" - 2>/dev/null || true)"
+    s3_live="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>/dev/null || aws s3 cp "s3://$bucket/release-metadata.json" - 2>/dev/null || true)"
+
+    # Fall back to local release metadata only if durable S3 metadata is absent
+    if [[ -z "$s3_verified" && -z "$s3_live" ]]; then
+      if [[ -f "$ROOT_DIR/dev_builds/last-verified-release.json" ]]; then
+        s3_verified="$(cat "$ROOT_DIR/dev_builds/last-verified-release.json" 2>/dev/null || true)"
+      fi
+      if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
+        s3_live="$(cat "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
       fi
     fi
+
+    live_commit="$(jq -er '.commit // .current_commit // empty' <<<"$s3_live" 2>/dev/null || true)"
+    verified_commit="$(jq -er '.commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
+    verified_prev="$(jq -er '.previous_commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
+
+    if [[ -n "$verified_commit" ]]; then
+      if [[ -n "$live_commit" && "$live_commit" != "$verified_commit" ]]; then
+        # Live release failed verification or differs from last verified release:
+        # Roll back directly to the verified commit
+        resolved_sha="$verified_commit"
+      else
+        # Live release is the verified release:
+        # Roll back to the previous verified release before it
+        resolved_sha="$verified_prev"
+      fi
+    elif [[ -n "$verified_prev" ]]; then
+      resolved_sha="$verified_prev"
+    elif [[ -n "$s3_live" ]]; then
+      resolved_sha="$(jq -er '.previous_commit // empty' <<<"$s3_live" 2>/dev/null || true)"
+    fi
+
     if [[ -z "$resolved_sha" ]]; then
       echo "Refusing rollback deployment: no previous known-good commit recorded in local or durable release metadata." >&2
       exit 1
