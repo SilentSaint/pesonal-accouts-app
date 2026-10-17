@@ -238,15 +238,34 @@ the issue rather than closing speculatively.
 
 ## Deployment contract
 
-Production deployment is a separate, protected workflow. It may deploy only a
-SHA contained in `main`, built from a clean checkout. It must use GitHub Actions
-OIDC for AWS rather than persistent credentials, target a protected production
-environment, prevent concurrent deployments, record the deployed SHA, execute
-post-deployment smoke checks, and preserve a known-good SHA for rollback.
+Production deployment is a separate, owner-approved operation. It may deploy
+only a commit SHA contained in `main`, built from a clean checkout that exactly
+matches `origin/main` (or a preserved known-good ancestor commit SHA contained
+in `origin/main` during an owner-approved rollback). It must prevent concurrent
+deployments (serializing the complete release operation from validation through
+post-apply publication and verification via the release lock on the designated release host
+using `/tmp/automatic_expense_tracker_production_release.lock`), use the guarded
+local release hatch (`scripts/manual_production_deploy.sh`) with explicit owner
+authorization (`PRODUCTION_DEPLOY_APPROVED=YES`), target the verified production
+AWS account and pinned region (`ap-south-2` and `727118420276`, configured via `AWS_REGION` and
+`AWS_ACCOUNT_ID` and validated against readonly `EXPECTED_AWS_REGION` and `EXPECTED_AWS_ACCOUNT_ID`,
+rejecting caller or ambient environment overrides), execute the complete local Docker
+verification gate before any AWS mutation, recheck `origin/main` currency after validation
+to prevent stale-deployment races, build immutable artifacts before applying the saved
+Terraform plan, verify post-apply output consistency, publish the web artifact and invalidate
+CloudFront, execute live deployment marker (`deployment-version.json`), release metadata (`release-metadata.json`),
+and health smoke checks, and upon successful verification publish the verified release marker
+(`last-verified-release.json`) to durable S3 and local `dev_builds/` metadata, preserving the verified
+known-good SHA for rollback. If live verification fails, the unverified release is never promoted, ensuring
+failed deployments cannot overwrite the rollback pointer.
 
 Do not deploy from a pull request or a dirty workspace. A rollback deploys a
-known-good commit SHA through the same protected workflow and records the
-resulting production verification.
+preserved known-good commit SHA contained in `main` through the same guarded
+release hatch using `ROLLBACK_TARGET_SHA=<known-good-sha>` or `ROLLBACK_TARGET_SHA=PREVIOUS`
+(resolving the preserved known-good SHA from local or durable S3 release metadata `last-verified-release.json` /
+`release-metadata.json`) from a clean checkout on `main` (the driver provisions an isolated worktree for the rollback target revision,
+and preserves generated release deliverables to `dev_builds/` before worktree removal)
+and records the resulting production verification.
 
 ## Current baseline dependency
 

@@ -2,8 +2,26 @@
 
 ## Required production configuration
 
-Protect the GitHub `production` environment with required reviewers and configure these
-environment variables:
+### Canonical local release configuration
+
+Production releases are executed locally using the guarded release hatch (`scripts/manual_production_deploy.sh`) with explicit owner authorization. The release environment requires the following operator configuration:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_REGION` | Target AWS region containing the production stack (e.g. `ap-south-2`); validated against pinned `EXPECTED_AWS_REGION`. |
+| `AWS_ACCOUNT_ID` | Expected AWS account ID (e.g. `727118420276`); the release hatch validates STS identity and fails on any mismatch. |
+| `PRODUCTION_DEPLOY_APPROVED=YES` | Explicit owner approval gate required to execute the release hatch. |
+
+Operational authentication uses local AWS credentials (e.g. via `scripts/aws-dev-auth.sh` or the `agent-login` SSO profile). Deployments must not run with ambient unverified credentials.
+
+After the first apply, confirm the email subscription sent for `budget-spending-alerts-prod` (or the configured environment) so operational alarms have an active human destination.
+
+### Historical hosted configuration (superseded)
+
+> [!NOTE]
+> Hosted CI/CD workflows and GitHub Actions deployment pipelines are retired. The configuration below documents the historical hosted environment setup previously used before the canonical local release model was adopted.
+
+In historical hosted automation, the GitHub `production` environment was protected with required reviewers and configured with these environment variables:
 
 | Variable | Purpose |
 | --- | --- |
@@ -12,69 +30,80 @@ environment variables:
 | `AWS_DEPLOY_ROLE_ARN` | OIDC-assumable, least-privilege deployment role. |
 | `DYNAMODB_TABLE_NAME` | Production table name used by the restore-verification workflow. |
 
-The deployment role must be trusted only for this repository's `production` environment.
-It needs scoped access to this stack's Terraform-managed resources, S3 web bucket,
-CloudFront distribution, and DynamoDB backup/restore operations. Do not configure
-long-lived AWS access keys in GitHub.
-
-After the first apply, confirm the email subscription sent for
-`budget-spending-alerts-prod` (or the configured environment) so operational alarms
-have an active human destination.
+The historical deployment role was trusted only for this repository's `production` environment. It required scoped access to this stack's Terraform-managed resources, S3 web bucket, CloudFront distribution, and DynamoDB backup/restore operations. Long-lived AWS access keys were never configured in GitHub.
 
 ## Release gate and deployment
 
-`CI/CD & Operational Quality Gates` runs on every pull request and main-branch push:
+### Canonical local verification and release
 
+The project follows a local-first engineering and release model (see `docs/operations/local-verification.md` and `docs/engineering/workflow.md`). Validation does not depend on hosted CI/CD (GitHub Actions or CodeBuild).
+
+1. **Non-mutating verification gate**:
+   Every change is validated locally before merging:
+   ```bash
+   scripts/ci/verify-local-docker --no-build
+   ```
+   This runs Java tests, Node.js/Lambda tests, local/release contracts, Terraform validation, Flutter analysis/tests, and Playwright browser E2E checks in an isolated Docker container with empty AWS credentials.
+
+2. **Guarded production release hatch**:
+   The owner-approved production release boundary is `scripts/manual_production_deploy.sh`. This manual deployment hatch requires explicit owner authorization (`PRODUCTION_DEPLOY_APPROVED=YES`), a clean checkout on `main` matching `origin/main`, executes `scripts/ci/verify-local-docker --pull`, asserts AWS account identity, and runs `scripts/deploy_and_build.sh`:
+   ```bash
+   export AWS_REGION=ap-south-2
+   export AWS_ACCOUNT_ID='727118420276'
+   PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
+   ```
+
+3. **Guarded rollback release hatch**:
+   To roll back to an earlier known-good release commit, pass `ROLLBACK_TARGET_SHA` while staying on a clean checkout on `main`. The release driver on `main` verifies that the target commit is an ancestor contained in `origin/main`, provisions a detached worktree for the rollback target, runs validation against it, executes deployment, and preserves the rollback deliverables (mobile APK and web bundle) into the primary workspace `dev_builds/` before removing the temporary worktree:
+   ```bash
+   export AWS_REGION=ap-south-2
+   export AWS_ACCOUNT_ID='727118420276'
+   ROLLBACK_TARGET_SHA=<known-good-commit-sha> PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
+   ```
+
+### Historical and conditional hosted workflows
+
+> [!NOTE]
+> The hosted GitHub Actions workflows below represent historical context from earlier iterations and temporary manual deployment hatch procedures during a GitHub Actions billing outage. Hosted validation is retired and is not required for project delivery or production deployment.
+
+Historically, `CI/CD & Operational Quality Gates` ran in hosted GitHub Actions:
 1. Java tests, Flutter analysis/tests, and a release web build.
 2. Playwright browser E2E against that release bundle.
 3. Deterministic Node.js Lambda source/archive parity and Lambda archive tests.
 4. A disposable DynamoDB Local table creation, transactional write, and read.
 5. Terraform formatting and configuration validation.
 
-`Production Deployment` is the manual deployment hatch for the temporary GitHub Actions
-billing outage. It is deliberately narrow:
-
+Similarly, hosted `Production Deployment` was an Actions workflow dispatch hatch for the temporary GitHub Actions billing outage:
 1. The workflow must be dispatched for `main`; another branch is rejected.
 2. The dispatcher must select the explicit `yes` approval input.
-3. The protected `production` environment must require your GitHub approval.
+3. The protected `production` environment must require your GitHub approval (with required reviewers).
 4. Repository branch protection must require changes to arrive through a merged PR.
 5. The reusable CI workflow must pass before the publish job can begin.
 
-This means the hosted hatch deploys only the reviewed contents of `main`, and does not
-provide a branch-based production bypass. If GitHub Actions is unavailable because of
-account restrictions, use the owner-approved local release sequence below. Ordinary local
-validation is not production deployment approval.
+The billing incident context is preserved for historical audit; operational releases use the canonical guarded local hatch above.
 
-After approval, the publish job verifies the assumed AWS account before applying Terraform.
-It builds a deployment marker containing the immutable Git SHA, waits for CloudFront
-invalidation, and fetches that marker from CloudFront. It also verifies the unauthenticated
-API health endpoint. A failed identity check, gate, invalidation, marker fetch, or smoke
-check stops the deployment.
 
-The billing problem is an operational dependency, not a reason to weaken the release
-boundary. Record any GitHub Actions billing/account incident in the deployment notes and
-re-check Actions availability before relying on this hatch.
-
-When GitHub Actions is unavailable, the owner-approved local fallback is:
-
-```bash
-export AWS_REGION=ap-south-2
-export AWS_ACCOUNT_ID='<expected-production-account-id>'
-PRODUCTION_DEPLOY_APPROVED=YES ./scripts/manual_production_deploy.sh
-```
-
-Before using the fallback, load the refreshable local AWS profile described in
+Before running the release hatch, load the refreshable local AWS profile described in
 `docs/operations/aws-development-auth.md` and confirm the identity with
 `aws sts get-caller-identity`. Do not place credentials in the repository or export
 short-lived access-key values into a shell profile.
 
 The local release has these fail-closed stages:
 
-1. The wrapper requires explicit `PRODUCTION_DEPLOY_APPROVED=YES`, a clean `main` checkout
-   exactly matching `origin/main`, and the expected `AWS_REGION` and `AWS_ACCOUNT_ID`.
+1. The wrapper acquires the release lock (`/tmp/automatic_expense_tracker_production_release.lock` via `flock`)
+   on the designated release host to prevent concurrent deployments across sessions or callers, requires explicit
+   `PRODUCTION_DEPLOY_APPROVED=YES`, a clean working tree on `main` matching `origin/main`, and enforces that both
+   `AWS_REGION` and `AWS_ACCOUNT_ID` strictly match pinned, readonly `EXPECTED_AWS_REGION` (`ap-south-2`) and
+   `EXPECTED_AWS_ACCOUNT_ID` (`727118420276`, rejecting caller or ambient environment overrides), and enforces pinned
+   `EXPECTED_TERRAFORM_ENVIRONMENT` (`production`, passed explicitly via `-var="environment=production"` to the release plan and used to derive fallback bucket discovery). For standard
+   releases, it deploys the clean `main` revision; for rollbacks (`ROLLBACK_TARGET_SHA=<sha>` or `ROLLBACK_TARGET_SHA=PREVIOUS`
+   to target the recorded known-good ancestor SHA from local or durable S3 release metadata `last-verified-release.json` / `release-metadata.json`), the driver on `main` asserts
+   that the target commit is an ancestor contained in `origin/main`, prepares an isolated temporary worktree to validate
+   and deploy that target revision, and preserves generated deliverables and release metadata before worktree cleanup.
 2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
    production AWS credentials disabled. A failed gate stops before the AWS identity check
-   or any AWS mutation; the working tree is checked again after validation.
+   or any AWS mutation; the working tree is checked again after validation, and `origin/main` currency is re-verified
+   from the remote to prevent race conditions if `main` advanced during validation.
 3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
    guarded deployment script only after the comparison succeeds.
 4. The deployment script builds Lambda artifacts, creates a saved Terraform plan, and
@@ -84,9 +113,11 @@ The local release has these fail-closed stages:
 5. The script applies that exact saved plan, verifies that the applied Terraform outputs
    still equal the values used to build the artifacts, then publishes the web artifact.
    Terraform failure or output drift stops the sequence before publication.
-6. CloudFront invalidation is awaited, and the deployed marker plus `${api_url}/api/health`
-   are fetched with retries. A failed publication, invalidation, marker check, or health
-   check exits non-zero.
+6. CloudFront invalidation is awaited, and the deployed marker (`deployment-version.json`), release metadata
+   (`release-metadata.json`), plus `${api_url}/api/health` are fetched with retries. Only after all live smoke checks
+   succeed is the release certified as known-good and published to durable verified release metadata (`last-verified-release.json`)
+   in S3 and `dev_builds/`. If verification fails, the previously verified release is preserved as the rollback target, preventing
+   unverified revisions from being promoted. A failed publication, invalidation, marker check, or health check exits non-zero.
 
 Repository branch protection remains the control that ensures the `main` revision arrived
 through a merged PR. The command requires the owner to set the approval variable
@@ -112,21 +143,22 @@ apply with `-lock=false`.
 
 ## Backup and restore verification
 
-The DynamoDB table has point-in-time recovery, encryption at rest, and production-only
-deletion protection enabled. `Verify DynamoDB Backup Restore` runs monthly at 03:00 UTC
-on the first day of the month and can be manually dispatched for a protected, audited
-verification.
+The DynamoDB table has point-in-time recovery (PITR), encryption at rest, and production-only
+deletion protection enabled in Terraform.
 
-The workflow:
+> [!NOTE]
+> The scheduled GitHub Actions workflow `Verify DynamoDB Backup Restore` (`.github/workflows/verify-dynamodb-restore.yml`) has been retired alongside hosted CI/CD. The verification procedure below is preserved as historical context and operational guidance for manual AWS backup/restore tests:
 
-1. Fails unless it is running in the expected AWS account and PITR is enabled.
-2. Takes an isolated on-demand backup.
-3. Restores it to a uniquely named verification table.
+Historical automated verification procedure:
+
+1. Fails unless running in the expected AWS account and PITR is enabled.
+2. Takes an isolated on-demand backup (`aws dynamodb create-backup`).
+3. Restores it to a uniquely named verification table (`aws dynamodb restore-table-from-backup`).
 4. Waits for `ACTIVE` and compares its key schema to the source table.
 5. Deletes the verification table and temporary backup even after a failed check.
 
-The workflow never scans or logs financial records. Investigate any failure before
-re-running it; do not delete the source table or disable PITR as remediation.
+Operational restore testing must never scan or log financial records. Investigate any failure
+before re-running it; do not delete the source production table or disable PITR.
 
 ## Alarm response
 
