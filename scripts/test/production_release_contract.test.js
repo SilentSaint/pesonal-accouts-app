@@ -53,7 +53,7 @@ case "$*" in
   *"branch --show-current") printf 'main\\n' ;;
   *"rev-parse --verify"*)
     for arg in "$@"; do
-      if [[ "$arg" == "PREVIOUS^{commit}" ]]; then
+      if [[ "$arg" == "PREVIOUS^{commit}" || "$arg" == "nonexistent-sha^{commit}" || "$arg" == "invalid-sha^{commit}" ]]; then
         exit 1
       fi
     done
@@ -121,7 +121,13 @@ case "\${2:-}" in
       1:api_gateway_url) printf 'https://drift.example\\n' ;;
       *:api_gateway_url) printf 'https://api.example\\n' ;;
       *:websocket_sync_url) printf 'wss://websocket.example\\n' ;;
-      *:s3_web_bucket_name) printf 'web-bucket\\n' ;;
+      *:s3_web_bucket_name)
+        if [[ "\${AET_TEST_TERRAFORM_NO_BUCKET:-0}" == 1 ]]; then
+          printf 'unknown-output\\n'
+        else
+          printf 'web-bucket\\n'
+        fi
+        ;;
       *:cloudfront_distribution_id) printf 'distribution\\n' ;;
       *:cloudfront_web_url) printf 'https://web.example\\n' ;;
       *) printf 'unknown-output\\n' ;;
@@ -157,6 +163,15 @@ printf 'aws %s\n' "$*" >> "$AET_TEST_LOG"
 if [[ "\${1:-}" == sts ]]; then
   printf '727118420276\n'
 elif [[ "\${1:-}" == s3 && "\${2:-}" == cp ]]; then
+  if [[ "\${3:-}" == *terraform.tfstate* ]]; then
+    if [[ "\${AET_TEST_STATE_S3_ERROR:-}" == "access-denied" || "\${AET_TEST_STATE_S3_ERROR:-}" == "AccessDenied" ]]; then
+      echo 'fatal error: An error occurred (AccessDenied) when calling the GetObject operation: Access Denied' >&2
+      exit 1
+    elif [[ "\${AET_TEST_STATE_S3_ERROR:-}" == "404" ]]; then
+      echo 'fatal error: An error occurred (404) when calling the GetObject operation: Key "production/terraform.tfstate" does not exist' >&2
+      exit 1
+    fi
+  fi
   if [[ "\${AET_TEST_S3_CP_ERROR:-}" == "access-denied" ]]; then
     echo 'fatal error: An error occurred (AccessDenied) when calling the GetObject operation: Access Denied' >&2
     exit 1
@@ -197,6 +212,16 @@ elif [[ "\${1:-}" == s3 && "\${2:-}" == sync ]]; then
   if [[ -n "$s3_dir" && -d "$src" ]]; then
     mkdir -p "$s3_dir"
     cp -r "$src"/* "$s3_dir/" 2>/dev/null || true
+  fi
+elif [[ "\${1:-}" == s3api && "\${2:-}" == list-buckets ]]; then
+  if [[ "\${AET_TEST_LIST_BUCKETS_ERROR:-}" == "access-denied" || "\${AET_TEST_LIST_BUCKETS_ERROR:-}" == "AccessDenied" ]]; then
+    echo 'fatal error: An error occurred (AccessDenied) when calling the ListBuckets operation: Access Denied' >&2
+    exit 1
+  fi
+  if [[ "\${AET_TEST_LIST_BUCKETS_EMPTY:-0}" == 1 ]]; then
+    printf 'None\n'
+  else
+    printf 'expense-tracker-web-727118420276\n'
   fi
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
   printf 'invalidation-123\n'
@@ -608,7 +633,7 @@ test('accepts valid deployment marker formatted with whitespace around colons', 
   const fixture = createFixture();
   try {
     const result = runDeployment(fixture, {
-      AET_TEST_EXISTING_S3_MARKER: '{\n  "commit": "valid-sha-1111111",\n  "previous_commit": "ancestor-sha-0000000"\n}',
+      AET_TEST_VERIFIED_S3_MARKER: '{\n  "commit": "valid-sha-1111111",\n  "previous_commit": "ancestor-sha-0000000"\n}',
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 
@@ -783,12 +808,18 @@ test('rollback deployment keeps rejected release out of the rollback pointer', (
     assert.equal(rollbackResult.status, 0, `${rollbackResult.stdout}\n${rollbackResult.stderr}`);
 
     // Verify that after rollback to releaseA, the rollback pointer DOES NOT point to buggyReleaseB
+    // and DOES NOT invent a Git parent when release history identifies no previous verified commit
     const markerAfterRollback = JSON.parse(fs.readFileSync(s3VerifiedPath, 'utf8'));
     assert.equal(markerAfterRollback.commit, releaseA);
     assert.notEqual(
       markerAfterRollback.previous_commit,
       buggyReleaseB,
       'Rollback deployment must not rotate the rejected release B into previous_commit',
+    );
+    assert.equal(
+      markerAfterRollback.previous_commit,
+      undefined,
+      'Rollback deployment must not derive previous_commit from Git ancestry when release history identifies no previous verified commit',
     );
 
     const localMetaPath = path.join(fixture.fixture, 'dev_builds', 'release-metadata.json');
@@ -799,6 +830,120 @@ test('rollback deployment keeps rejected release out of the rollback pointer', (
       buggyReleaseB,
       'Local release metadata must not rotate rejected release B into previous_commit',
     );
+    assert.equal(
+      localMeta.previous_commit,
+      undefined,
+      'Local release metadata must omit previous_commit when release history identifies no previous verified commit',
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('forward release adopts bootstrap rollback pointer when live marker represents an unverified publication', () => {
+  const fixture = createFixture();
+  try {
+    const knownGoodA = 'verified-sha-aaa111';
+    const unverifiedB = 'unverified-sha-bbb222';
+    const releaseC = 'next-sha-ccc333';
+
+    // S3 has NO last-verified-release.json (initial bootstrap state)
+    // Live deployment-version.json has unverifiedB building on knownGoodA
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: unverifiedB,
+        previous_commit: knownGoodA,
+      }),
+    );
+
+    // Forward release C deploys
+    const resultC = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: releaseC,
+    });
+    assert.equal(resultC.status, 0, `${resultC.stdout}\n${resultC.stderr}`);
+
+    const s3VerifiedPath = path.join(fixture.s3Dir, 'last-verified-release.json');
+    const markerC = JSON.parse(fs.readFileSync(s3VerifiedPath, 'utf8'));
+    assert.equal(markerC.commit, releaseC);
+    assert.equal(
+      markerC.previous_commit,
+      knownGoodA,
+      'Release C must adopt bootstrap unverified marker previous_commit A rather than unverified B',
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when remote terraform state read fails during rollback bucket discovery', () => {
+  const fixture = createFixture();
+  try {
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_TERRAFORM_NO_BUCKET: '1',
+      AET_TEST_STATE_S3_ERROR: 'AccessDenied',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: failed to read remote terraform state/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when s3api list-buckets fails during rollback bucket discovery', () => {
+  const fixture = createFixture();
+  try {
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_TERRAFORM_NO_BUCKET: '1',
+      AET_TEST_STATE_S3_ERROR: '404',
+      AET_TEST_LIST_BUCKETS_ERROR: 'AccessDenied',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: failed to list S3 buckets for discovery/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when rollback bucket cannot be discovered and refuses fallback to web-bucket', () => {
+  const fixture = createFixture();
+  try {
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_TERRAFORM_NO_BUCKET: '1',
+      AET_TEST_STATE_S3_ERROR: '404',
+      AET_TEST_LIST_BUCKETS_EMPTY: '1',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /could not discover web bucket/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when marker contains malformed previous_commit', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AET_TEST_EXISTING_S3_MARKER: '{"commit":"valid-commit-1111111","previous_commit":"bad\\"quote"}',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /malformed previous_commit/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('refuses deployment when marker previous_commit is not a valid commit in the repository', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture, {
+      AET_TEST_EXISTING_S3_MARKER: '{"commit":"valid-commit-1111111","previous_commit":"nonexistent-sha"}',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid previous_commit/);
   } finally {
     removeFixture(fixture);
   }

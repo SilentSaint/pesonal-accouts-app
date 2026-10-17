@@ -29,13 +29,36 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     if [[ -z "$bucket" || "$bucket" == "unknown-output" ]]; then
       state_bucket="automatic-expense-tracker-terraform-state-$EXPECTED_AWS_ACCOUNT_ID"
       state_key="production/terraform.tfstate"
-      bucket="$(aws s3 cp "s3://$state_bucket/$state_key" - 2>/dev/null | jq -er '.outputs.s3_web_bucket_name.value // empty' 2>/dev/null || true)"
+      state_err_file="$(mktemp /tmp/aet-s3-state-err.XXXXXX)"
+      state_status=0
+      state_json="$(aws s3 cp "s3://$state_bucket/$state_key" - 2>"$state_err_file")" || state_status=$?
+      state_err="$(cat "$state_err_file" 2>/dev/null || true)"
+      rm -f "$state_err_file"
+      if [[ "$state_status" -eq 0 ]]; then
+        bucket="$(jq -er '.outputs.s3_web_bucket_name.value // empty' <<<"$state_json" 2>/dev/null || true)"
+      else
+        if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$state_err" || ! grep -Eqi '(404|NoSuchKey|Key .* does not exist|specified key does not exist)' <<<"$state_err"; then
+          echo "Refusing rollback deployment: failed to read remote terraform state from s3://$state_bucket/$state_key." >&2
+          echo "$state_err" >&2
+          exit 1
+        fi
+      fi
     fi
-    if [[ -z "$bucket" ]]; then
-      bucket="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-')].Name | [0]" --output text 2>/dev/null || true)"
+    if [[ -z "$bucket" || "$bucket" == "unknown-output" || "$bucket" == "None" ]]; then
+      list_err_file="$(mktemp /tmp/aet-s3-list-err.XXXXXX)"
+      list_status=0
+      bucket="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-')].Name | [0]" --output text 2>"$list_err_file")" || list_status=$?
+      list_err="$(cat "$list_err_file" 2>/dev/null || true)"
+      rm -f "$list_err_file"
+      if [[ "$list_status" -ne 0 ]]; then
+        echo "Refusing rollback deployment: failed to list S3 buckets for discovery." >&2
+        echo "$list_err" >&2
+        exit 1
+      fi
     fi
-    if [[ -z "$bucket" || "$bucket" == "None" ]]; then
-      bucket="web-bucket"
+    if [[ -z "$bucket" || "$bucket" == "unknown-output" || "$bucket" == "None" ]]; then
+      echo "Refusing rollback deployment: could not discover web bucket from terraform output, remote state, or S3." >&2
+      exit 1
     fi
 
     # Query durable production metadata first
@@ -46,7 +69,7 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     rm -f "$s3_verified_err_file"
 
     if [[ "$s3_verified_status" -ne 0 ]]; then
-      if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_verified_err"; then
+      if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_verified_err" || ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_verified_err"; then
         echo "Refusing rollback deployment: failed to read verified release metadata from s3://$bucket/last-verified-release.json." >&2
         echo "$s3_verified_err" >&2
         exit 1
@@ -61,7 +84,7 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     rm -f "$s3_live_err_file"
 
     if [[ "$s3_live_status" -ne 0 ]]; then
-      if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_live_err"; then
+      if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_live_err" || ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_live_err"; then
         echo "Refusing rollback deployment: failed to read live release metadata from s3://$bucket/deployment-version.json." >&2
         echo "$s3_live_err" >&2
         exit 1
@@ -74,7 +97,7 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
       s3_meta_err="$(cat "$s3_meta_err_file" 2>/dev/null || true)"
       rm -f "$s3_meta_err_file"
       if [[ "$s3_meta_status" -ne 0 ]]; then
-        if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_meta_err"; then
+        if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_meta_err" || ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_meta_err"; then
           echo "Refusing rollback deployment: failed to read release metadata from s3://$bucket/release-metadata.json." >&2
           echo "$s3_meta_err" >&2
           exit 1

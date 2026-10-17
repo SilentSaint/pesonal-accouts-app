@@ -103,23 +103,60 @@ bucket="$(planned_output s3_web_bucket_name)"
 distribution_id="$(planned_output cloudfront_distribution_id)"
 cloudfront_url="$(planned_output cloudfront_web_url)"
 
+validate_commit_sha() {
+  local sha="$1"
+  local label="$2"
+  local source="$3"
+
+  if [[ ! "$sha" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+    if [[ "$label" == "commit SHA" ]]; then
+      echo "Refusing deployment: $source is malformed or missing a valid commit SHA." >&2
+    else
+      echo "Refusing deployment: $source contains malformed $label." >&2
+    fi
+    exit 1
+  fi
+  if ! git -C "$ROOT_DIR" rev-parse --verify "${sha}^{commit}" >/dev/null 2>&1; then
+    echo "Refusing deployment: $source references invalid $label '$sha'." >&2
+    exit 1
+  fi
+  if ! (git -C "$ROOT_DIR" merge-base --is-ancestor "$sha" "$release_commit" 2>/dev/null || git -C "$ROOT_DIR" merge-base --is-ancestor "$sha" origin/main 2>/dev/null); then
+    echo "Refusing deployment: $source contains $label '$sha' not contained in release history." >&2
+    exit 1
+  fi
+}
+
 resolve_previous_commit() {
-  local existing_c="$1"
-  local existing_p="$2"
-  if [[ "$existing_c" == "$release_commit" ]]; then
-    echo "$existing_p"
+  local existing_commit="$1"
+  local existing_prev="$2"
+  local is_verified="${3:-1}"
+
+  if [[ "$existing_commit" == "$release_commit" ]]; then
+    echo "$existing_prev"
   elif [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     # In rollback mode, existing_commit is the rejected release being rolled back from.
     # Never rotate the rejected release into previous_commit.
-    if [[ -n "$existing_p" && "$existing_p" != "$release_commit" && "$existing_p" != "$existing_c" ]]; then
-      if git -C "$ROOT_DIR" merge-base --is-ancestor "$existing_p" "$release_commit" 2>/dev/null; then
-        echo "$existing_p"
+    if [[ -n "$existing_prev" && "$existing_prev" != "$release_commit" && "$existing_prev" != "$existing_commit" ]]; then
+      if git -C "$ROOT_DIR" merge-base --is-ancestor "$existing_prev" "$release_commit" 2>/dev/null; then
+        echo "$existing_prev"
         return
       fi
     fi
-    git -C "$ROOT_DIR" rev-parse --verify "${release_commit}~1^{commit}" 2>/dev/null || true
+    # Omit previous_commit unless verified release history identifies one.
+    # Do not derive a known-good release from Git ancestry.
+    echo ""
   else
-    echo "$existing_c"
+    if [[ "$is_verified" -eq 1 ]]; then
+      echo "$existing_commit"
+    else
+      # When last-verified-release.json does not exist, existing_commit is an unverified publication.
+      # If existing_prev is recorded, use that known-good commit; otherwise use existing_commit.
+      if [[ -n "$existing_prev" ]]; then
+        echo "$existing_prev"
+      else
+        echo "$existing_commit"
+      fi
+    fi
   fi
 }
 
@@ -136,14 +173,13 @@ if [[ -n "${bucket:-}" ]]; then
   if [[ "$s3_status" -eq 0 ]]; then
     existing_commit="$(jq -er '.commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
     existing_prev="$(jq -er '.previous_commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
-    if [[ ! "$existing_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
-      echo "Refusing deployment: live verified release marker in s3://$bucket/last-verified-release.json is malformed or missing a valid commit SHA." >&2
-      echo "Raw marker content: $s3_marker_output" >&2
-      exit 1
+    validate_commit_sha "$existing_commit" "commit SHA" "live verified release marker in s3://$bucket/last-verified-release.json"
+    if [[ -n "$existing_prev" ]]; then
+      validate_commit_sha "$existing_prev" "previous_commit" "live verified release marker in s3://$bucket/last-verified-release.json"
     fi
-    previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev")"
+    previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev" 1)"
   else
-    if ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
+    if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_read_error" || ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
       echo "Refusing deployment: failed to read verified release marker from s3://$bucket/last-verified-release.json." >&2
       echo "$s3_read_error" >&2
       exit 1
@@ -160,24 +196,23 @@ if [[ -n "${bucket:-}" ]]; then
     if [[ "$s3_status" -eq 0 ]]; then
       existing_commit="$(jq -er '.commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
       existing_prev="$(jq -er '.previous_commit // empty' <<<"$s3_marker_output" 2>/dev/null || true)"
-      if [[ ! "$existing_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
-        echo "Refusing deployment: live deployment marker in s3://$bucket/deployment-version.json is malformed or missing a valid commit SHA." >&2
-        echo "Raw marker content: $s3_marker_output" >&2
-        exit 1
+      validate_commit_sha "$existing_commit" "commit SHA" "live deployment marker in s3://$bucket/deployment-version.json"
+      if [[ -n "$existing_prev" ]]; then
+        validate_commit_sha "$existing_prev" "previous_commit" "live deployment marker in s3://$bucket/deployment-version.json"
       fi
-      previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev")"
+      previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev" 0)"
     else
-      if grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
+      if ! grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_read_error" && grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_read_error"; then
         echo "No existing live deployment marker in S3 (initial bootstrap deployment)."
         if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
           existing_commit="$(jq -er '.current_commit // empty' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
           existing_prev="$(jq -er '.previous_commit // empty' "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
           if [[ -n "$existing_commit" ]]; then
-            if [[ ! "$existing_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
-              echo "Refusing deployment: local release metadata is malformed." >&2
-              exit 1
+            validate_commit_sha "$existing_commit" "commit SHA" "local release metadata"
+            if [[ -n "$existing_prev" ]]; then
+              validate_commit_sha "$existing_prev" "previous_commit" "local release metadata"
             fi
-            previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev")"
+            previous_commit="$(resolve_previous_commit "$existing_commit" "$existing_prev" 0)"
           fi
         fi
       else
