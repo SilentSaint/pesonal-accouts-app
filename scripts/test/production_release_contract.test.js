@@ -339,6 +339,18 @@ test('a failed web build cannot reach Terraform apply', () => {
   }
 });
 
+test('planning enforces the pinned production environment variable', () => {
+  const fixture = createFixture();
+  try {
+    const result = runDeployment(fixture);
+    assert.equal(result.status, 0);
+    const events = fs.readFileSync(fixture.log, 'utf8');
+    assert.match(events, /terraform .* plan .* -var=environment=production/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
 test('applies the saved Terraform plan only after every release artifact builds', () => {
   const fixture = createFixture();
   try {

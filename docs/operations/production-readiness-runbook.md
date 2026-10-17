@@ -94,7 +94,8 @@ The local release has these fail-closed stages:
    on the designated release host to prevent concurrent deployments across sessions or callers, requires explicit
    `PRODUCTION_DEPLOY_APPROVED=YES`, a clean working tree on `main` matching `origin/main`, and enforces that both
    `AWS_REGION` and `AWS_ACCOUNT_ID` strictly match pinned, readonly `EXPECTED_AWS_REGION` (`ap-south-2`) and
-   `EXPECTED_AWS_ACCOUNT_ID` (`727118420276`, rejecting caller or ambient environment overrides). For standard
+   `EXPECTED_AWS_ACCOUNT_ID` (`727118420276`, rejecting caller or ambient environment overrides), and enforces pinned
+   `EXPECTED_TERRAFORM_ENVIRONMENT` (`production`, passed explicitly via `-var="environment=production"` to the release plan and used to derive fallback bucket discovery). For standard
    releases, it deploys the clean `main` revision; for rollbacks (`ROLLBACK_TARGET_SHA=<sha>` or `ROLLBACK_TARGET_SHA=PREVIOUS`
    to target the recorded known-good ancestor SHA from local or durable S3 release metadata `last-verified-release.json` / `release-metadata.json`), the driver on `main` asserts
    that the target commit is an ancestor contained in `origin/main`, prepares an isolated temporary worktree to validate

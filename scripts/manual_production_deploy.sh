@@ -21,6 +21,7 @@ fi
 
 readonly EXPECTED_AWS_REGION="ap-south-2"
 readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
+readonly EXPECTED_TERRAFORM_ENVIRONMENT="production"
 
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   if [[ "$ROLLBACK_TARGET_SHA" == "PREVIOUS" ]]; then
@@ -47,7 +48,7 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     if [[ -z "$bucket" || "$bucket" == "unknown-output" || "$bucket" == "None" ]]; then
       list_err_file="$(mktemp /tmp/aet-s3-list-err.XXXXXX)"
       list_status=0
-      list_output="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-production-')].Name" --output text 2>"$list_err_file")" || list_status=$?
+      list_output="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-${EXPECTED_TERRAFORM_ENVIRONMENT}-')].Name" --output text 2>"$list_err_file")" || list_status=$?
       list_err="$(cat "$list_err_file" 2>/dev/null || true)"
       rm -f "$list_err_file"
       if [[ "$list_status" -ne 0 ]]; then
