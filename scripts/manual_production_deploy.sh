@@ -75,6 +75,29 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
         exit 1
       fi
       s3_verified=""
+    else
+      verified_commit="$(jq -er '.commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
+      verified_prev="$(jq -er '.previous_commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
+      if [[ ! "$verified_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+        echo "Refusing rollback deployment: verified release marker in s3://$bucket/last-verified-release.json is malformed or missing a valid commit SHA." >&2
+        echo "Raw marker content: $s3_verified" >&2
+        exit 1
+      fi
+      if ! git rev-parse --verify "${verified_commit}^{commit}" >/dev/null 2>&1; then
+        echo "Refusing rollback deployment: verified release marker in s3://$bucket/last-verified-release.json references invalid commit '$verified_commit'." >&2
+        exit 1
+      fi
+      if [[ -n "$verified_prev" ]]; then
+        if [[ ! "$verified_prev" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+          echo "Refusing rollback deployment: verified release marker in s3://$bucket/last-verified-release.json contains malformed previous_commit." >&2
+          echo "Raw marker content: $s3_verified" >&2
+          exit 1
+        fi
+        if ! git rev-parse --verify "${verified_prev}^{commit}" >/dev/null 2>&1; then
+          echo "Refusing rollback deployment: verified release marker in s3://$bucket/last-verified-release.json references invalid previous_commit '$verified_prev'." >&2
+          exit 1
+        fi
+      fi
     fi
 
     s3_live_err_file="$(mktemp /tmp/aet-s3-live-err.XXXXXX)"
@@ -110,6 +133,28 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     if [[ -z "$s3_verified" && -z "$s3_live" ]]; then
       if [[ -f "$ROOT_DIR/dev_builds/last-verified-release.json" ]]; then
         s3_verified="$(cat "$ROOT_DIR/dev_builds/last-verified-release.json" 2>/dev/null || true)"
+        if [[ -n "$s3_verified" ]]; then
+          verified_commit="$(jq -er '.commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
+          verified_prev="$(jq -er '.previous_commit // empty' <<<"$s3_verified" 2>/dev/null || true)"
+          if [[ ! "$verified_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+            echo "Refusing rollback deployment: local verified release metadata is malformed or missing a valid commit SHA." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify "${verified_commit}^{commit}" >/dev/null 2>&1; then
+            echo "Refusing rollback deployment: local verified release metadata references invalid commit '$verified_commit'." >&2
+            exit 1
+          fi
+          if [[ -n "$verified_prev" ]]; then
+            if [[ ! "$verified_prev" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+              echo "Refusing rollback deployment: local verified release metadata contains malformed previous_commit." >&2
+              exit 1
+            fi
+            if ! git rev-parse --verify "${verified_prev}^{commit}" >/dev/null 2>&1; then
+              echo "Refusing rollback deployment: local verified release metadata references invalid previous_commit '$verified_prev'." >&2
+              exit 1
+            fi
+          fi
+        fi
       fi
       if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
         s3_live="$(cat "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
@@ -130,8 +175,6 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
         # Roll back directly to the verified commit
         resolved_sha="$verified_commit"
       fi
-    elif [[ -n "$verified_prev" ]]; then
-      resolved_sha="$verified_prev"
     elif [[ -n "$s3_live" ]]; then
       resolved_sha="$(jq -er '.previous_commit // empty' <<<"$s3_live" 2>/dev/null || true)"
     fi

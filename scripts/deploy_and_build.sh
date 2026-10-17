@@ -150,11 +150,11 @@ resolve_previous_commit() {
       echo "$existing_commit"
     else
       # When last-verified-release.json does not exist, existing_commit is an unverified publication.
-      # If existing_prev is recorded, use that known-good commit; otherwise use existing_commit.
+      # If existing_prev is recorded, use that known-good commit; otherwise omit previous_commit.
       if [[ -n "$existing_prev" ]]; then
         echo "$existing_prev"
       else
-        echo "$existing_commit"
+        echo ""
       fi
     fi
   fi

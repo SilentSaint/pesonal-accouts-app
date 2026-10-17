@@ -481,7 +481,7 @@ test('persists current and previous release metadata rotating the deployed SHA i
   try {
     // 1. Simulate forward deploy when previous release was deployed at known-good-sha-111
     const result = runDeployment(fixture, {
-      AET_TEST_EXISTING_S3_MARKER: '{"commit":"known-good-sha-111"}',
+      AET_TEST_VERIFIED_S3_MARKER: '{"commit":"known-good-sha-111"}',
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 
@@ -944,6 +944,83 @@ test('refuses deployment when marker previous_commit is not a valid commit in th
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid previous_commit/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('forward release omits rollback pointer when live marker represents an unverified bootstrap publication without predecessor', () => {
+  const fixture = createFixture();
+  try {
+    const unverifiedB = 'unverified-sha-bbb222';
+    const releaseC = 'next-sha-ccc333';
+
+    // S3 has NO last-verified-release.json
+    // Live deployment-version.json has unverifiedB WITHOUT previous_commit
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: unverifiedB,
+      }),
+    );
+
+    // Forward release C deploys
+    const resultC = runDeployment(fixture, {
+      AET_TEST_HEAD_SHA: releaseC,
+    });
+    assert.equal(resultC.status, 0, `${resultC.stdout}\n${resultC.stderr}`);
+
+    const s3VerifiedPath = path.join(fixture.s3Dir, 'last-verified-release.json');
+    const markerC = JSON.parse(fs.readFileSync(s3VerifiedPath, 'utf8'));
+    assert.equal(markerC.commit, releaseC);
+    assert.equal(
+      markerC.previous_commit,
+      undefined,
+      'Release C must omit previous_commit when live unverified marker has no verified predecessor',
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when verified rollback marker lacks valid commit SHA', () => {
+  const fixture = createFixture();
+  try {
+    // Verified marker in S3 has empty commit but plausible previous_commit
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'last-verified-release.json'),
+      JSON.stringify({
+        commit: '',
+        previous_commit: 'valid-ancestor-sha',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: verified release marker .* is malformed or missing a valid commit SHA/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when verified rollback marker has malformed previous_commit', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'last-verified-release.json'),
+      JSON.stringify({
+        commit: 'valid-sha-1111111',
+        previous_commit: 'bad"quote',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: verified release marker .* contains malformed previous_commit/);
   } finally {
     removeFixture(fixture);
   }
