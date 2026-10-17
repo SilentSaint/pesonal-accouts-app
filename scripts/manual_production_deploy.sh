@@ -100,13 +100,16 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
       fi
     fi
 
+    s3_live_source=""
     s3_live_err_file="$(mktemp /tmp/aet-s3-live-err.XXXXXX)"
     s3_live_status=0
     s3_live="$(aws s3 cp "s3://$bucket/deployment-version.json" - 2>"$s3_live_err_file")" || s3_live_status=$?
     s3_live_err="$(cat "$s3_live_err_file" 2>/dev/null || true)"
     rm -f "$s3_live_err_file"
 
-    if [[ "$s3_live_status" -ne 0 ]]; then
+    if [[ "$s3_live_status" -eq 0 ]]; then
+      s3_live_source="s3://$bucket/deployment-version.json"
+    else
       if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_live_err" || ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_live_err"; then
         echo "Refusing rollback deployment: failed to read live release metadata from s3://$bucket/deployment-version.json." >&2
         echo "$s3_live_err" >&2
@@ -119,7 +122,9 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
       s3_live="$(aws s3 cp "s3://$bucket/release-metadata.json" - 2>"$s3_meta_err_file")" || s3_meta_status=$?
       s3_meta_err="$(cat "$s3_meta_err_file" 2>/dev/null || true)"
       rm -f "$s3_meta_err_file"
-      if [[ "$s3_meta_status" -ne 0 ]]; then
+      if [[ "$s3_meta_status" -eq 0 ]]; then
+        s3_live_source="s3://$bucket/release-metadata.json"
+      else
         if grep -Eqi '(NoSuchBucket|bucket.*does not exist)' <<<"$s3_meta_err" || ! grep -Eqi '(404|NoSuchKey|does not exist)' <<<"$s3_meta_err"; then
           echo "Refusing rollback deployment: failed to read release metadata from s3://$bucket/release-metadata.json." >&2
           echo "$s3_meta_err" >&2
@@ -158,6 +163,7 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
       fi
       if [[ -f "$ROOT_DIR/dev_builds/release-metadata.json" ]]; then
         s3_live="$(cat "$ROOT_DIR/dev_builds/release-metadata.json" 2>/dev/null || true)"
+        s3_live_source="local release metadata"
       fi
     fi
 
@@ -176,7 +182,29 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
         resolved_sha="$verified_commit"
       fi
     elif [[ -n "$s3_live" ]]; then
-      resolved_sha="$(jq -er '.previous_commit // empty' <<<"$s3_live" 2>/dev/null || true)"
+      live_source_label="${s3_live_source:-live release marker}"
+      if [[ ! "$live_commit" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+        echo "Refusing rollback deployment: live release marker in $live_source_label is malformed or missing a valid commit SHA." >&2
+        echo "Raw marker content: $s3_live" >&2
+        exit 1
+      fi
+      if ! git rev-parse --verify "${live_commit}^{commit}" >/dev/null 2>&1; then
+        echo "Refusing rollback deployment: live release marker in $live_source_label references invalid commit '$live_commit'." >&2
+        exit 1
+      fi
+      live_prev="$(jq -er '.previous_commit // empty' <<<"$s3_live" 2>/dev/null || true)"
+      if [[ -n "$live_prev" ]]; then
+        if [[ ! "$live_prev" =~ ^[0-9a-zA-Z._-]{7,64}$ ]]; then
+          echo "Refusing rollback deployment: live release marker in $live_source_label contains malformed previous_commit." >&2
+          echo "Raw marker content: $s3_live" >&2
+          exit 1
+        fi
+        if ! git rev-parse --verify "${live_prev}^{commit}" >/dev/null 2>&1; then
+          echo "Refusing rollback deployment: live release marker in $live_source_label references invalid previous_commit '$live_prev'." >&2
+          exit 1
+        fi
+      fi
+      resolved_sha="$live_prev"
     fi
 
     if [[ -z "$resolved_sha" ]]; then

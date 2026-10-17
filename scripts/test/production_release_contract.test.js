@@ -1026,5 +1026,116 @@ test('manual deploy fails closed when verified rollback marker has malformed pre
   }
 });
 
+test('manual deploy fails closed when fallback live marker has malformed commit', () => {
+  const fixture = createFixture();
+  try {
+    // S3 has NO last-verified-release.json
+    // S3 deployment-version.json has corrupt commit with plausible previous_commit
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: 'bad"commit',
+        previous_commit: 'valid-ancestor-sha',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: live release marker .* is malformed or missing a valid commit SHA/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when fallback live marker has malformed previous_commit', () => {
+  const fixture = createFixture();
+  try {
+    // S3 has NO last-verified-release.json
+    // S3 deployment-version.json has valid commit with malformed previous_commit
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: 'valid-sha-1111111',
+        previous_commit: 'bad"quote',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: live release marker .* contains malformed previous_commit/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when fallback live marker references invalid commit in git', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: 'invalid-sha',
+        previous_commit: 'valid-ancestor-sha',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: live release marker .* references invalid commit 'invalid-sha'/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when fallback live marker references invalid previous_commit in git', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.s3Dir, 'deployment-version.json'),
+      JSON.stringify({
+        commit: 'valid-sha-1111111',
+        previous_commit: 'invalid-sha',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: live release marker .* references invalid previous_commit 'invalid-sha'/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when local fallback live marker has malformed commit', () => {
+  const fixture = createFixture();
+  try {
+    fs.mkdirSync(path.join(fixture.fixture, 'dev_builds'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fixture.fixture, 'dev_builds', 'release-metadata.json'),
+      JSON.stringify({
+        current_commit: 'bad"commit',
+        previous_commit: 'valid-ancestor-sha',
+      }),
+    );
+
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: live release marker .* is malformed or missing a valid commit SHA/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+
 
 
