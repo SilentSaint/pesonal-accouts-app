@@ -220,8 +220,10 @@ elif [[ "\${1:-}" == s3api && "\${2:-}" == list-buckets ]]; then
   fi
   if [[ "\${AET_TEST_LIST_BUCKETS_EMPTY:-0}" == 1 ]]; then
     printf 'None\n'
+  elif [[ "\${AET_TEST_LIST_BUCKETS_MULTIPLE:-0}" == 1 ]]; then
+    printf 'expense-tracker-web-production-111111\texpense-tracker-web-production-222222\n'
   else
-    printf 'expense-tracker-web-727118420276\n'
+    printf 'expense-tracker-web-production-727118420276\n'
   fi
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
   printf 'invalidation-123\n'
@@ -918,6 +920,22 @@ test('manual deploy fails closed when rollback bucket cannot be discovered and r
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /could not discover web bucket/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('manual deploy fails closed when s3api list-buckets discovers multiple matching production web buckets (ambiguous)', () => {
+  const fixture = createFixture();
+  try {
+    const result = runManualDeploy(fixture, {
+      ROLLBACK_TARGET_SHA: 'PREVIOUS',
+      AET_TEST_TERRAFORM_NO_BUCKET: '1',
+      AET_TEST_STATE_S3_ERROR: '404',
+      AET_TEST_LIST_BUCKETS_MULTIPLE: '1',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing rollback deployment: ambiguous production web bucket discovery/);
   } finally {
     removeFixture(fixture);
   }

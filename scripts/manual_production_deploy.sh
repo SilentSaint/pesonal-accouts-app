@@ -47,13 +47,27 @@ if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
     if [[ -z "$bucket" || "$bucket" == "unknown-output" || "$bucket" == "None" ]]; then
       list_err_file="$(mktemp /tmp/aet-s3-list-err.XXXXXX)"
       list_status=0
-      bucket="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-')].Name | [0]" --output text 2>"$list_err_file")" || list_status=$?
+      list_output="$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'expense-tracker-web-production-')].Name" --output text 2>"$list_err_file")" || list_status=$?
       list_err="$(cat "$list_err_file" 2>/dev/null || true)"
       rm -f "$list_err_file"
       if [[ "$list_status" -ne 0 ]]; then
         echo "Refusing rollback deployment: failed to list S3 buckets for discovery." >&2
         echo "$list_err" >&2
         exit 1
+      fi
+      bucket_list=()
+      if [[ "$list_output" =~ ^\[.*\]$ ]]; then
+        mapfile -t bucket_list < <(jq -r '.[]' <<<"$list_output" 2>/dev/null || true)
+      elif [[ -n "$list_output" && "$list_output" != "None" ]]; then
+        IFS=$' \t\n' read -ra bucket_list <<<"$list_output"
+      fi
+      if [[ "${#bucket_list[@]}" -gt 1 ]]; then
+        echo "Refusing rollback deployment: ambiguous production web bucket discovery; found multiple matching buckets: ${bucket_list[*]}." >&2
+        exit 1
+      elif [[ "${#bucket_list[@]}" -eq 1 ]]; then
+        bucket="${bucket_list[0]}"
+      else
+        bucket=""
       fi
     fi
     if [[ -z "$bucket" || "$bucket" == "unknown-output" || "$bucket" == "None" ]]; then
