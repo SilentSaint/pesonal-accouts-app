@@ -260,8 +260,8 @@ may replace an older run only for the same PR, then re-reads that PR's current
 GitHub snapshot. Before emitting a reconciliation target, the selector records
 deleted Codex feedback against the live PR head, so replacing or cancelling the
 later matrix job cannot erase that revocation. Its GitHub Actions token is
-limited to reading repository/PR metadata and writing commit statuses. Both jobs
-check out trusted `main` policy code only; neither checks out or executes PR
+limited to reading repository/PR metadata and writing commit statuses. All workflow
+jobs check out trusted `main` policy code only; none checks out or executes PR
 code. This status represents only
 the Codex authorization signal, not the local Docker gate or other merge
 requirements.
@@ -270,9 +270,11 @@ Deleting Codex-authored feedback or receiving new negative Codex review activity
 immediately publishes a failure status with a durable deleted-feedback revocation marker
 or negative review failure on the live PR head, even if the PR
 is closed or temporarily targets another base, before the reconcile job enters
-its per-PR concurrency queue. Negative Codex review activity and deletions share
-the per-PR queue with `cancel-in-progress: true` to preempt any running
-reconciliation, while general events do not share this selector queue so they
+its head-SHA concurrency queue. For `issue_comment` events without head commit metadata
+in the webhook payload, the workflow first resolves the live target PR head SHA before
+entering the status-writing selector job. Negative Codex review activity and deletions share
+the target PR head-SHA concurrency queue with `cancel-in-progress: true` to preempt any running
+reconciliation for that commit, while general events do not share this selector queue so they
 cannot displace a pending revocation while reconciliation cancels. This deleted-feedback revocation marker
 persists across scheduled runs; the reconciler reads trusted status history, so an older
 approval that remains visible in GitHub cannot restore authorization.
@@ -286,8 +288,8 @@ closed to prevent status cross-contamination. Before publishing a success
 status, the reconciler re-validates the live pull request, base SHA, open pull
 request set, status history, and fresh review activity (comments, reviews, and
 reactions) to prevent in-flight base changes, negative feedback, duplicate PR
-heads, or deletion revocations from being overwritten. Reconcile jobs are
-serialized by the target PR head commit SHA, and target selection immediately
+heads, or deletion revocations from being overwritten. Reconcile jobs and revocation
+selectors are serialized by the target PR head commit SHA, and target selection immediately
 records duplicate-head failure when multiple open PRs share a head commit,
 preventing late parallel success writes from overwriting a duplicate-head failure.
 

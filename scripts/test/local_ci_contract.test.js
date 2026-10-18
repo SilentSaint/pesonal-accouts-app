@@ -510,6 +510,34 @@ test('the selector skips cleanly until trusted main has the approval policy scri
   }
 });
 
+test('the target head resolver skips cleanly until trusted main has the approval policy script', () => {
+  const action = read('.github/workflows/codex-approval-status.yml');
+  const resolverScript = workflowStepScript(
+    action,
+    'Resolve target PR head SHA',
+    'select-pull-requests',
+  );
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-head-bootstrap-'));
+  const outputFile = path.join(tempRoot, 'github-output');
+
+  try {
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', resolverScript], {
+      cwd: tempRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputFile,
+        PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}`,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(outputFile, 'utf8'), 'head_sha=\n');
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('a PR base edit triggers immediate Codex approval reconciliation', () => {
   const action = read('.github/workflows/codex-approval-status.yml');
 
@@ -526,6 +554,8 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(action, /pull_request_review:/);
   assert.match(action, /pull_request_review_comment:/);
   assert.match(action, /schedule:/);
+  assert.match(action, /resolve-target-head:/);
+  assert.match(action, /--resolve-target-head/);
   assert.match(action, /select-pull-requests:/);
   assert.match(action, /--select-pr-targets/);
   assert.match(action, /pr_targets:\s*\$\{\{\s*steps\.select\.outputs\.pr_targets\s*\}\}/);
@@ -533,6 +563,7 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.match(action, /CODEX_PR_NUMBER:\s*\$\{\{\s*matrix\.target\.number\s*\}\}/);
   assert.match(action, /CODEX_PR_HEAD_SHA:\s*\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
+  assert.match(action, /CODEX_PR_HEAD_SHA:\s*\$\{\{\s*needs\.resolve-target-head\.outputs\.head_sha\s*\}\}/);
   assert.doesNotMatch(action, /group:\s*codex-approval-reconcile/);
   assert.match(action, /contents:\s*read/);
   assert.match(action, /issues:\s*read/);
@@ -589,6 +620,8 @@ test('a deleted or negative Codex feedback event preempts a saturated event queu
   assert.match(reconcileJob, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.match(reconcileJob, /queue:\s*max/);
   assert.match(reconcileJob, /cancel-in-progress:\s*false/);
+  assert.match(action, /needs\.resolve-target-head\.outputs\.head_sha/);
+  assert.doesNotMatch(action, /format\('codex-approval-\{0\}-\{1\}'[\s\S]*github\.event\.issue\.number/);
 });
 
 test('authorization requires head SHA uniqueness across open pull requests to prevent status contamination', () => {

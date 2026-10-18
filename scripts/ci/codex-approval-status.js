@@ -801,6 +801,39 @@ function parseRepository(fullName) {
   return { owner: parts[0], repo: parts[1] };
 }
 
+async function resolveTargetHead({
+  eventName,
+  payload = {},
+  repository,
+  apiBaseUrl = 'https://api.github.com',
+  token,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const payloadHeadSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
+  if (/^[a-f0-9]{40}$/i.test(payloadHeadSha || '')) {
+    return payloadHeadSha;
+  }
+  const targetedNumber = eventPullRequestNumber(eventName, payload);
+  if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
+    if (!repository || !repository.owner || !repository.repo || !token) {
+      return '';
+    }
+    try {
+      const pullRequest = await githubJson(
+        `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
+        { apiBaseUrl, token, fetchImpl },
+      );
+      const resolvedSha = pullRequest && pullRequest.head && pullRequest.head.sha;
+      if (/^[a-f0-9]{40}$/i.test(resolvedSha || '')) {
+        return resolvedSha;
+      }
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 async function selectPullRequestTargets({
   eventName,
   payload = {},
@@ -809,10 +842,12 @@ async function selectPullRequestTargets({
   token,
   botLogin = DEFAULT_BOT_LOGIN,
   fetchImpl = globalThis.fetch,
+  headSha: explicitHeadSha,
 } = {}) {
   const targetedNumber = eventPullRequestNumber(eventName, payload);
   if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
-    let headSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
+    let headSha = (/^[a-f0-9]{40}$/i.test(explicitHeadSha || '') ? explicitHeadSha : null)
+      || (payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha);
     const isDeleted = isDeletedCodexFeedback(eventName, payload, botLogin);
     const isNegative = isNegativeCodexFeedback(eventName, payload, botLogin);
     if (isNegative) {
@@ -1120,8 +1155,30 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
 }
 
 if (require.main === module) {
+  const resolveHead = process.argv.includes('--resolve-target-head');
   const selectTargets = process.argv.includes('--select-pr-targets');
-  const operation = selectTargets
+  const operation = resolveHead
+    ? (async () => {
+      let repository = null;
+      try {
+        repository = parseRepository(process.env.GITHUB_REPOSITORY);
+      } catch {
+        repository = null;
+      }
+      const eventPath = process.env.GITHUB_EVENT_PATH;
+      const payload = eventPath ? JSON.parse(fs.readFileSync(eventPath, 'utf8')) : {};
+      const headSha = await resolveTargetHead({
+        eventName: process.env.GITHUB_EVENT_NAME || '',
+        payload,
+        repository,
+        apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+        token: process.env.GITHUB_TOKEN,
+      });
+      const output = `head_sha=${headSha}\n`;
+      if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
+      else process.stdout.write(output);
+    })()
+    : selectTargets
     ? (async () => {
       const repository = parseRepository(process.env.GITHUB_REPOSITORY);
       const eventPath = process.env.GITHUB_EVENT_PATH;
@@ -1133,6 +1190,7 @@ if (require.main === module) {
         apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
         token: process.env.GITHUB_TOKEN,
         botLogin: process.env.CODEX_REVIEW_BOT_LOGIN || DEFAULT_BOT_LOGIN,
+        headSha: process.env.CODEX_PR_HEAD_SHA,
       });
       const output = `pr_targets=${JSON.stringify(targets)}\n`;
       if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
@@ -1140,7 +1198,11 @@ if (require.main === module) {
     })()
     : run();
   operation.catch((error) => {
-    const description = selectTargets ? 'Codex PR target selection' : 'Codex approval status reconciliation';
+    const description = resolveHead
+      ? 'Codex PR head resolution'
+      : selectTargets
+      ? 'Codex PR target selection'
+      : 'Codex approval status reconciliation';
     process.stderr.write(`${description} failed: ${error.message}\n`);
     process.exitCode = 1;
   });
@@ -1154,6 +1216,7 @@ module.exports = {
   isUnambiguousApproval,
   publishCommitStatus,
   reconcilePullRequest,
+  resolveTargetHead,
   reviewedHead,
   selectPullRequestTargets,
 };

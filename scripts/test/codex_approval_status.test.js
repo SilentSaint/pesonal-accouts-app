@@ -8,6 +8,7 @@ const {
   decideAgentMerge,
   publishCommitStatus,
   reconcilePullRequest,
+  resolveTargetHead,
   selectPullRequestTargets,
 } = require('../ci/codex-approval-status');
 
@@ -2346,7 +2347,78 @@ test('reconciliation does not overwrite an existing duplicate-head failure statu
   assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
 });
 
+test('resolveTargetHead returns headSha from payload when present on pull_request events', async () => {
+  const sha = 'd'.repeat(40);
+  const result = await resolveTargetHead({
+    eventName: 'pull_request_target',
+    payload: { pull_request: { number: 177, head: { sha } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+  });
+  assert.equal(result, sha);
+});
 
+test('resolveTargetHead fetches headSha from pull request API for issue_comment events on a PR', async () => {
+  const sha = 'e'.repeat(40);
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/pulls/177')) {
+      return {
+        ok: true,
+        json: async () => ({ head: { sha } }),
+      };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
 
+  const result = await resolveTargetHead({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'created',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: { body: 'hello' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+    fetchImpl,
+  });
+  assert.equal(result, sha);
+});
 
+test('resolveTargetHead returns empty string for non-PR events or pure issue comments', async () => {
+  const resultSchedule = await resolveTargetHead({
+    eventName: 'schedule',
+    payload: {},
+  });
+  assert.equal(resultSchedule, '');
 
+  const resultIssueComment = await resolveTargetHead({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'created',
+      issue: { number: 123 }, // no pull_request property
+      comment: { body: 'regular issue' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+  });
+  assert.equal(resultIssueComment, '');
+});
+
+test('resolveTargetHead returns empty string if API call fails', async () => {
+  const fetchImpl = async () => {
+    throw new Error('Not found');
+  };
+
+  const result = await resolveTargetHead({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'created',
+      issue: { number: 999, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/999' } },
+      comment: { body: 'deleted pr' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+    fetchImpl,
+  });
+  assert.equal(result, '');
+});
