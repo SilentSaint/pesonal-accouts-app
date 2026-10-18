@@ -20,3 +20,10 @@ variable "google_client_id" {
   default     = "230057110188-uju5dg9caco861t3bmqjc3qvbtdcuck5.apps.googleusercontent.com"
   description = "Google OAuth client ID accepted by HTTP and WebSocket APIs"
 }
+
+variable "deletion_protection_enabled" {
+  type        = bool
+  default     = false
+  description = "Whether deletion protection is enabled on stateful production data stores"
+}
+

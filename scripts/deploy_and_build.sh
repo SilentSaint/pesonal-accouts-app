@@ -43,6 +43,7 @@ test -z "$(git -C "$ROOT_DIR" status --porcelain)" || {
 readonly EXPECTED_AWS_REGION="ap-south-2"
 readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
 readonly EXPECTED_TERRAFORM_ENVIRONMENT="dev"
+readonly EXPECTED_DELETION_PROTECTION_ENABLED="true"
 
 if [[ "${AWS_REGION:-}" != "$EXPECTED_AWS_REGION" ]]; then
   echo "Refusing deployment: AWS_REGION must be $EXPECTED_AWS_REGION, got '${AWS_REGION:-empty}'." >&2
@@ -96,7 +97,8 @@ terraform -chdir="$TERRAFORM_DIR" plan \
   -input=false \
   -out="$plan_file" \
   -var="aws_region=$AWS_REGION" \
-  -var="environment=$EXPECTED_TERRAFORM_ENVIRONMENT"
+  -var="environment=$EXPECTED_TERRAFORM_ENVIRONMENT" \
+  -var="deletion_protection_enabled=$EXPECTED_DELETION_PROTECTION_ENABLED"
 terraform -chdir="$TERRAFORM_DIR" show -json "$plan_file" > "$plan_json"
 
 command -v jq >/dev/null || {

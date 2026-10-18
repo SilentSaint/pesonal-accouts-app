@@ -107,7 +107,7 @@ The local release has these fail-closed stages:
 3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
    guarded deployment script only after the comparison succeeds.
 4. The deployment script builds Lambda artifacts, creates a saved Terraform plan with
-   `-var="environment=dev"`, verifies that the production DynamoDB table (`ExpenseTrackerData`)
+   `-var="environment=dev"` and `-var="deletion_protection_enabled=true"`, verifies that the production DynamoDB table (`ExpenseTrackerData`)
    has deletion protection enabled (`deletion_protection_enabled = true`) in the reviewed plan, verifies
    that the existing production web bucket (`aws_s3_bucket.web_app_bucket`) is not scheduled for deletion
    or destructive replacement, and reads the planned endpoint and publication outputs before any AWS mutation.
@@ -147,7 +147,7 @@ apply with `-lock=false`.
 ## Backup and restore verification
 
 The DynamoDB table has point-in-time recovery (PITR), encryption at rest, and production-only
-deletion protection enabled in Terraform.
+deletion protection enabled in Terraform (`deletion_protection_enabled = var.deletion_protection_enabled || contains(["prod", "production"], var.environment)`). Non-production stacks default to `deletion_protection_enabled = false` to allow teardown.
 
 > [!NOTE]
 > The scheduled GitHub Actions workflow `Verify DynamoDB Backup Restore` (`.github/workflows/verify-dynamodb-restore.yml`) has been retired alongside hosted CI/CD. The verification procedure below is preserved as historical context and operational guidance for manual AWS backup/restore tests:

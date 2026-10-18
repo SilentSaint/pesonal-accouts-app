@@ -9,6 +9,15 @@ const root = path.resolve(__dirname, '../..');
 const deployScriptSource = path.join(root, 'scripts', 'deploy_and_build.sh');
 const manualDeployScriptSource = path.join(root, 'scripts', 'manual_production_deploy.sh');
 
+function getDeclaredWebBucketAddress() {
+  const terraformMain = fs.readFileSync(path.join(root, 'terraform', 'main.tf'), 'utf8');
+  const outputMatch = terraformMain.match(
+    /output\s+"s3_web_bucket_name"\s*\{[\s\S]*?value\s*=\s*(aws_s3_bucket\.[a-zA-Z0-9_]+)\.id/,
+  );
+  assert.ok(outputMatch, 's3_web_bucket_name output must reference an aws_s3_bucket resource');
+  return outputMatch[1];
+}
+
 function writeExecutable(file, contents) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, contents);
@@ -284,7 +293,7 @@ fi
       },
       resource_changes: [
         {
-          address: 'aws_s3_bucket.web_app_bucket',
+          address: getDeclaredWebBucketAddress(),
           change: {
             actions: ['no-op'],
           },
@@ -366,6 +375,7 @@ test('planning enforces the pinned production environment variable', () => {
     assert.equal(result.status, 0);
     const events = fs.readFileSync(fixture.log, 'utf8');
     assert.match(events, /terraform .* plan .* -var=environment=dev/);
+    assert.match(events, /terraform .* plan .* -var=deletion_protection_enabled=true/);
   } finally {
     removeFixture(fixture);
   }
@@ -374,6 +384,7 @@ test('planning enforces the pinned production environment variable', () => {
 test('deployment fails closed when the reviewed plan attempts to destroy or replace the production web bucket', () => {
   const fixture = createFixture();
   try {
+    const declaredWebBucketAddress = getDeclaredWebBucketAddress();
     fs.writeFileSync(
       fixture.planJson,
       JSON.stringify({
@@ -400,7 +411,7 @@ test('deployment fails closed when the reviewed plan attempts to destroy or repl
         },
         resource_changes: [
           {
-            address: 'aws_s3_bucket.web_app_bucket',
+            address: declaredWebBucketAddress,
             change: {
               actions: ['delete', 'create'],
             },
@@ -412,7 +423,9 @@ test('deployment fails closed when the reviewed plan attempts to destroy or repl
     assert.notEqual(result.status, 0);
     assert.match(
       result.stderr,
-      /Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_app_bucket/,
+      new RegExp(
+        `Refusing deployment: reviewed plan would destroy or replace existing production web bucket ${declaredWebBucketAddress.replace('.', '\\.')}`,
+      ),
     );
     const events = fs.readFileSync(fixture.log, 'utf8');
     assert.doesNotMatch(events, /terraform .* apply/);
