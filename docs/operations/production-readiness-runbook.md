@@ -109,7 +109,7 @@ The local release has these fail-closed stages:
 4. The deployment script builds Lambda artifacts, creates a saved Terraform plan with
    `-var="environment=dev"`, verifies that the production DynamoDB table (`ExpenseTrackerData`)
    has deletion protection enabled (`deletion_protection_enabled = true`) in the reviewed plan, verifies
-   that the existing production web bucket (`aws_s3_bucket.web_bucket`) is not scheduled for deletion
+   that the existing production web bucket (`aws_s3_bucket.web_app_bucket`) is not scheduled for deletion
    or destructive replacement, and reads the planned endpoint and publication outputs before any AWS mutation.
    It then builds the web and Android artifacts using those planned endpoints. A plan with deletion
    protection disabled, bucket replacement scheduled, or a failed artifact build stops before Terraform apply.

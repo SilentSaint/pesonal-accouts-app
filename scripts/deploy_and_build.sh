@@ -114,11 +114,11 @@ if [[ "$planned_table_deletion_protection" != "true" ]]; then
 fi
 
 planned_bucket_actions="$(jq -r '
-  (.resource_changes[]? | select(.address == "aws_s3_bucket.web_bucket") | .change.actions[]) // empty
+  (.resource_changes[]? | select(.address == "aws_s3_bucket.web_app_bucket") | .change.actions[]) // empty
 ' "$plan_json")"
 
 if grep -Eq '^(delete)$' <<<"$planned_bucket_actions"; then
-  echo "Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_bucket." >&2
+  echo "Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_app_bucket." >&2
   exit 1
 fi
 

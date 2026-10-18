@@ -97,4 +97,22 @@ test('Terraform enables DynamoDB deletion protection for production environments
   );
 });
 
+test('deploy_and_build.sh bucket replacement guard targets the declared Terraform web bucket resource', () => {
+  const terraform = readTerraformModule();
+  const deployScript = fs.readFileSync(path.join(root, 'scripts', 'deploy_and_build.sh'), 'utf8');
+
+  assert.match(terraform, /resource\s+"aws_s3_bucket"\s+"web_app_bucket"/);
+  assert.match(terraform, /output\s+"s3_web_bucket_name"\s*\{\s*value\s*=\s*aws_s3_bucket\.web_app_bucket\.id/);
+
+  assert.match(
+    deployScript,
+    /select\(\.address\s*==\s*"aws_s3_bucket\.web_app_bucket"\)/,
+  );
+  assert.match(
+    deployScript,
+    /Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket\.web_app_bucket\./,
+  );
+});
+
+
 

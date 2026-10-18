@@ -284,7 +284,7 @@ fi
       },
       resource_changes: [
         {
-          address: 'aws_s3_bucket.web_bucket',
+          address: 'aws_s3_bucket.web_app_bucket',
           change: {
             actions: ['no-op'],
           },
@@ -400,7 +400,7 @@ test('deployment fails closed when the reviewed plan attempts to destroy or repl
         },
         resource_changes: [
           {
-            address: 'aws_s3_bucket.web_bucket',
+            address: 'aws_s3_bucket.web_app_bucket',
             change: {
               actions: ['delete', 'create'],
             },
@@ -412,7 +412,7 @@ test('deployment fails closed when the reviewed plan attempts to destroy or repl
     assert.notEqual(result.status, 0);
     assert.match(
       result.stderr,
-      /Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_bucket/,
+      /Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_app_bucket/,
     );
     const events = fs.readFileSync(fixture.log, 'utf8');
     assert.doesNotMatch(events, /terraform .* apply/);
