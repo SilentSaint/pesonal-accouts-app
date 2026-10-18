@@ -25,8 +25,8 @@ jobs:
     # events do not share this selector queue, so they cannot displace a pending
     # deletion revocation while reconciliation cancels.
     concurrency:
-      group: ${{ github.event.action == 'deleted' && format('codex-approval-{0}-{1}', github.repository, github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
-      cancel-in-progress: ${{ github.event.action == 'deleted' }}
+      group: ${{ (github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && format('codex-approval-{0}-{1}', github.repository, github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
+      cancel-in-progress: ${{ github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

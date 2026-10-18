@@ -2131,5 +2131,97 @@ test('reconciliation refreshes review activity before publishing success to catc
   assert.ok(published[1].description.includes('negative-reaction-review-required'));
 });
 
+test('target selection persists negative review feedback before reconciliation can be queued', async () => {
+  const calls = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request_review_comment',
+    payload: {
+      action: 'created',
+      pull_request: { number: 177, head: { sha: headSha } },
+      comment: { id: 11, user: { login: bot }, body: 'This query needs pagination.' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith('/pulls/177')) {
+        return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+      }
+      if (url.endsWith(`/statuses/${headSha}`)) return responseFor({});
+      throw new Error(`Unexpected API URL: ${url}`);
+    },
+  });
+
+  assert.deepEqual(targets, [{ number: 177, head_sha: headSha }]);
+  const revocation = calls.find((call) => call.options.method === 'POST');
+  assert.ok(revocation, 'negative review feedback must be persisted before reconciliation is queued');
+  assert.deepEqual(JSON.parse(revocation.options.body), {
+    state: 'failure',
+    context: 'codex-approval',
+    description: 'A newer inline Codex review comment requires fresh review resolution.',
+  });
+});
+
+test('reconciliation fails closed when the PR base changes while reconciliation is in flight', async () => {
+  const published = [];
+  const statusHistory = [];
+  let prCalls = 0;
+  const newBaseSha = 'f'.repeat(40);
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      prCalls++;
+      if (prCalls === 1) {
+        return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+      }
+      return responseFor({ state: 'open', base: { ref: 'main', sha: newBaseSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([...statusHistory]);
+    if (url.includes('/statuses/')) {
+      const status = JSON.parse(options.body);
+      published.push(status);
+      statusHistory.unshift({
+        context: STATUS_CONTEXT,
+        state: status.state,
+        created_at: '2026-10-06T10:05:00Z',
+        description: status.description,
+        creator: { login: 'github-actions[bot]' },
+      });
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: headSha } }]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(prCalls, 2, 'PR details should be re-fetched before publishing success');
+  assert.deepEqual(published.map(status => status.state), ['pending', 'failure']);
+  assert.ok(published[1].description.includes('base-change-review-required'));
+});
+
+
 
 

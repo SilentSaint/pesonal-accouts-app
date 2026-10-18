@@ -266,13 +266,15 @@ code. This status represents only
 the Codex authorization signal, not the local Docker gate or other merge
 requirements.
 
-Deleting Codex-authored feedback immediately publishes a failure status with a
-durable deleted-feedback revocation marker on the live PR head, even if the PR
+Deleting Codex-authored feedback or receiving new negative Codex review activity
+immediately publishes a failure status with a durable deleted-feedback revocation marker
+or negative review failure on the live PR head, even if the PR
 is closed or temporarily targets another base, before the reconcile job enters
-its per-PR concurrency queue. General events do not share the selector's per-PR
-concurrency queue, so they cannot displace a pending deletion revocation while
-reconciliation cancels. This marker persists
-across scheduled runs; the reconciler reads trusted status history, so an older
+its per-PR concurrency queue. Negative Codex review activity and deletions share
+the per-PR queue with `cancel-in-progress: true` to preempt any running
+reconciliation, while general events do not share this selector queue so they
+cannot displace a pending revocation while reconciliation cancels. This deleted-feedback revocation marker
+persists across scheduled runs; the reconciler reads trusted status history, so an older
 approval that remains visible in GitHub cannot restore authorization.
 Only a current-head Codex approval or reaction recorded after that marker can
 restore the status to success.
@@ -281,10 +283,10 @@ Commit statuses are scoped only by commit SHA and context, so authorization
 requires the PR's current head SHA to be unique across open pull requests.
 If multiple open pull requests share the same head commit, authorization fails
 closed to prevent status cross-contamination. Before publishing a success
-status, the reconciler re-validates the live open pull request set, status
-history, and fresh review activity (comments, reviews, and reactions) to prevent
-in-flight negative feedback, duplicate PR heads, or deletion revocations from
-being overwritten.
+status, the reconciler re-validates the live pull request, base SHA, open pull
+request set, status history, and fresh review activity (comments, reviews, and
+reactions) to prevent in-flight base changes, negative feedback, duplicate PR
+heads, or deletion revocations from being overwritten.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a

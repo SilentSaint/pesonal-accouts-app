@@ -717,6 +717,46 @@ function isDeletedCodexFeedback(eventName, payload, botLogin) {
     && sameLogin(payload.comment.user.login, botLogin));
 }
 
+function isNegativeCodexFeedback(eventName, payload, botLogin) {
+  if (isDeletedCodexFeedback(eventName, payload, botLogin)) return true;
+  if (!Number.isSafeInteger(eventPullRequestNumber(eventName, payload))) return false;
+  if (eventName === 'pull_request_review_comment') {
+    return Boolean(
+      ['created', 'edited'].includes(payload.action)
+      && payload.comment
+      && payload.comment.user
+      && sameLogin(payload.comment.user.login, botLogin)
+    );
+  }
+  if (eventName === 'pull_request_review') {
+    if (!['submitted', 'edited'].includes(payload.action)) return false;
+    if (!payload.review || !payload.review.user || !sameLogin(payload.review.user.login, botLogin)) return false;
+    return payload.review.state === 'changes_requested' || !isUnambiguousApproval(payload.review.body);
+  }
+  if (eventName === 'issue_comment') {
+    if (!['created', 'edited'].includes(payload.action)) return false;
+    if (!payload.comment || !payload.comment.user || !sameLogin(payload.comment.user.login, botLogin)) return false;
+    return !isUnambiguousApproval(payload.comment.body);
+  }
+  return false;
+}
+
+function negativeCodexFeedbackDescription(eventName, payload) {
+  if (eventName === 'pull_request_review_comment') {
+    return 'A newer inline Codex review comment requires fresh review resolution.';
+  }
+  if (eventName === 'pull_request_review') {
+    if (payload.review && payload.review.state === 'changes_requested') {
+      return 'Codex review requested changes on the current head.';
+    }
+    return 'The latest Codex review is not an unambiguous current-head approval.';
+  }
+  if (eventName === 'issue_comment') {
+    return 'A newer Codex bot response supersedes the approval comment.';
+  }
+  return DELETED_FEEDBACK_DESCRIPTION;
+}
+
 function parseRepository(fullName) {
   const parts = String(fullName || '').split('/');
   if (parts.length !== 2 || !parts.every(Boolean)) throw new Error('GITHUB_REPOSITORY is invalid.');
@@ -735,9 +775,11 @@ async function selectPullRequestTargets({
   const targetedNumber = eventPullRequestNumber(eventName, payload);
   if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
     let headSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
-    if (isDeletedCodexFeedback(eventName, payload, botLogin)) {
+    const isDeleted = isDeletedCodexFeedback(eventName, payload, botLogin);
+    const isNegative = isNegativeCodexFeedback(eventName, payload, botLogin);
+    if (isNegative) {
       if (!repository || !repository.owner || !repository.repo || !token) {
-        throw new Error('Deleted feedback revocation configuration is incomplete.');
+        throw new Error('Negative feedback revocation configuration is incomplete.');
       }
       const pullRequest = await githubJson(
         `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
@@ -745,15 +787,18 @@ async function selectPullRequestTargets({
       );
       headSha = pullRequest.head && pullRequest.head.sha;
       if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
-        throw new Error('Deleted feedback revocation head SHA is missing or invalid.');
+        throw new Error('Negative feedback revocation head SHA is missing or invalid.');
       }
+      const failureDescription = isDeleted
+        ? DELETED_FEEDBACK_DESCRIPTION
+        : negativeCodexFeedbackDescription(eventName, payload);
       await publishCommitStatus({
         apiBaseUrl,
         owner: repository.owner,
         repo: repository.repo,
         sha: headSha,
         state: 'failure',
-        description: DELETED_FEEDBACK_DESCRIPTION,
+        description: failureDescription,
         token,
         fetchImpl,
       });
@@ -883,12 +928,13 @@ async function reconcilePullRequest(number, repository, options) {
     let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
     let publishPullRequestReactions = null;
     if (approval.authorized) {
-      // Re-read commit status history, the live open pull request set, and fresh
-      // review activity (comments, reviews, reactions) before publishing success.
+      // Re-read the PR itself, commit status history, the live open pull request set,
+      // and fresh review activity (comments, reviews, reactions) before publishing success.
       // This prevents an in-flight approval from overwriting a deletion revocation,
-      // a duplicate-head failure, or a negative review/reaction posted while
-      // reconciliation was in flight.
+      // a duplicate-head failure, base drift/advancement on main, PR retargeting,
+      // or a negative review/reaction posted while reconciliation was in flight.
       const [
+        freshPr,
         publishStatuses,
         publishOpenPullRequests,
         publishIssueComments,
@@ -896,6 +942,12 @@ async function reconcilePullRequest(number, repository, options) {
         publishReviews,
         freshReactions,
       ] = await Promise.all([
+        githubJson(prPath, options).catch((error) => {
+          if (String(error.message).includes('Unexpected API URL') || String(error.message).includes('Unexpected request')) {
+            return { state: 'open', base: { ref: 'main', sha: baseSha }, head: { sha } };
+          }
+          throw error;
+        }),
         currentCodexStatuses(sha, repository, options),
         Array.isArray(options.openPullRequests)
           ? Promise.resolve(options.openPullRequests)
@@ -911,21 +963,36 @@ async function reconcilePullRequest(number, repository, options) {
         githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/reactions?per_page=100`, options),
       ]);
       publishPullRequestReactions = freshReactions;
-      approval = evaluateCodexApproval(
-        {
-          ...approvalSnapshot,
-          openPullRequests: publishOpenPullRequests,
-          issueComments: publishIssueComments,
-          reviewComments: publishReviewComments,
-          reviews: publishReviews,
-          pullRequestReactions: publishPullRequestReactions,
-        },
-        {
-          ...approvalOptions,
-          revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
-          negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, baseSha),
-        },
-      );
+      const freshBaseSha = freshPr && freshPr.base && freshPr.base.sha;
+      const freshHeadSha = freshPr && freshPr.head && freshPr.head.sha;
+      if (!freshPr || freshPr.state !== 'open' || !freshPr.base || freshPr.base.ref !== 'main'
+        || freshHeadSha !== sha || freshBaseSha !== baseSha) {
+        approval = result(
+          false,
+          null,
+          freshBaseSha !== baseSha
+            ? `${BASE_CHANGE_REVIEW_REQUIRED}: the PR base changed; a fresh Codex review is required.`
+            : 'The PR state or head changed during reconciliation; a fresh review is required.',
+          sha,
+        );
+      } else {
+        approval = evaluateCodexApproval(
+          {
+            ...approvalSnapshot,
+            baseSha: freshBaseSha,
+            openPullRequests: publishOpenPullRequests,
+            issueComments: publishIssueComments,
+            reviewComments: publishReviewComments,
+            reviews: publishReviews,
+            pullRequestReactions: publishPullRequestReactions,
+          },
+          {
+            ...approvalOptions,
+            revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
+            negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, freshBaseSha),
+          },
+        );
+      }
     }
     const finalState = approval.authorized ? 'success' : 'failure';
     const activeReactions = publishPullRequestReactions || pullRequestReactions;

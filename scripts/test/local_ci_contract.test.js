@@ -571,7 +571,7 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(workflow, /initial policy installation therefore needs the owner's normal bootstrap merge/i);
 });
 
-test('a deleted Codex feedback event preempts a saturated event queue to record its revocation', () => {
+test('a deleted or negative Codex feedback event preempts a saturated event queue to record its revocation', () => {
   const action = read('.github/workflows/codex-approval-status.yml');
   const selectorJob = action.split('\n  reconcile:\n')[0];
   const reconcileJob = action.split('\n  reconcile:\n')[1];
@@ -579,12 +579,12 @@ test('a deleted Codex feedback event preempts a saturated event queue to record 
   assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
   assert.match(
     selectorJob,
-    /group:\s*\$\{\{\s*github\.event\.action\s*==\s*'deleted'\s*&&[\s\S]*format\('codex-approval-\{0\}-\{1\}'[\s\S]*format\('codex-approval-select-\{0\}-\{1\}'/,
+    /group:\s*\$\{\{\s*\(?github\.event\.action\s*==\s*'deleted'[\s\S]*format\('codex-approval-\{0\}-\{1\}'[\s\S]*format\('codex-approval-select-\{0\}-\{1\}'/,
   );
   assert.doesNotMatch(selectorJob, /queue:\s*max/);
   assert.match(
     selectorJob,
-    /cancel-in-progress:\s*\$\{\{\s*github\.event\.action\s*==\s*'deleted'\s*\}\}/,
+    /cancel-in-progress:\s*\$\{\{\s*\(?github\.event\.action\s*==\s*'deleted'/,
   );
   assert.match(reconcileJob, /queue:\s*max/);
   assert.match(reconcileJob, /cancel-in-progress:\s*false/);
