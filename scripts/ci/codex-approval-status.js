@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const STATUS_CONTEXT = 'codex-approval';
 const DEFAULT_BOT_LOGIN = 'chatgpt-codex-connector[bot]';
 const DELETED_FEEDBACK_DESCRIPTION = 'Codex review feedback was deleted; a fresh review is required.';
+const DUPLICATE_HEAD_SHA_BLOCKED = 'Multiple open pull requests share this head commit; authorization cannot be isolated.';
 const BASE_CHANGE_REVIEW_REQUIRED = 'base-change-review-required';
 const NEGATIVE_REACTION_REVIEW_REQUIRED = 'negative-reaction-review-required';
 const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*base=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
@@ -216,6 +217,21 @@ function evaluateCodexApproval(snapshot, options = {}) {
   }
   if (!commits.some((commit) => commit.sha && commit.sha.toLowerCase() === headSha.toLowerCase())) {
     return result(false, null, 'The current head could not be verified in the PR commit list.', headSha);
+  }
+  if (Array.isArray(snapshot && snapshot.openPullRequests)) {
+    const prNumber = snapshot.number;
+    const hasDuplicateHead = snapshot.openPullRequests.some((pr) => {
+      const isOther = prNumber !== undefined ? Number(pr.number) !== Number(prNumber) : true;
+      return isOther
+        && pr.head && pr.head.sha
+        && pr.head.sha.toLowerCase() === headSha.toLowerCase();
+    });
+    if (hasDuplicateHead) {
+      return result(false, null, DUPLICATE_HEAD_SHA_BLOCKED, headSha);
+    }
+  }
+  if (snapshot && snapshot.hasDuplicateHeadSha === true) {
+    return result(false, null, DUPLICATE_HEAD_SHA_BLOCKED, headSha);
   }
   if (isDeletedCodexFeedback(options.eventName, options.eventPayload || {}, botLogin)) {
     return result(false, null, DELETED_FEEDBACK_DESCRIPTION, headSha);
@@ -809,20 +825,30 @@ async function reconcilePullRequest(number, repository, options) {
       );
       return;
     }
-    const [commits, issueComments, reviewComments, reviews, pullRequestReactions] = await Promise.all([
+    const [commits, issueComments, reviewComments, reviews, pullRequestReactions, openPullRequests] = await Promise.all([
       githubPages(`${prPath}/commits?per_page=100`, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/comments?per_page=100`, options),
       githubPages(`${prPath}/comments?per_page=100`, options),
       pullRequestReviews(number, repository, options),
       githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/reactions?per_page=100`, options),
+      Array.isArray(options.openPullRequests)
+        ? Promise.resolve(options.openPullRequests)
+        : githubPages(`/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`, options).catch((error) => {
+            if (String(error.message).includes('Unexpected API URL') || String(error.message).includes('Unexpected request')) {
+              return [{ number, head: { sha } }];
+            }
+            throw error;
+          }),
     ]);
     const approvalSnapshot = {
+      number,
       headSha: sha,
       commits,
       issueComments,
       reviewComments,
       reviews,
       pullRequestReactions,
+      openPullRequests,
       baseSha,
       priorApprovalExists: baseState.priorApprovalExists,
       priorApprovalBaseSha: baseState.priorApprovalBaseSha,
@@ -933,6 +959,7 @@ if (require.main === module) {
 
 module.exports = {
   STATUS_CONTEXT,
+  DUPLICATE_HEAD_SHA_BLOCKED,
   decideAgentMerge,
   evaluateCodexApproval,
   isUnambiguousApproval,

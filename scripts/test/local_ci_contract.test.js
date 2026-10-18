@@ -579,7 +579,7 @@ test('a deleted Codex feedback event preempts a saturated event queue to record 
   assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
   assert.match(
     selectorJob,
-    /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*github\.event\.issue\.number\s*\|\|\s*github\.event\.pull_request\.number\s*\|\|\s*github\.event\.number\s*\|\|\s*github\.run_id\s*\}\}/,
+    /group:\s*\$\{\{\s*github\.event\.action\s*==\s*'deleted'\s*&&[\s\S]*format\('codex-approval-\{0\}-\{1\}'[\s\S]*format\('codex-approval-select-\{0\}-\{1\}'/,
   );
   assert.doesNotMatch(selectorJob, /queue:\s*max/);
   assert.match(
@@ -589,3 +589,20 @@ test('a deleted Codex feedback event preempts a saturated event queue to record 
   assert.match(reconcileJob, /queue:\s*max/);
   assert.match(reconcileJob, /cancel-in-progress:\s*false/);
 });
+
+test('authorization requires head SHA uniqueness across open pull requests to prevent status contamination', () => {
+  const workflow = read('docs/engineering/workflow.md');
+  assert.match(
+    workflow,
+    /Commit statuses are scoped only by commit SHA and context/i,
+  );
+  assert.match(
+    workflow,
+    /unique across (?:all )?open pull requests/i,
+  );
+  assert.match(
+    workflow,
+    /multiple open pull requests share the same head commit[\s\S]*fails\s+closed/i,
+  );
+});
+

@@ -266,11 +266,18 @@ requirements.
 Deleting Codex-authored feedback immediately publishes a failure status with a
 durable deleted-feedback revocation marker on the live PR head, even if the PR
 is closed or temporarily targets another base, before the reconcile job enters
-its per-PR concurrency queue. This marker persists
+its per-PR concurrency queue. General events do not share the selector's per-PR
+concurrency queue, so they cannot displace a pending deletion revocation while
+reconciliation cancels. This marker persists
 across scheduled runs; the reconciler reads trusted status history, so an older
 approval that remains visible in GitHub cannot restore authorization.
 Only a current-head Codex approval or reaction recorded after that marker can
 restore the status to success.
+
+Commit statuses are scoped only by commit SHA and context, so authorization
+requires the PR's current head SHA to be unique across open pull requests.
+If multiple open pull requests share the same head commit, authorization fails
+closed to prevent status cross-contamination.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a

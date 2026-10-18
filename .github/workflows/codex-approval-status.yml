@@ -21,10 +21,11 @@ permissions: {}
 jobs:
   select-pull-requests:
     # A deletion must preempt any same-PR reconciliation, rather than join its
-    # bounded queue: GitHub rejects arrivals after 100 queued jobs. The selector
-    # then writes the durable failure marker before another reconciliation runs.
+    # bounded queue: GitHub rejects arrivals after 100 queued jobs. General
+    # events do not share this selector queue, so they cannot displace a pending
+    # deletion revocation while reconciliation cancels.
     concurrency:
-      group: codex-approval-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id }}
+      group: ${{ github.event.action == 'deleted' && format('codex-approval-{0}-{1}', github.repository, github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
       cancel-in-progress: ${{ github.event.action == 'deleted' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

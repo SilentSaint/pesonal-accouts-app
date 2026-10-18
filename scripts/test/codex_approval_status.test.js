@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   STATUS_CONTEXT,
+  DUPLICATE_HEAD_SHA_BLOCKED,
   evaluateCodexApproval,
   decideAgentMerge,
   publishCommitStatus,
@@ -1890,3 +1891,91 @@ test('review events preserve a fallback head SHA while scheduled discovery selec
   });
   assert.deepEqual(issueCommentPR, [{ number: 177, head_sha: headSha }]);
 });
+
+test('approval evaluation fails closed when multiple open pull requests share the head commit', () => {
+  assert.deepEqual(
+    evaluateCodexApproval(
+      snapshot({
+        number: 177,
+        openPullRequests: [
+          { number: 177, head: { sha: headSha } },
+          { number: 179, head: { sha: headSha } },
+        ],
+      }),
+    ),
+    {
+      authorized: false,
+      signal: null,
+      reason: DUPLICATE_HEAD_SHA_BLOCKED,
+      headSha,
+    },
+  );
+
+  assert.equal(
+    evaluateCodexApproval(
+      snapshot({
+        number: 177,
+        openPullRequests: [
+          { number: 177, head: { sha: headSha } },
+          { number: 179, head: { sha: otherSha } },
+        ],
+      }),
+    ).authorized,
+    true,
+  );
+});
+
+test('reconciliation publishes failure when another open pull request shares the head commit', async () => {
+  const published = [];
+  const statusHistory = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([...statusHistory]);
+    if (url.includes('/statuses/')) {
+      const status = JSON.parse(options.body);
+      published.push(status);
+      statusHistory.unshift({
+        context: STATUS_CONTEXT,
+        state: status.state,
+        created_at: '2026-10-06T10:05:00Z',
+        description: status.description,
+        creator: { login: 'github-actions[bot]' },
+      });
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([
+        { number: 177, head: { sha: headSha } },
+        { number: 180, head: { sha: headSha } },
+      ]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.deepEqual(published.map(status => status.state), ['pending', 'failure']);
+  assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+});
+
