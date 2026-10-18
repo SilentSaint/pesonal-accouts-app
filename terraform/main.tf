@@ -17,7 +17,7 @@ resource "aws_dynamodb_table" "expense_tracker_data" {
   billing_mode                = "PAY_PER_REQUEST"
   hash_key                    = "PK"
   range_key                   = "SK"
-  deletion_protection_enabled = var.environment == "prod"
+  deletion_protection_enabled = contains(["prod", "production"], var.environment)
 
   attribute {
     name = "PK"

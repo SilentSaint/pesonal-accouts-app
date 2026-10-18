@@ -93,11 +93,21 @@ command -v jq >/dev/null || {
   exit 1
 }
 
+planned_table_deletion_protection="$(jq -r '
+  (.planned_values.root_module.resources[]? | select(.address == "aws_dynamodb_table.expense_tracker_data") | .values.deletion_protection_enabled) // empty
+' "$plan_json")"
+
+if [[ "$planned_table_deletion_protection" != "true" ]]; then
+  echo "Refusing deployment: production DynamoDB table ExpenseTrackerData must have deletion protection enabled in the reviewed plan (got '${planned_table_deletion_protection:-empty}')." >&2
+  exit 1
+fi
+
 planned_output() {
   local output_name="$1"
   jq -er --arg output_name "$output_name" \
     '.planned_values.outputs[$output_name].value // empty' "$plan_json"
 }
+
 
 api_url="$(planned_output api_gateway_url)"
 websocket_url="$(planned_output websocket_sync_url)"

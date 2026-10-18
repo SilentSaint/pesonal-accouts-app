@@ -106,10 +106,12 @@ The local release has these fail-closed stages:
    from the remote to prevent race conditions if `main` advanced during validation.
 3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
    guarded deployment script only after the comparison succeeds.
-4. The deployment script builds Lambda artifacts, creates a saved Terraform plan, and
+4. The deployment script builds Lambda artifacts, creates a saved Terraform plan with
+   `-var="environment=production"`, verifies that the production DynamoDB table (`ExpenseTrackerData`)
+   has deletion protection enabled (`deletion_protection_enabled = true`) in the reviewed plan, and
    reads the planned endpoint and publication outputs before any AWS mutation. It then
-   builds the web and Android artifacts using those planned endpoints. A failed artifact
-   build stops before Terraform apply.
+   builds the web and Android artifacts using those planned endpoints. A plan with deletion
+   protection disabled or a failed artifact build stops before Terraform apply.
 5. The script applies that exact saved plan, verifies that the applied Terraform outputs
    still equal the values used to build the artifacts, then publishes the web artifact.
    Terraform failure or output drift stops the sequence before publication.

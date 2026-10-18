@@ -87,3 +87,13 @@ test('Terraform no longer manages the retired zero-spend budget', () => {
   assert.doesNotMatch(terraform, /resource\s+"aws_budgets_budget"\s+"free_tier_zero_budget"/);
   assert.doesNotMatch(terraform, /Zero-Spend-Free-Tier-Budget/);
 });
+
+test('Terraform enables DynamoDB deletion protection for production environments', () => {
+  const terraform = readTerraformModule();
+
+  assert.match(
+    terraform,
+    /deletion_protection_enabled\s*=\s*contains\(\["prod",\s*"production"\],\s*var\.environment\)/,
+  );
+});
+

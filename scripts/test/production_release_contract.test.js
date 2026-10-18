@@ -262,6 +262,18 @@ fi
     planJson,
     JSON.stringify({
       planned_values: {
+        root_module: {
+          resources: [
+            {
+              address: 'aws_dynamodb_table.expense_tracker_data',
+              type: 'aws_dynamodb_table',
+              name: 'expense_tracker_data',
+              values: {
+                deletion_protection_enabled: true,
+              },
+            },
+          ],
+        },
         outputs: {
           api_gateway_url: { value: 'https://api.example' },
           websocket_sync_url: { value: 'wss://websocket.example' },
@@ -350,6 +362,82 @@ test('planning enforces the pinned production environment variable', () => {
     removeFixture(fixture);
   }
 });
+
+test('deployment fails closed when the reviewed plan disables or omits DynamoDB deletion protection for the production table', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      fixture.planJson,
+      JSON.stringify({
+        planned_values: {
+          root_module: {
+            resources: [
+              {
+                address: 'aws_dynamodb_table.expense_tracker_data',
+                type: 'aws_dynamodb_table',
+                name: 'expense_tracker_data',
+                values: {
+                  deletion_protection_enabled: false,
+                },
+              },
+            ],
+          },
+          outputs: {
+            api_gateway_url: { value: 'https://api.example' },
+            websocket_sync_url: { value: 'wss://websocket.example' },
+            s3_web_bucket_name: { value: 'web-bucket' },
+            cloudfront_distribution_id: { value: 'distribution' },
+            cloudfront_web_url: { value: 'https://web.example' },
+          },
+        },
+      }),
+    );
+    const result = runDeployment(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /Refusing deployment: production DynamoDB table ExpenseTrackerData must have deletion protection enabled in the reviewed plan/,
+    );
+    const events = fs.readFileSync(fixture.log, 'utf8');
+    assert.doesNotMatch(events, /terraform .* apply/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('deployment fails closed when the reviewed plan omits the production DynamoDB table', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      fixture.planJson,
+      JSON.stringify({
+        planned_values: {
+          root_module: {
+            resources: [],
+          },
+          outputs: {
+            api_gateway_url: { value: 'https://api.example' },
+            websocket_sync_url: { value: 'wss://websocket.example' },
+            s3_web_bucket_name: { value: 'web-bucket' },
+            cloudfront_distribution_id: { value: 'distribution' },
+            cloudfront_web_url: { value: 'https://web.example' },
+          },
+        },
+      }),
+    );
+    const result = runDeployment(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /Refusing deployment: production DynamoDB table ExpenseTrackerData must have deletion protection enabled in the reviewed plan/,
+    );
+    const events = fs.readFileSync(fixture.log, 'utf8');
+    assert.doesNotMatch(events, /terraform .* apply/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
 
 test('applies the saved Terraform plan only after every release artifact builds', () => {
   const fixture = createFixture();
