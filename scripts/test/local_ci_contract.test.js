@@ -530,7 +530,7 @@ test('the Codex approval status bridge is least-privilege and never executes PR 
   assert.match(action, /--select-pr-targets/);
   assert.match(action, /pr_targets:\s*\$\{\{\s*steps\.select\.outputs\.pr_targets\s*\}\}/);
   assert.match(action, /matrix:[\s\S]*target:\s*\$\{\{\s*fromJSON\(needs\.select-pull-requests\.outputs\.pr_targets\)\s*\}\}/);
-  assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.number\s*\}\}/);
+  assert.match(action, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.match(action, /CODEX_PR_NUMBER:\s*\$\{\{\s*matrix\.target\.number\s*\}\}/);
   assert.match(action, /CODEX_PR_HEAD_SHA:\s*\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.doesNotMatch(action, /group:\s*codex-approval-reconcile/);
@@ -586,6 +586,7 @@ test('a deleted or negative Codex feedback event preempts a saturated event queu
     selectorJob,
     /cancel-in-progress:\s*\$\{\{\s*\(?github\.event\.action\s*==\s*'deleted'/,
   );
+  assert.match(reconcileJob, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.match(reconcileJob, /queue:\s*max/);
   assert.match(reconcileJob, /cancel-in-progress:\s*false/);
 });

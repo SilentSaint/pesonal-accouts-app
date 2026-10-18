@@ -286,7 +286,10 @@ closed to prevent status cross-contamination. Before publishing a success
 status, the reconciler re-validates the live pull request, base SHA, open pull
 request set, status history, and fresh review activity (comments, reviews, and
 reactions) to prevent in-flight base changes, negative feedback, duplicate PR
-heads, or deletion revocations from being overwritten.
+heads, or deletion revocations from being overwritten. Reconcile jobs are
+serialized by the target PR head commit SHA, and target selection immediately
+records duplicate-head failure when multiple open PRs share a head commit,
+preventing late parallel success writes from overwriting a duplicate-head failure.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a
@@ -294,8 +297,11 @@ base-change invalidation is active, the evidence must follow a valid
 request marker bound to the exact PR head and current base SHA. When multiple
 valid request markers exist for the current head and base in strictly ascending
 order, the latest valid request cycle is selected. Contradictory, ambiguous, or
-out-of-order request markers fail closed. A PR-level thumbs-up always requires
-exactly one recorded request marker. An older or previous-base
+out-of-order request markers fail closed. Cycle cap enforcement inspects all
+owner-authored request markers across the PR before filtering to the current
+head/base: any attempted cycle beyond 10, or attempt to reset the cap after
+cycle 10 has been requested on an older head, fails closed immediately. A PR-level
+thumbs-up always requires exactly one recorded request marker. An older or previous-base
 request, an edited old review, or a response delivered after a marker but
 originally submitted before it cannot qualify. When trusted history already
 establishes the same base, a fresh unambiguous exact-head Codex review comment

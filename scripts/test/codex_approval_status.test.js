@@ -2222,6 +2222,131 @@ test('reconciliation fails closed when the PR base changes while reconciliation 
   assert.ok(published[1].description.includes('base-change-review-required'));
 });
 
+test('cycle cap enforcement inspects owner markers before filtering and fails closed on cycle 11 even with an earlier cycle 10 request', () => {
+  const requests = [
+    requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 10),
+    requestForBase(otherSha, headSha, '2026-10-06T10:05:00Z', 11),
+  ];
+  const approval = review("Codex Review: Didn't find any major issues.");
+  const result = evaluateCodexApproval(snapshot({
+    issueComments: [...requests, approval],
+  }));
+  assert.equal(result.authorized, false);
+  assert.match(result.reason, /limit of ten cycles has been exceeded/i);
+});
+
+test('cycle cap enforcement fails closed when cycle 10 was requested on an earlier head and head changed', () => {
+  const requests = [
+    requestForBase(otherSha, '1111111111111111111111111111111111111111', '2026-10-06T10:00:00Z', 10),
+    requestForBase(otherSha, headSha, '2026-10-06T10:05:00Z', 1),
+  ];
+  const approval = review("Codex Review: Didn't find any major issues.");
+  const result = evaluateCodexApproval(snapshot({
+    issueComments: [...requests, approval],
+  }));
+  assert.equal(result.authorized, false);
+  assert.match(result.reason, /limit of ten cycles has been exceeded/i);
+});
+
+test('a clean cycle 10 on the current head proceeds to authorization', () => {
+  const request10 = requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 10);
+  const approval = review("Codex Review: Didn't find any major issues.");
+  const result = evaluateCodexApproval(snapshot({
+    issueComments: [request10, approval],
+  }));
+  assert.equal(result.authorized, true);
+});
+
+test('selectPullRequestTargets immediately persists failure when multiple open PRs share head commit', async () => {
+  const published = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/180')) {
+      return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
+    }
+    if (url.endsWith('/pulls?state=open&base=main&per_page=100')) {
+      return {
+        ok: true,
+        json: async () => [
+          { number: 177, head: { sha: headSha } },
+          { number: 180, head: { sha: headSha } },
+        ],
+        headers: { get: () => null },
+      };
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request',
+    payload: { pull_request: { number: 180, head: { sha: headSha } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+});
+
+test('reconciliation does not overwrite an existing duplicate-head failure status with success', async () => {
+  const published = [];
+  const duplicateStatus = {
+    context: STATUS_CONTEXT,
+    state: 'failure',
+    description: DUPLICATE_HEAD_SHA_BLOCKED,
+    created_at: '2026-10-06T10:04:30Z',
+    creator: { login: 'github-actions[bot]' },
+  };
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([duplicateStatus]);
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: headSha } }]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(published.length, 2);
+  assert.equal(published[0].state, 'pending');
+  assert.equal(published[1].state, 'failure');
+  assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+});
+
+
 
 
 

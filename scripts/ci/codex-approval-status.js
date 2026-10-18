@@ -158,6 +158,9 @@ function isUnambiguousApproval(body) {
 function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
   const requests = [];
   let ambiguous = false;
+  let capExceeded = false;
+  const allOwnerMarkers = [];
+
   for (const comment of issueComments) {
     const login = comment.user && comment.user.login;
     if (!allowedRequesters.some((allowed) => sameLogin(login, allowed))) continue;
@@ -169,22 +172,54 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
       continue;
     }
     for (const match of matches) {
-      if (match[1].toLowerCase() !== headSha.toLowerCase()) continue;
-      const requestBaseSha = match[2].toLowerCase();
-      if (requestBaseSha !== baseSha.toLowerCase()) continue;
+      const markerHeadSha = match[1].toLowerCase();
+      const markerBaseSha = match[2].toLowerCase();
       const cycle = Number(match[3]);
-      if (!Number.isInteger(cycle) || cycle < 1 || cycle > 10) continue;
-      // Request markers must be present on the original comment. GitHub does
-      // not expose comment edit history, so an edited marker has no provable
-      // creation time and cannot authorize a review.
       const requestTime = timestamp(comment.created_at);
       const requestUpdatedAt = timestamp(comment.updated_at);
-      if (requestTime === null || requestUpdatedAt === null || requestUpdatedAt !== requestTime) continue;
-      requests.push({ id: comment.id, headSha: match[1], baseSha: requestBaseSha, cycle, createdAt: requestTime });
+      const isUnedited = requestTime !== null && requestUpdatedAt !== null && requestUpdatedAt === requestTime;
+
+      // Inspect owner-authored cycle markers for cap violations before filtering to current head/base.
+      if (!Number.isInteger(cycle) || cycle < 1 || cycle > 10) {
+        capExceeded = true;
+        continue;
+      }
+      if (cycle === 10 && markerHeadSha !== headSha.toLowerCase()) {
+        capExceeded = true;
+        continue;
+      }
+      if (isUnedited) {
+        allOwnerMarkers.push({
+          id: comment.id,
+          headSha: markerHeadSha,
+          baseSha: markerBaseSha,
+          cycle,
+          createdAt: requestTime,
+        });
+      }
+
+      if (markerHeadSha !== headSha.toLowerCase()) continue;
+      if (markerBaseSha !== baseSha.toLowerCase()) continue;
+      if (!isUnedited) continue;
+      requests.push({ id: comment.id, headSha: match[1], baseSha: markerBaseSha, cycle, createdAt: requestTime });
     }
   }
-  return { ambiguous, requests };
+
+  allOwnerMarkers.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+  for (let i = 1; i < allOwnerMarkers.length; i++) {
+    if (allOwnerMarkers[i].cycle <= allOwnerMarkers[i - 1].cycle) {
+      capExceeded = true;
+      break;
+    }
+    if (allOwnerMarkers[i - 1].cycle === 10) {
+      capExceeded = true;
+      break;
+    }
+  }
+
+  return { ambiguous, requests, capExceeded };
 }
+
 
 function statusBaseSha(status) {
   const match = String(status && status.description || '').match(/(?:^|[;\s])base-sha=([a-f0-9]{40})(?=$|[;\s])/i);
@@ -267,6 +302,9 @@ function evaluateCodexApproval(snapshot, options = {}) {
     return result(false, null, 'The prior Codex approval was for a different PR base; a fresh review is required.', headSha);
   }
   const recorded = recordedRequests(issueComments, headSha, allowedRequesters, baseSha);
+  if (recorded.capExceeded) {
+    return result(false, null, 'The automated review cycle limit of ten cycles has been exceeded.', headSha);
+  }
   if (recorded.ambiguous) {
     return result(false, null, 'Multiple conflicting review requests are bound to the current PR head and base.', headSha);
   }
@@ -817,6 +855,28 @@ async function selectPullRequestTargets({
     if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
       throw new Error('Pull-request target head SHA is missing or invalid.');
     }
+    if (['pull_request', 'pull_request_target'].includes(eventName)) {
+      if (repository && repository.owner && repository.repo && token) {
+        const openPulls = await githubPages(
+          `/repos/${repository.owner}/${repository.repo}/pulls?state=open&base=main&per_page=100`,
+          { apiBaseUrl, token, fetchImpl },
+        ).catch(() => []);
+        const duplicateHeadPulls = openPulls.filter((pr) =>
+          pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
+        if (duplicateHeadPulls.length > 1) {
+          await publishCommitStatus({
+            apiBaseUrl,
+            owner: repository.owner,
+            repo: repository.repo,
+            sha: headSha,
+            state: 'failure',
+            description: DUPLICATE_HEAD_SHA_BLOCKED,
+            token,
+            fetchImpl,
+          });
+        }
+      }
+    }
     return [{ number: targetedNumber, head_sha: headSha }];
   }
   if (eventName === 'issue_comment') return [];
@@ -976,22 +1036,30 @@ async function reconcilePullRequest(number, repository, options) {
           sha,
         );
       } else {
-        approval = evaluateCodexApproval(
-          {
-            ...approvalSnapshot,
-            baseSha: freshBaseSha,
-            openPullRequests: publishOpenPullRequests,
-            issueComments: publishIssueComments,
-            reviewComments: publishReviewComments,
-            reviews: publishReviews,
-            pullRequestReactions: publishPullRequestReactions,
-          },
-          {
-            ...approvalOptions,
-            revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
-            negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, freshBaseSha),
-          },
-        );
+        const hasDuplicateHeadInStatuses = publishStatuses.some((status) =>
+          status.context === STATUS_CONTEXT
+          && status.state === 'failure'
+          && String(status.description || '').includes(DUPLICATE_HEAD_SHA_BLOCKED));
+        if (hasDuplicateHeadInStatuses) {
+          approval = result(false, null, DUPLICATE_HEAD_SHA_BLOCKED, sha);
+        } else {
+          approval = evaluateCodexApproval(
+            {
+              ...approvalSnapshot,
+              baseSha: freshBaseSha,
+              openPullRequests: publishOpenPullRequests,
+              issueComments: publishIssueComments,
+              reviewComments: publishReviewComments,
+              reviews: publishReviews,
+              pullRequestReactions: publishPullRequestReactions,
+            },
+            {
+              ...approvalOptions,
+              revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
+              negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, freshBaseSha),
+            },
+          );
+        }
       }
     }
     const finalState = approval.authorized ? 'success' : 'failure';

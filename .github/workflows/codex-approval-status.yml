@@ -25,7 +25,7 @@ jobs:
     # events do not share this selector queue, so they cannot displace a pending
     # deletion revocation while reconciliation cancels.
     concurrency:
-      group: ${{ (github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && format('codex-approval-{0}-{1}', github.repository, github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
+      group: ${{ (github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && format('codex-approval-{0}-{1}', github.repository, github.event.pull_request.head.sha || github.event.issue.number || github.event.pull_request.number || github.event.number || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
       cancel-in-progress: ${{ github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -67,9 +67,9 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.select-pull-requests.outputs.pr_targets) }}
     concurrency:
-      group: codex-approval-${{ github.repository }}-${{ matrix.target.number }}
-      # Share the durable per-PR queue with selection; never replace a pending
-      # deletion revocation.
+      group: codex-approval-${{ github.repository }}-${{ matrix.target.head_sha }}
+      # Share the durable per-head queue with selection; never replace a pending
+      # deletion revocation or duplicate-head failure.
       queue: max
       cancel-in-progress: false
     runs-on: ubuntu-latest
