@@ -2288,7 +2288,46 @@ test('selectPullRequestTargets selects PR targets for ordinary events without pu
   });
 
   assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
-  assert.equal(published.length, 0, 'ordinary selector must not publish status');
+  assert.equal(published.length, 0, 'ordinary selector must not publish duplicate failure when PR head is unique');
+});
+
+test('selectPullRequestTargets includes non-main PRs when checking for duplicate head commits', async () => {
+  const published = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/180')) {
+      return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return {
+        ok: true,
+        json: async () => [
+          { number: 177, head: { sha: headSha }, base: { ref: 'main' } },
+          { number: 180, head: { sha: headSha }, base: { ref: 'release' } },
+        ],
+        headers: { get: () => null },
+      };
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request',
+    payload: { pull_request: { number: 180, head: { sha: headSha } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha,
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
 });
 
 test('reconciliation publishes duplicate-head failure when multiple open PRs share head commit including non-main PRs', async () => {
@@ -2692,7 +2731,7 @@ test('resolveTargetHead returns empty string if API call fails', async () => {
   assert.equal(result, '');
 });
 
-test('selectPullRequestTargets persists negative feedback revocation even when explicitHeadSha is empty', async () => {
+test('selectPullRequestTargets persists negative feedback revocation when holding live head lock', async () => {
   const published = [];
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
@@ -2716,7 +2755,7 @@ test('selectPullRequestTargets persists negative feedback revocation even when e
     repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
     apiBaseUrl: 'https://api.github.com',
     token: 'test-token',
-    headSha: '', // empty explicitHeadSha from failed initial lookup
+    headSha, // explicitHeadSha matches liveHeadSha
     fetchImpl,
   });
 
@@ -2724,6 +2763,71 @@ test('selectPullRequestTargets persists negative feedback revocation even when e
   assert.equal(published.length, 1);
   assert.equal(published[0].state, 'failure');
   assert.match(published[0].description, /deleted/i);
+});
+
+test('selectPullRequestTargets delegates fallback revocation to reconciliation when explicitHeadSha is empty', async () => {
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', head: { sha: headSha } });
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'deleted',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: { id: 9, user: { login: bot }, body: 'The retry path still needs a fix.' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha: '', // empty explicitHeadSha from initial lookup failure
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 177, head_sha: headSha }]);
+  assert.equal(published.length, 0, 'must not write status without acquired live-head lock');
+});
+
+test('selectPullRequestTargets emits target for edited PR retarget even when explicitHeadSha is empty', async () => {
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', head: { sha: headSha } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: headSha }, base: { ref: 'feature' } }]);
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request_target',
+    payload: {
+      action: 'edited',
+      pull_request: { number: 177, head: { sha: headSha }, base: { ref: 'feature' } },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha: '', // transiently empty from resolve-target-head
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 177, head_sha: headSha }]);
 });
 
 test('reconcilePullRequest aborts and publishes no statuses when live PR head differs from options.headSha', async () => {

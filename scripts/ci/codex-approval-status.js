@@ -872,29 +872,59 @@ async function selectPullRequestTargets({
         return [];
       }
       const headSha = liveHeadSha;
-      const failureDescription = isDeleted
-        ? DELETED_FEEDBACK_DESCRIPTION
-        : negativeCodexFeedbackDescription(eventName, payload);
-      await publishCommitStatus({
-        apiBaseUrl,
-        owner: repository.owner,
-        repo: repository.repo,
-        sha: headSha,
-        state: 'failure',
-        description: failureDescription,
-        token,
-        fetchImpl,
-      });
+      if (explicitHeadSha !== '') {
+        const failureDescription = isDeleted
+          ? DELETED_FEEDBACK_DESCRIPTION
+          : negativeCodexFeedbackDescription(eventName, payload);
+        await publishCommitStatus({
+          apiBaseUrl,
+          owner: repository.owner,
+          repo: repository.repo,
+          sha: headSha,
+          state: 'failure',
+          description: failureDescription,
+          token,
+          fetchImpl,
+        });
+      }
       return [{ number: targetedNumber, head_sha: headSha }];
     }
     if (explicitHeadSha !== undefined) {
-      if (!explicitHeadSha || liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
-        // Abort: the PR advanced to a new head or resolution failed.
-        // The new head will be locked and handled by its own event workflow run.
-        return [];
+      if (explicitHeadSha) {
+        if (liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
+          // Abort: the PR advanced to a new head between resolve-target-head and selector execution.
+          // The new head will be locked and handled by its own event workflow run.
+          return [];
+        }
+      } else {
+        const isRetargetOrEdit = payload.action === 'edited'
+          || (pullRequest.base && pullRequest.base.ref !== 'main');
+        if (!isRetargetOrEdit) {
+          return [];
+        }
       }
     }
     const headSha = liveHeadSha;
+    if (['pull_request', 'pull_request_target'].includes(eventName)) {
+      const openPulls = await githubPages(
+        `/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`,
+        { apiBaseUrl, token, fetchImpl },
+      ).catch(() => []);
+      const duplicateHeadPulls = openPulls.filter((pr) =>
+        pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
+      if (duplicateHeadPulls.length > 1) {
+        await publishCommitStatus({
+          apiBaseUrl,
+          owner: repository.owner,
+          repo: repository.repo,
+          sha: headSha,
+          state: 'failure',
+          description: DUPLICATE_HEAD_SHA_BLOCKED,
+          token,
+          fetchImpl,
+        });
+      }
+    }
     return [{ number: targetedNumber, head_sha: headSha }];
   }
   if (eventName === 'issue_comment') return [];
