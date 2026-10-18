@@ -828,13 +828,9 @@ async function resolveTargetHead({
           return resolvedSha;
         }
       } catch {
-        // Fall back to payload head if live PR query fails
+        return '';
       }
     }
-  }
-  const payloadHeadSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
-  if (/^[a-f0-9]{40}$/i.test(payloadHeadSha || '')) {
-    return payloadHeadSha;
   }
   return '';
 }
@@ -851,28 +847,33 @@ async function selectPullRequestTargets({
 } = {}) {
   const targetedNumber = eventPullRequestNumber(eventName, payload);
   if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
-    let headSha = (/^[a-f0-9]{40}$/i.test(explicitHeadSha || '') ? explicitHeadSha : null)
-      || (payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha);
-    const isDeleted = isDeletedCodexFeedback(eventName, payload, botLogin);
-    const isNegative = isNegativeCodexFeedback(eventName, payload, botLogin);
-    if (isNegative) {
-      if (!repository || !repository.owner || !repository.repo || !token) {
-        throw new Error('Negative feedback revocation configuration is incomplete.');
-      }
-      const pullRequest = await githubJson(
+    if (!repository || !repository.owner || !repository.repo || !token) {
+      throw new Error('Pull-request target head could not be verified.');
+    }
+    let pullRequest = null;
+    try {
+      pullRequest = await githubJson(
         `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
         { apiBaseUrl, token, fetchImpl },
       );
-      const liveHeadSha = pullRequest.head && pullRequest.head.sha;
-      if (!/^[a-f0-9]{40}$/i.test(liveHeadSha || '')) {
-        throw new Error('Negative feedback revocation head SHA is missing or invalid.');
-      }
-      if (explicitHeadSha && liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
-        // Abort: the PR advanced to a new head between resolve-target-head and selector execution.
+    } catch {
+      throw new Error('Pull-request target head could not be verified.');
+    }
+    const liveHeadSha = pullRequest && pullRequest.head && pullRequest.head.sha;
+    if (!/^[a-f0-9]{40}$/i.test(liveHeadSha || '')) {
+      throw new Error('Pull-request target head SHA is missing or invalid.');
+    }
+    if (explicitHeadSha !== undefined) {
+      if (!explicitHeadSha || liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
+        // Abort: the PR advanced to a new head or resolution failed.
         // The new head will be locked and handled by its own event workflow run.
         return [];
       }
-      headSha = liveHeadSha;
+    }
+    const headSha = liveHeadSha;
+    const isDeleted = isDeletedCodexFeedback(eventName, payload, botLogin);
+    const isNegative = isNegativeCodexFeedback(eventName, payload, botLogin);
+    if (isNegative) {
       const failureDescription = isDeleted
         ? DELETED_FEEDBACK_DESCRIPTION
         : negativeCodexFeedbackDescription(eventName, payload);
@@ -888,42 +889,24 @@ async function selectPullRequestTargets({
       });
       return [{ number: targetedNumber, head_sha: headSha }];
     }
-    if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
-      if (!repository || !repository.owner || !repository.repo || !token) {
-        throw new Error('Pull-request target head could not be verified.');
-      }
-      const pullRequest = await githubJson(
-        `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
-        { apiBaseUrl, token, fetchImpl },
-      );
-      headSha = pullRequest.head && pullRequest.head.sha;
-    }
-    if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
-      throw new Error('Pull-request target head SHA is missing or invalid.');
-    }
-    if (explicitHeadSha && headSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
-      return [];
-    }
     if (['pull_request', 'pull_request_target'].includes(eventName)) {
-      if (repository && repository.owner && repository.repo && token) {
-        const openPulls = await githubPages(
-          `/repos/${repository.owner}/${repository.repo}/pulls?state=open&base=main&per_page=100`,
-          { apiBaseUrl, token, fetchImpl },
-        ).catch(() => []);
-        const duplicateHeadPulls = openPulls.filter((pr) =>
-          pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
-        if (duplicateHeadPulls.length > 1) {
-          await publishCommitStatus({
-            apiBaseUrl,
-            owner: repository.owner,
-            repo: repository.repo,
-            sha: headSha,
-            state: 'failure',
-            description: DUPLICATE_HEAD_SHA_BLOCKED,
-            token,
-            fetchImpl,
-          });
-        }
+      const openPulls = await githubPages(
+        `/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`,
+        { apiBaseUrl, token, fetchImpl },
+      ).catch(() => []);
+      const duplicateHeadPulls = openPulls.filter((pr) =>
+        pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
+      if (duplicateHeadPulls.length > 1) {
+        await publishCommitStatus({
+          apiBaseUrl,
+          owner: repository.owner,
+          repo: repository.repo,
+          sha: headSha,
+          state: 'failure',
+          description: DUPLICATE_HEAD_SHA_BLOCKED,
+          token,
+          fetchImpl,
+        });
       }
     }
     return [{ number: targetedNumber, head_sha: headSha }];

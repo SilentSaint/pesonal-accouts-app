@@ -53,12 +53,11 @@ jobs:
 
   select-pull-requests:
     needs: resolve-target-head
-    # A deletion or dismissal must preempt any same-commit reconciliation, rather than join its
-    # bounded queue: GitHub rejects arrivals after 100 queued jobs. General
-    # events do not share this selector queue, so they cannot displace a pending
-    # deletion revocation while reconciliation cancels.
+    # Selection must serialize with reconciliation under the same head SHA to ensure
+    # duplicate-head and negative-feedback status writes do not race with ongoing
+    # reconciliations. Deletions, dismissals, and negative feedback preempt via cancel-in-progress.
     concurrency:
-      group: ${{ (github.event.action == 'deleted' || github.event.action == 'dismissed' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
+      group: ${{ needs.resolve-target-head.outputs.head_sha != '' && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
       cancel-in-progress: ${{ (github.event.action == 'deleted' || github.event.action == 'dismissed' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && needs.resolve-target-head.outputs.head_sha != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

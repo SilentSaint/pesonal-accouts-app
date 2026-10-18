@@ -1859,7 +1859,7 @@ test('deleted feedback stays revoked when its PR is closed or retargeted before 
     'deletion revocation must persist even if the PR is closed or temporarily targets another base');
 });
 
-test('review events preserve a fallback head SHA while scheduled discovery selects open main PR heads', async () => {
+test('review events query live head SHA while scheduled discovery selects open main PR heads', async () => {
   const repository = { owner: 'SilentSaint', repo: 'pesonal-accouts-app' };
   const calls = [];
   const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
@@ -1869,7 +1869,13 @@ test('review events preserve a fallback head SHA while scheduled discovery selec
     repository,
     apiBaseUrl: 'https://api.github.com',
     token: 'test-token',
-    fetchImpl: async () => { throw new Error('targeted events must not enumerate other PRs'); },
+    headSha,
+    fetchImpl: async (url) => {
+      if (url.endsWith('/pulls/177')) {
+        return responseFor({ state: 'open', head: { sha: headSha } });
+      }
+      throw new Error(`targeted events must not enumerate other PRs: ${url}`);
+    },
   });
   assert.deepEqual(targeted, [{ number: 177, head_sha: headSha }]);
 
@@ -2264,12 +2270,50 @@ test('selectPullRequestTargets immediately persists failure when multiple open P
     if (url.endsWith('/pulls/180')) {
       return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
     }
-    if (url.endsWith('/pulls?state=open&base=main&per_page=100')) {
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
       return {
         ok: true,
         json: async () => [
           { number: 177, head: { sha: headSha } },
           { number: 180, head: { sha: headSha } },
+        ],
+        headers: { get: () => null },
+      };
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request',
+    payload: { pull_request: { number: 180, head: { sha: headSha } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+});
+
+test('selectPullRequestTargets includes non-main PRs when checking for duplicate head commits', async () => {
+  const published = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/180')) {
+      return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return {
+        ok: true,
+        json: async () => [
+          { number: 177, head: { sha: headSha }, base: { ref: 'main' } },
+          { number: 180, head: { sha: headSha }, base: { ref: 'release' } },
         ],
         headers: { get: () => null },
       };
@@ -2485,15 +2529,104 @@ test('selectPullRequestTargets aborts selection when live PR head differs from l
   assert.deepEqual(targets, [], 'must abort when locked head differs from live PR head');
 });
 
-test('resolveTargetHead returns headSha from payload when present on pull_request events', async () => {
+test('resolveTargetHead returns headSha from live pull request API on pull_request events', async () => {
   const sha = 'd'.repeat(40);
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/pulls/177')) {
+      return {
+        ok: true,
+        json: async () => ({ head: { sha } }),
+      };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
   const result = await resolveTargetHead({
     eventName: 'pull_request_target',
-    payload: { pull_request: { number: 177, head: { sha } } },
+    payload: { pull_request: { number: 177, head: { sha: 'stale'.padEnd(40, '0') } } },
     repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
     token: 'test-token',
+    fetchImpl,
   });
   assert.equal(result, sha);
+});
+
+test('resolveTargetHead fails closed and returns empty string when live PR API fails even if payload has head SHA', async () => {
+  const fetchImpl = async () => {
+    throw new Error('Transient API failure');
+  };
+  const result = await resolveTargetHead({
+    eventName: 'pull_request_target',
+    payload: { pull_request: { number: 177, head: { sha: 'stale'.padEnd(40, '0') } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+    fetchImpl,
+  });
+  assert.equal(result, '');
+});
+
+test('selectPullRequestTargets fails closed when live PR query fails on ordinary PR events', async () => {
+  const fetchImpl = async () => {
+    throw new Error('Transient API error');
+  };
+  await assert.rejects(
+    () => selectPullRequestTargets({
+      eventName: 'pull_request',
+      payload: { pull_request: { number: 177, head: { sha: headSha } } },
+      repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+      token: 'test-token',
+      fetchImpl,
+    }),
+    /Pull-request target head SHA is missing or invalid|could not be verified/i,
+  );
+});
+
+test('selectPullRequestTargets aborts selection when explicitHeadSha does not match live head for ordinary PR events', async () => {
+  const staleLockedSha = '1'.repeat(40);
+  const liveSha = '2'.repeat(40);
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/pulls/177')) {
+      return { ok: true, json: async () => ({ head: { sha: liveSha } }), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request',
+    payload: {
+      action: 'opened',
+      pull_request: { number: 177, head: { sha: staleLockedSha } },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+    headSha: staleLockedSha,
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, []);
+});
+
+test('selectPullRequestTargets aborts selection when explicitHeadSha is empty for ordinary PR events', async () => {
+  const liveSha = '2'.repeat(40);
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/pulls/177')) {
+      return { ok: true, json: async () => ({ head: { sha: liveSha } }), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request',
+    payload: {
+      action: 'opened',
+      pull_request: { number: 177, head: { sha: liveSha } },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    token: 'test-token',
+    headSha: '',
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, []);
 });
 
 test('resolveTargetHead fetches headSha from pull request API for issue_comment events on a PR', async () => {
