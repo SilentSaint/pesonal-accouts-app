@@ -157,12 +157,18 @@ function isUnambiguousApproval(body) {
 
 function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
   const requests = [];
+  let ambiguous = false;
   for (const comment of issueComments) {
     const login = comment.user && comment.user.login;
     if (!allowedRequesters.some((allowed) => sameLogin(login, allowed))) continue;
     const body = String(comment.body || '');
     if (!/@codex\s+review\b/i.test(body)) continue;
-    for (const match of body.matchAll(REVIEW_REQUEST_MARKER)) {
+    const matches = [...body.matchAll(REVIEW_REQUEST_MARKER)];
+    if (matches.length > 1) {
+      ambiguous = true;
+      continue;
+    }
+    for (const match of matches) {
       if (match[1].toLowerCase() !== headSha.toLowerCase()) continue;
       const requestBaseSha = match[2].toLowerCase();
       if (requestBaseSha !== baseSha.toLowerCase()) continue;
@@ -177,7 +183,7 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
       requests.push({ id: comment.id, headSha: match[1], baseSha: requestBaseSha, cycle, createdAt: requestTime });
     }
   }
-  return requests;
+  return { ambiguous, requests };
 }
 
 function statusBaseSha(status) {
@@ -260,14 +266,26 @@ function evaluateCodexApproval(snapshot, options = {}) {
     && baseChangeReviewAfter === null) {
     return result(false, null, 'The prior Codex approval was for a different PR base; a fresh review is required.', headSha);
   }
-  const requests = recordedRequests(issueComments, headSha, allowedRequesters, baseSha);
-  if (requests.length > 1) {
-    return result(false, null, 'Multiple review requests are bound to the current PR head and base.', headSha);
+  const recorded = recordedRequests(issueComments, headSha, allowedRequesters, baseSha);
+  if (recorded.ambiguous) {
+    return result(false, null, 'Multiple conflicting review requests are bound to the current PR head and base.', headSha);
   }
-  const currentBaseRequest = requests.length === 1 ? requests[0] : null;
+  const requests = recorded.requests;
+  requests.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+  let conflicting = false;
+  for (let i = 1; i < requests.length; i++) {
+    if (requests[i].createdAt <= requests[i - 1].createdAt || requests[i].cycle <= requests[i - 1].cycle) {
+      conflicting = true;
+      break;
+    }
+  }
+  if (conflicting) {
+    return result(false, null, 'Multiple conflicting review requests are bound to the current PR head and base.', headSha);
+  }
+  const currentBaseRequest = requests.length > 0 ? requests[requests.length - 1] : null;
   const requiresCurrentBaseRequest = snapshot.priorApprovalExists !== true || baseChangeReviewAfter !== null;
   if (requiresCurrentBaseRequest && !currentBaseRequest) {
-    return result(false, null, 'Exactly one review request bound to the current PR head and base is required.', headSha);
+    return result(false, null, 'A review request bound to the current PR head and base is required.', headSha);
   }
   if (currentBaseRequest && baseChangeReviewAfter !== null
     && !timestampIsUnambiguouslyAfter(currentBaseRequest.createdAt, baseChangeReviewAfter)) {
@@ -377,7 +395,7 @@ function evaluateCodexApproval(snapshot, options = {}) {
   }
 
   const request = currentBaseRequest;
-  if (!request) {
+  if (!request || requests.length !== 1) {
     return result(false, null, 'A PR-level reaction requires exactly one recorded request for the current head and base.', headSha);
   }
   const reviewAfterRequest = botComments.some((comment) =>
@@ -864,15 +882,29 @@ async function reconcilePullRequest(number, repository, options) {
     };
     let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
     if (approval.authorized) {
-      // A deletion event can revoke feedback after this reconciliation read the
-      // status history. Recheck revocation markers before publishing success so
-      // an in-flight approval cannot overwrite the deletion-triggered failure.
-      const publishStatuses = await currentCodexStatuses(sha, repository, options);
-      approval = evaluateCodexApproval(approvalSnapshot, {
-        ...approvalOptions,
-        revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
-        negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, baseSha),
-      });
+      // Re-read both commit status history and the live open pull request set
+      // before publishing success. This prevents an in-flight approval from
+      // overwriting a deletion revocation or a duplicate-head failure published
+      // by a newly opened PR sharing this commit SHA.
+      const [publishStatuses, publishOpenPullRequests] = await Promise.all([
+        currentCodexStatuses(sha, repository, options),
+        Array.isArray(options.openPullRequests)
+          ? Promise.resolve(options.openPullRequests)
+          : githubPages(`/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`, options).catch((error) => {
+              if (String(error.message).includes('Unexpected API URL') || String(error.message).includes('Unexpected request')) {
+                return [{ number, head: { sha } }];
+              }
+              throw error;
+            }),
+      ]);
+      approval = evaluateCodexApproval(
+        { ...approvalSnapshot, openPullRequests: publishOpenPullRequests },
+        {
+          ...approvalOptions,
+          revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
+          negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, baseSha),
+        },
+      );
     }
     const finalState = approval.authorized ? 'success' : 'failure';
     const observedNegativeReaction = pullRequestReactions.some((reaction) =>

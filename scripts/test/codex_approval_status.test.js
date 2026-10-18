@@ -205,17 +205,43 @@ test('a review approval requires request evidence bound to the live base without
   })).authorized, true, 'a current-head approval follows a request explicitly bound to the live base');
 });
 
-test('duplicate current-base review requests never authorize an approval', () => {
-  const duplicateRequests = [
+test('a newer valid review request cycle supersedes an earlier cycle while conflicting requests fail closed', () => {
+  const sequentialRequests = [
     requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 1),
     requestForBase(otherSha, headSha, '2026-10-06T10:01:00Z', 2),
   ];
   const approval = review("Codex Review: Didn't find any major issues.");
 
   assert.equal(evaluateCodexApproval(snapshot({
-    issueComments: [...duplicateRequests, approval],
-  })).authorized, false,
-  'multiple markers for the same head/base are ambiguous even when status history previously established the base');
+    issueComments: [...sequentialRequests, approval],
+  })).authorized, true, 'a later valid review request cycle supersedes an earlier cycle');
+
+  const conflictingRequests = [
+    requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 2),
+    requestForBase(otherSha, headSha, '2026-10-06T10:01:00Z', 1),
+  ];
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [...conflictingRequests, approval],
+  })).authorized, false, 'conflicting request cycles fail closed');
+
+  const duplicateCycleRequests = [
+    requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z', 1),
+    requestForBase(otherSha, headSha, '2026-10-06T10:01:00Z', 1),
+  ];
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [...duplicateCycleRequests, approval],
+  })).authorized, false, 'duplicate cycle numbers fail closed');
+
+  const multiMarkerComment = {
+    id: 3,
+    user: { login: requestAuthor },
+    body: `@codex review\n<!-- codex-review-request: head=${headSha}; base=${otherSha}; cycle=1 -->\n<!-- codex-review-request: head=${headSha}; base=${otherSha}; cycle=2 -->`,
+    created_at: '2026-10-06T10:00:00Z',
+    updated_at: '2026-10-06T10:00:00Z',
+  };
+  assert.equal(evaluateCodexApproval(snapshot({
+    issueComments: [multiMarkerComment, approval],
+  })).authorized, false, 'multiple request markers in a single comment fail closed');
 });
 
 test('a post-base-change review requires a new current-base request, not a later edit to an old approval', () => {
@@ -1978,4 +2004,65 @@ test('reconciliation publishes failure when another open pull request shares the
   assert.deepEqual(published.map(status => status.state), ['pending', 'failure']);
   assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
 });
+
+test('reconciliation re-validates open pull requests before publishing success to catch in-flight duplicate head PRs', async () => {
+  const published = [];
+  const statusHistory = [];
+  let pullsCalls = 0;
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([...statusHistory]);
+    if (url.includes('/statuses/')) {
+      const status = JSON.parse(options.body);
+      published.push(status);
+      statusHistory.unshift({
+        context: STATUS_CONTEXT,
+        state: status.state,
+        created_at: '2026-10-06T10:05:00Z',
+        description: status.description,
+        creator: { login: 'github-actions[bot]' },
+      });
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      pullsCalls++;
+      if (pullsCalls === 1) {
+        return responseFor([{ number: 177, head: { sha: headSha } }]);
+      }
+      return responseFor([
+        { number: 177, head: { sha: headSha } },
+        { number: 180, head: { sha: headSha } },
+      ]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(pullsCalls, 2, 'open pull requests should be re-validated before publishing success');
+  assert.deepEqual(published.map(status => status.state), ['pending', 'failure']);
+  assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+});
+
 

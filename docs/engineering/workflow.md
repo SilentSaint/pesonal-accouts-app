@@ -123,9 +123,12 @@ must:
    `<!-- codex-review-request: head=<40-character-head-sha>; base=<40-character-base-sha>; cycle=<1-10> -->`.
    Use the GitHub API's comment creation timestamp as the request time; editing
    an older request must never make it fresh. Only a marker written by the
-   repository owner is eligible, and there must be exactly one request marker
-   for each reviewed head/base pair. Track the base branch SHA alongside the
-   reviewed head SHA.
+   repository owner is eligible. When multiple review requests are recorded for
+   the same head and base (such as after an approval revocation and re-request),
+   requests must have strictly ascending cycle numbers and creation timestamps;
+   the latest valid request cycle supersedes earlier ones. Multiple request
+   markers in a single comment, out-of-order cycles, or conflicting timestamps
+   fail closed. Track the base branch SHA alongside the reviewed head SHA.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -277,13 +280,18 @@ restore the status to success.
 Commit statuses are scoped only by commit SHA and context, so authorization
 requires the PR's current head SHA to be unique across open pull requests.
 If multiple open pull requests share the same head commit, authorization fails
-closed to prevent status cross-contamination.
+closed to prevent status cross-contamination. The reconciler re-validates the
+live open pull request set before publishing a success status to prevent race
+conditions from concurrent PR creations.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a
-base-change invalidation is active, the evidence must follow exactly one
-request marker bound to the exact PR head and current base SHA. A PR-level
-thumbs-up always requires exactly one such marker. An older or previous-base
+base-change invalidation is active, the evidence must follow a valid
+request marker bound to the exact PR head and current base SHA. When multiple
+valid request markers exist for the current head and base in strictly ascending
+order, the latest valid request cycle is selected. Contradictory, ambiguous, or
+out-of-order request markers fail closed. A PR-level thumbs-up always requires
+exactly one recorded request marker. An older or previous-base
 request, an edited old review, or a response delivered after a marker but
 originally submitted before it cannot qualify. When trusted history already
 establishes the same base, a fresh unambiguous exact-head Codex review comment
