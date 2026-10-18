@@ -5,7 +5,6 @@ on:
   issue_comment:
     types: [created, edited, deleted]
   pull_request_target:
-    branches: [main]
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed, edited]
   pull_request_review:
     types: [submitted, edited, dismissed]
@@ -54,13 +53,13 @@ jobs:
 
   select-pull-requests:
     needs: resolve-target-head
-    # A deletion must preempt any same-commit reconciliation, rather than join its
+    # A deletion or dismissal must preempt any same-commit reconciliation, rather than join its
     # bounded queue: GitHub rejects arrivals after 100 queued jobs. General
     # events do not share this selector queue, so they cannot displace a pending
     # deletion revocation while reconciliation cancels.
     concurrency:
-      group: ${{ (github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
-      cancel-in-progress: ${{ (github.event.action == 'deleted' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && needs.resolve-target-head.outputs.head_sha != '' }}
+      group: ${{ (github.event.action == 'deleted' || github.event.action == 'dismissed' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha || github.run_id) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
+      cancel-in-progress: ${{ (github.event.action == 'deleted' || github.event.action == 'dismissed' || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) && needs.resolve-target-head.outputs.head_sha != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

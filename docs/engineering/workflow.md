@@ -266,13 +266,12 @@ code. This status represents only
 the Codex authorization signal, not the local Docker gate or other merge
 requirements.
 
-Deleting Codex-authored feedback or receiving new negative Codex review activity
+Deleting Codex-authored feedback, dismissing a qualifying Codex review, or receiving new negative Codex review activity
 immediately publishes a failure status with a durable deleted-feedback revocation marker
 or negative review failure on the live PR head, even if the PR
 is closed or temporarily targets another base, before the reconcile job enters
-its head-SHA concurrency queue. For `issue_comment` events without head commit metadata
-in the webhook payload, the workflow first resolves the live target PR head SHA before
-entering the status-writing selector job. Negative Codex review activity and deletions share
+its head-SHA concurrency queue. For all PR events, the workflow first resolves the live target PR head SHA before
+entering the status-writing selector job; if the live head advances before selection executes, selection aborts to avoid writing failure under a stale head lock. Negative Codex review activity, review dismissals, and deletions share
 the target PR head-SHA concurrency queue with `cancel-in-progress: true` to preempt any running
 reconciliation for that commit, while general events do not share this selector queue so they
 cannot displace a pending revocation while reconciliation cancels. This deleted-feedback revocation marker
@@ -290,8 +289,7 @@ request set, status history, and fresh review activity (comments, reviews, and
 reactions) to prevent in-flight base changes, negative feedback, duplicate PR
 heads, or deletion revocations from being overwritten. Reconcile jobs and revocation
 selectors are serialized by the target PR head commit SHA, and target selection immediately
-records duplicate-head failure when multiple open PRs share a head commit,
-preventing late parallel success writes from overwriting a duplicate-head failure.
+records duplicate-head failure when multiple open PRs share a head commit. Once competing pull requests close or retarget such that the head SHA is unique across open pull requests, reconciliation can clear the transient failure and publish success if all other gates pass. The workflow triggers on PR edits across all target branches without a branch filter, and reconciliation immediately revokes approval if a PR is retargeted away from `main`.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a

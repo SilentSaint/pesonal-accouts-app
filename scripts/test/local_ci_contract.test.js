@@ -538,10 +538,11 @@ test('the target head resolver skips cleanly until trusted main has the approval
   }
 });
 
-test('a PR base edit triggers immediate Codex approval reconciliation', () => {
+test('a PR base edit triggers immediate Codex approval reconciliation across all branches', () => {
   const action = read('.github/workflows/codex-approval-status.yml');
 
-  assert.match(action, /pull_request_target:\s*\n\s*branches:\s*\[main\]\s*\n\s*types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
+  assert.match(action, /pull_request_target:\s*\n\s*types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
+  assert.doesNotMatch(action, /pull_request_target:[\s\S]*branches:\s*\[main\]/);
 });
 
 test('the Codex approval status bridge is least-privilege and never executes PR code', () => {

@@ -767,6 +767,9 @@ function isNegativeCodexFeedback(eventName, payload, botLogin) {
     );
   }
   if (eventName === 'pull_request_review') {
+    if (payload.action === 'dismissed') {
+      return Boolean(payload.review && payload.review.user && sameLogin(payload.review.user.login, botLogin));
+    }
     if (!['submitted', 'edited'].includes(payload.action)) return false;
     if (!payload.review || !payload.review.user || !sameLogin(payload.review.user.login, botLogin)) return false;
     return payload.review.state === 'changes_requested' || !isUnambiguousApproval(payload.review.body);
@@ -784,6 +787,9 @@ function negativeCodexFeedbackDescription(eventName, payload) {
     return 'A newer inline Codex review comment requires fresh review resolution.';
   }
   if (eventName === 'pull_request_review') {
+    if (payload.action === 'dismissed') {
+      return 'The qualifying Codex review was dismissed; merge authorization is blocked.';
+    }
     if (payload.review && payload.review.state === 'changes_requested') {
       return 'Codex review requested changes on the current head.';
     }
@@ -809,27 +815,26 @@ async function resolveTargetHead({
   token,
   fetchImpl = globalThis.fetch,
 } = {}) {
+  const targetedNumber = eventPullRequestNumber(eventName, payload);
+  if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
+    if (repository && repository.owner && repository.repo && token) {
+      try {
+        const pullRequest = await githubJson(
+          `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
+          { apiBaseUrl, token, fetchImpl },
+        );
+        const resolvedSha = pullRequest && pullRequest.head && pullRequest.head.sha;
+        if (/^[a-f0-9]{40}$/i.test(resolvedSha || '')) {
+          return resolvedSha;
+        }
+      } catch {
+        // Fall back to payload head if live PR query fails
+      }
+    }
+  }
   const payloadHeadSha = payload.pull_request && payload.pull_request.head && payload.pull_request.head.sha;
   if (/^[a-f0-9]{40}$/i.test(payloadHeadSha || '')) {
     return payloadHeadSha;
-  }
-  const targetedNumber = eventPullRequestNumber(eventName, payload);
-  if (Number.isSafeInteger(targetedNumber) && targetedNumber > 0) {
-    if (!repository || !repository.owner || !repository.repo || !token) {
-      return '';
-    }
-    try {
-      const pullRequest = await githubJson(
-        `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
-        { apiBaseUrl, token, fetchImpl },
-      );
-      const resolvedSha = pullRequest && pullRequest.head && pullRequest.head.sha;
-      if (/^[a-f0-9]{40}$/i.test(resolvedSha || '')) {
-        return resolvedSha;
-      }
-    } catch {
-      return '';
-    }
   }
   return '';
 }
@@ -858,10 +863,16 @@ async function selectPullRequestTargets({
         `/repos/${repository.owner}/${repository.repo}/pulls/${targetedNumber}`,
         { apiBaseUrl, token, fetchImpl },
       );
-      headSha = pullRequest.head && pullRequest.head.sha;
-      if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
+      const liveHeadSha = pullRequest.head && pullRequest.head.sha;
+      if (!/^[a-f0-9]{40}$/i.test(liveHeadSha || '')) {
         throw new Error('Negative feedback revocation head SHA is missing or invalid.');
       }
+      if (explicitHeadSha && liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
+        // Abort: the PR advanced to a new head between resolve-target-head and selector execution.
+        // The new head will be locked and handled by its own event workflow run.
+        return [];
+      }
+      headSha = liveHeadSha;
       const failureDescription = isDeleted
         ? DELETED_FEEDBACK_DESCRIPTION
         : negativeCodexFeedbackDescription(eventName, payload);
@@ -889,6 +900,9 @@ async function selectPullRequestTargets({
     }
     if (!/^[a-f0-9]{40}$/i.test(headSha || '')) {
       throw new Error('Pull-request target head SHA is missing or invalid.');
+    }
+    if (explicitHeadSha && headSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
+      return [];
     }
     if (['pull_request', 'pull_request_target'].includes(eventName)) {
       if (repository && repository.owner && repository.repo && token) {
@@ -957,12 +971,16 @@ async function reconcilePullRequest(number, repository, options) {
   let pendingAttempted = false;
   try {
     const pr = await githubJson(prPath, options);
-    if (pr.state !== 'open' || !pr.base || pr.base.ref !== 'main') return;
+    if (pr.state !== 'open') return;
     const liveSha = pr.head && pr.head.sha;
     if (!/^[a-f0-9]{40}$/i.test(liveSha || '')) {
       throw new Error('The current PR head SHA is missing or invalid.');
     }
     sha = liveSha;
+    if (!pr.base || pr.base.ref !== 'main') {
+      await publish('failure', 'The PR does not target main; Codex approval is invalid.');
+      return;
+    }
     baseSha = pr.base.sha;
     if (!/^[a-f0-9]{40}$/i.test(baseSha || '')) {
       throw new Error('The current PR base SHA is missing or invalid.');
@@ -1071,11 +1089,11 @@ async function reconcilePullRequest(number, repository, options) {
           sha,
         );
       } else {
-        const hasDuplicateHeadInStatuses = publishStatuses.some((status) =>
-          status.context === STATUS_CONTEXT
-          && status.state === 'failure'
-          && String(status.description || '').includes(DUPLICATE_HEAD_SHA_BLOCKED));
-        if (hasDuplicateHeadInStatuses) {
+        const duplicateHeadPulls = publishOpenPullRequests.filter((openPr) => {
+          const isOther = Number(openPr.number) !== Number(number);
+          return isOther && openPr.head && openPr.head.sha && openPr.head.sha.toLowerCase() === sha.toLowerCase();
+        });
+        if (duplicateHeadPulls.length > 0) {
           approval = result(false, null, DUPLICATE_HEAD_SHA_BLOCKED, sha);
         } else {
           approval = evaluateCodexApproval(
