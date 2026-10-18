@@ -2264,21 +2264,11 @@ test('a clean cycle 10 on the current head proceeds to authorization', () => {
   assert.equal(result.authorized, true);
 });
 
-test('selectPullRequestTargets immediately persists failure when multiple open PRs share head commit', async () => {
+test('selectPullRequestTargets selects PR targets for ordinary events without publishing duplicate failure', async () => {
   const published = [];
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/180')) {
       return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
-    }
-    if (url.endsWith('/pulls?state=open&per_page=100')) {
-      return {
-        ok: true,
-        json: async () => [
-          { number: 177, head: { sha: headSha } },
-          { number: 180, head: { sha: headSha } },
-        ],
-        headers: { get: () => null },
-      };
     }
     if (url.includes('/statuses/')) {
       published.push(JSON.parse(options.body));
@@ -2293,51 +2283,59 @@ test('selectPullRequestTargets immediately persists failure when multiple open P
     repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
     apiBaseUrl: 'https://api.github.com',
     token: 'test-token',
+    headSha,
     fetchImpl,
   });
 
   assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
-  assert.equal(published.length, 1);
-  assert.equal(published[0].state, 'failure');
-  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+  assert.equal(published.length, 0, 'ordinary selector must not publish status');
 });
 
-test('selectPullRequestTargets includes non-main PRs when checking for duplicate head commits', async () => {
+test('reconciliation publishes duplicate-head failure when multiple open PRs share head commit including non-main PRs', async () => {
   const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
   const fetchImpl = async (url, options = {}) => {
-    if (url.endsWith('/pulls/180')) {
-      return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
     }
-    if (url.endsWith('/pulls?state=open&per_page=100')) {
-      return {
-        ok: true,
-        json: async () => [
-          { number: 177, head: { sha: headSha }, base: { ref: 'main' } },
-          { number: 180, head: { sha: headSha }, base: { ref: 'release' } },
-        ],
-        headers: { get: () => null },
-      };
-    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
     if (url.includes('/statuses/')) {
       published.push(JSON.parse(options.body));
-      return { ok: true, json: async () => ({}), headers: { get: () => null } };
+      return responseFor({});
     }
-    throw new Error(`Unexpected URL: ${url}`);
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([
+        { number: 177, head: { sha: headSha }, base: { ref: 'main' } },
+        { number: 180, head: { sha: headSha }, base: { ref: 'release' } },
+      ]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
   };
 
-  const targets = await selectPullRequestTargets({
-    eventName: 'pull_request',
-    payload: { pull_request: { number: 180, head: { sha: headSha } } },
-    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
     apiBaseUrl: 'https://api.github.com',
     token: 'test-token',
     fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
   });
 
-  assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
-  assert.equal(published.length, 1);
-  assert.equal(published[0].state, 'failure');
-  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+  assert.equal(published.length, 2);
+  assert.equal(published[0].state, 'pending');
+  assert.equal(published[1].state, 'failure');
+  assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
 });
 
 test('reconciliation does not overwrite an existing duplicate-head failure status with success', async () => {
@@ -2692,4 +2690,66 @@ test('resolveTargetHead returns empty string if API call fails', async () => {
     fetchImpl,
   });
   assert.equal(result, '');
+});
+
+test('selectPullRequestTargets persists negative feedback revocation even when explicitHeadSha is empty', async () => {
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', head: { sha: headSha } });
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'deleted',
+      issue: { number: 177, pull_request: { url: 'https://api.github.com/repos/SilentSaint/pesonal-accouts-app/pulls/177' } },
+      comment: { id: 9, user: { login: bot }, body: 'The retry path still needs a fix.' },
+    },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha: '', // empty explicitHeadSha from failed initial lookup
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 177, head_sha: headSha }]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.match(published[0].description, /deleted/i);
+});
+
+test('reconcilePullRequest aborts and publishes no statuses when live PR head differs from options.headSha', async () => {
+  const published = [];
+  const lockedSha = '1'.repeat(40);
+  const liveSha = '2'.repeat(40);
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: liveSha } });
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha: lockedSha,
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(published.length, 0, 'must not write statuses when live head differs from locked matrix head');
 });

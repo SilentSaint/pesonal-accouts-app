@@ -863,17 +863,15 @@ async function selectPullRequestTargets({
     if (!/^[a-f0-9]{40}$/i.test(liveHeadSha || '')) {
       throw new Error('Pull-request target head SHA is missing or invalid.');
     }
-    if (explicitHeadSha !== undefined) {
-      if (!explicitHeadSha || liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
-        // Abort: the PR advanced to a new head or resolution failed.
-        // The new head will be locked and handled by its own event workflow run.
-        return [];
-      }
-    }
-    const headSha = liveHeadSha;
     const isDeleted = isDeletedCodexFeedback(eventName, payload, botLogin);
     const isNegative = isNegativeCodexFeedback(eventName, payload, botLogin);
     if (isNegative) {
+      if (explicitHeadSha && liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
+        // Abort: the PR advanced to a new head between resolve-target-head and selector execution.
+        // The new head will be locked and handled by its own event workflow run.
+        return [];
+      }
+      const headSha = liveHeadSha;
       const failureDescription = isDeleted
         ? DELETED_FEEDBACK_DESCRIPTION
         : negativeCodexFeedbackDescription(eventName, payload);
@@ -889,26 +887,14 @@ async function selectPullRequestTargets({
       });
       return [{ number: targetedNumber, head_sha: headSha }];
     }
-    if (['pull_request', 'pull_request_target'].includes(eventName)) {
-      const openPulls = await githubPages(
-        `/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`,
-        { apiBaseUrl, token, fetchImpl },
-      ).catch(() => []);
-      const duplicateHeadPulls = openPulls.filter((pr) =>
-        pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
-      if (duplicateHeadPulls.length > 1) {
-        await publishCommitStatus({
-          apiBaseUrl,
-          owner: repository.owner,
-          repo: repository.repo,
-          sha: headSha,
-          state: 'failure',
-          description: DUPLICATE_HEAD_SHA_BLOCKED,
-          token,
-          fetchImpl,
-        });
+    if (explicitHeadSha !== undefined) {
+      if (!explicitHeadSha || liveHeadSha.toLowerCase() !== explicitHeadSha.toLowerCase()) {
+        // Abort: the PR advanced to a new head or resolution failed.
+        // The new head will be locked and handled by its own event workflow run.
+        return [];
       }
     }
+    const headSha = liveHeadSha;
     return [{ number: targetedNumber, head_sha: headSha }];
   }
   if (eventName === 'issue_comment') return [];
@@ -958,6 +944,11 @@ async function reconcilePullRequest(number, repository, options) {
     const liveSha = pr.head && pr.head.sha;
     if (!/^[a-f0-9]{40}$/i.test(liveSha || '')) {
       throw new Error('The current PR head SHA is missing or invalid.');
+    }
+    if (options.headSha && liveSha.toLowerCase() !== options.headSha.toLowerCase()) {
+      // Abort: the PR advanced to a new head between selection and reconciliation execution.
+      // The new head will be reconciled under its own head lock.
+      return;
     }
     sha = liveSha;
     if (!pr.base || pr.base.ref !== 'main') {

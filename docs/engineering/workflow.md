@@ -288,8 +288,14 @@ status, the reconciler re-validates the live pull request, base SHA, open pull
 request set, status history, and fresh review activity (comments, reviews, and
 reactions) to prevent in-flight base changes, negative feedback, duplicate PR
 heads, or deletion revocations from being overwritten. Reconcile jobs and revocation
-selectors are serialized by the target PR head commit SHA, and target selection immediately
-records duplicate-head failure when multiple open PRs share a head commit. Once competing pull requests close or retarget such that the head SHA is unique across open pull requests, reconciliation can clear the transient failure and publish success if all other gates pass. The workflow triggers on PR edits across all target branches without a branch filter, and reconciliation immediately revokes approval if a PR is retargeted away from `main`.
+selectors are serialized by the target PR head commit SHA, while ordinary selectors run in
+isolated per-run groups to keep the revocation queue clear. If the live pull request head
+advances from the locked matrix head before reconciliation reads it, the job aborts rather than
+writing statuses outside the acquired head lock. Once competing pull requests close or retarget
+such that the head SHA is unique across open pull requests, reconciliation can clear the
+transient failure and publish success if all other gates pass. The workflow triggers on PR edits
+across all target branches without a branch filter, and reconciliation immediately revokes
+approval if a PR is retargeted away from `main`.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a
