@@ -2065,4 +2065,71 @@ test('reconciliation re-validates open pull requests before publishing success t
   assert.ok(published[1].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
 });
 
+test('reconciliation refreshes review activity before publishing success to catch in-flight negative feedback', async () => {
+  const published = [];
+  const statusHistory = [];
+  let reactionCalls = 0;
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([...statusHistory]);
+    if (url.includes('/statuses/')) {
+      const status = JSON.parse(options.body);
+      published.push(status);
+      statusHistory.unshift({
+        context: STATUS_CONTEXT,
+        state: status.state,
+        created_at: '2026-10-06T10:05:00Z',
+        description: status.description,
+        creator: { login: 'github-actions[bot]' },
+      });
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) {
+      reactionCalls++;
+      if (reactionCalls === 1) {
+        return responseFor([]);
+      }
+      return responseFor([
+        {
+          id: 55,
+          user: { login: bot },
+          content: '-1',
+          created_at: '2026-10-06T10:06:00Z',
+        },
+      ]);
+    }
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: headSha } }]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(reactionCalls, 2, 'reactions should be refreshed before publishing success');
+  assert.deepEqual(published.map(status => status.state), ['pending', 'failure']);
+  assert.ok(published[1].description.includes('negative-reaction-review-required'));
+});
+
+
 

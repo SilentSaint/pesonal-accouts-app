@@ -280,9 +280,11 @@ restore the status to success.
 Commit statuses are scoped only by commit SHA and context, so authorization
 requires the PR's current head SHA to be unique across open pull requests.
 If multiple open pull requests share the same head commit, authorization fails
-closed to prevent status cross-contamination. The reconciler re-validates the
-live open pull request set before publishing a success status to prevent race
-conditions from concurrent PR creations.
+closed to prevent status cross-contamination. Before publishing a success
+status, the reconciler re-validates the live open pull request set, status
+history, and fresh review activity (comments, reviews, and reactions) to prevent
+in-flight negative feedback, duplicate PR heads, or deletion revocations from
+being overwritten.
 
 The approval evaluator requires a verified current base SHA. If trusted status
 history does not establish a successful approval on that same base, or a

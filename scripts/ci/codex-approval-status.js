@@ -881,12 +881,21 @@ async function reconcilePullRequest(number, repository, options) {
       negativeReactionRevokedAt,
     };
     let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
+    let publishPullRequestReactions = null;
     if (approval.authorized) {
-      // Re-read both commit status history and the live open pull request set
-      // before publishing success. This prevents an in-flight approval from
-      // overwriting a deletion revocation or a duplicate-head failure published
-      // by a newly opened PR sharing this commit SHA.
-      const [publishStatuses, publishOpenPullRequests] = await Promise.all([
+      // Re-read commit status history, the live open pull request set, and fresh
+      // review activity (comments, reviews, reactions) before publishing success.
+      // This prevents an in-flight approval from overwriting a deletion revocation,
+      // a duplicate-head failure, or a negative review/reaction posted while
+      // reconciliation was in flight.
+      const [
+        publishStatuses,
+        publishOpenPullRequests,
+        publishIssueComments,
+        publishReviewComments,
+        publishReviews,
+        freshReactions,
+      ] = await Promise.all([
         currentCodexStatuses(sha, repository, options),
         Array.isArray(options.openPullRequests)
           ? Promise.resolve(options.openPullRequests)
@@ -896,9 +905,21 @@ async function reconcilePullRequest(number, repository, options) {
               }
               throw error;
             }),
+        githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/comments?per_page=100`, options),
+        githubPages(`${prPath}/comments?per_page=100`, options),
+        pullRequestReviews(number, repository, options),
+        githubPages(`/repos/${repository.owner}/${repository.repo}/issues/${number}/reactions?per_page=100`, options),
       ]);
+      publishPullRequestReactions = freshReactions;
       approval = evaluateCodexApproval(
-        { ...approvalSnapshot, openPullRequests: publishOpenPullRequests },
+        {
+          ...approvalSnapshot,
+          openPullRequests: publishOpenPullRequests,
+          issueComments: publishIssueComments,
+          reviewComments: publishReviewComments,
+          reviews: publishReviews,
+          pullRequestReactions: publishPullRequestReactions,
+        },
         {
           ...approvalOptions,
           revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
@@ -907,7 +928,8 @@ async function reconcilePullRequest(number, repository, options) {
       );
     }
     const finalState = approval.authorized ? 'success' : 'failure';
-    const observedNegativeReaction = pullRequestReactions.some((reaction) =>
+    const activeReactions = publishPullRequestReactions || pullRequestReactions;
+    const observedNegativeReaction = activeReactions.some((reaction) =>
       reaction.content === '-1'
       && reaction.user
       && sameLogin(reaction.user.login, options.botLogin || DEFAULT_BOT_LOGIN));
