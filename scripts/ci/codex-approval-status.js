@@ -906,10 +906,25 @@ async function selectPullRequestTargets({
     }
     const headSha = liveHeadSha;
     if (['pull_request', 'pull_request_target'].includes(eventName)) {
-      const openPulls = await githubPages(
-        `/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`,
-        { apiBaseUrl, token, fetchImpl },
-      ).catch(() => []);
+      let openPulls;
+      try {
+        openPulls = await githubPages(
+          `/repos/${repository.owner}/${repository.repo}/pulls?state=open&per_page=100`,
+          { apiBaseUrl, token, fetchImpl },
+        );
+      } catch (error) {
+        await publishCommitStatus({
+          apiBaseUrl,
+          owner: repository.owner,
+          repo: repository.repo,
+          sha: headSha,
+          state: 'failure',
+          description: DUPLICATE_HEAD_SHA_BLOCKED,
+          token,
+          fetchImpl,
+        });
+        throw new Error(`Inability to establish head uniqueness: ${error.message}`);
+      }
       const duplicateHeadPulls = openPulls.filter((pr) =>
         pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
       if (duplicateHeadPulls.length > 1) {

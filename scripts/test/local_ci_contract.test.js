@@ -611,12 +611,12 @@ test('a deleted or negative Codex feedback event preempts a saturated event queu
   assert.match(selectorJob, /permissions:[\s\S]*statuses:\s*write/);
   assert.match(
     selectorJob,
-    /group:\s*\$\{\{\s*\(?github\.event\.action\s*==\s*'deleted'[\s\S]*format\('codex-approval-\{0\}-\{1\}'[\s\S]*format\('codex-approval-select-\{0\}-\{1\}'/,
+    /group:\s*\$\{\{\s*needs\.resolve-target-head\.outputs\.head_sha\s*!=\s*''[\s\S]*format\('codex-approval-\{0\}-\{1\}'[\s\S]*format\('codex-approval-select-\{0\}-\{1\}'/,
   );
   assert.doesNotMatch(selectorJob, /queue:\s*max/);
   assert.match(
     selectorJob,
-    /cancel-in-progress:\s*\$\{\{\s*\(?github\.event\.action\s*==\s*'deleted'/,
+    /cancel-in-progress:\s*\$\{\{\s*needs\.resolve-target-head\.outputs\.head_sha\s*!=\s*''[\s\S]*startsWith\(github\.event\.comment\.user\.login,\s*'chatgpt-codex-connector'\)/,
   );
   assert.match(reconcileJob, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.match(reconcileJob, /queue:\s*max/);

@@ -2270,6 +2270,15 @@ test('selectPullRequestTargets selects PR targets for ordinary events without pu
     if (url.endsWith('/pulls/180')) {
       return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
     }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return {
+        ok: true,
+        json: async () => [
+          { number: 180, head: { sha: headSha }, base: { ref: 'main' } },
+        ],
+        headers: { get: () => null },
+      };
+    }
     if (url.includes('/statuses/')) {
       published.push(JSON.parse(options.body));
       return { ok: true, json: async () => ({}), headers: { get: () => null } };
@@ -2325,6 +2334,40 @@ test('selectPullRequestTargets includes non-main PRs when checking for duplicate
   });
 
   assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+});
+
+test('selectPullRequestTargets fails closed and publishes failure when duplicate-head discovery fails', async () => {
+  const published = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/180')) {
+      return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      throw new Error('API outage');
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await assert.rejects(
+    () => selectPullRequestTargets({
+      eventName: 'pull_request',
+      payload: { pull_request: { number: 180, head: { sha: headSha } } },
+      repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+      apiBaseUrl: 'https://api.github.com',
+      token: 'test-token',
+      headSha,
+      fetchImpl,
+    }),
+    /Inability to establish head uniqueness/i,
+  );
+
   assert.equal(published.length, 1);
   assert.equal(published[0].state, 'failure');
   assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));

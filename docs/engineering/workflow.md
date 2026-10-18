@@ -284,13 +284,16 @@ Commit statuses are scoped only by commit SHA and context, so authorization
 requires the PR's current head SHA to be unique across open pull requests.
 If multiple open pull requests share the same head commit, authorization fails
 closed to prevent status cross-contamination. Target selection immediately records
-duplicate-head failure when multiple open PRs share a head commit. Before publishing a success
+duplicate-head failure under the head lock when multiple open PRs share a head commit,
+and fails closed if open pull request discovery fails. Before publishing a success
 status, the reconciler re-validates the live pull request, base SHA, open pull
 request set, status history, and fresh review activity (comments, reviews, and
 reactions) to prevent in-flight base changes, negative feedback, duplicate PR
-heads, or deletion revocations from being overwritten. Reconcile jobs and revocation
-selectors are serialized by the target PR head commit SHA, while ordinary selectors run in
-isolated per-run groups to keep the revocation queue clear. If the live pull request head
+heads, or deletion revocations from being overwritten. Reconcile jobs, revocation
+selectors, and pull request events are serialized by the target PR head commit SHA,
+while non-Codex comments run in isolated per-run groups to keep the revocation queue clear.
+Revocation preemption is restricted to genuine Codex-authored feedback, preventing other participants
+from displacing or cancelling a pending revocation. If the live pull request head
 advances from the locked matrix head before reconciliation reads it, the job aborts rather than
 writing statuses outside the acquired head lock. Fallback revocations without an acquired
 head lock delegate to locked reconciliation rather than writing statuses outside the lock. Once competing pull requests close or retarget
