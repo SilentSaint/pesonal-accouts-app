@@ -95,11 +95,11 @@ The local release has these fail-closed stages:
    `PRODUCTION_DEPLOY_APPROVED=YES`, a clean working tree on `main` matching `origin/main`, and enforces that both
    `AWS_REGION` and `AWS_ACCOUNT_ID` strictly match pinned, readonly `EXPECTED_AWS_REGION` (`ap-south-2`) and
    `EXPECTED_AWS_ACCOUNT_ID` (`727118420276`, rejecting caller or ambient environment overrides), and enforces pinned
-   `EXPECTED_TERRAFORM_ENVIRONMENT` (`production`, passed explicitly via `-var="environment=production"` to the release plan and used to derive fallback bucket discovery). For standard
+   `EXPECTED_TERRAFORM_ENVIRONMENT` (`dev`, passed explicitly via `-var="environment=dev"` to the release plan to match `terraform/terraform.tfvars` and existing production backend state, and used to derive fallback bucket discovery `expense-tracker-web-dev-`). For standard
    releases, it deploys the clean `main` revision; for rollbacks (`ROLLBACK_TARGET_SHA=<sha>` or `ROLLBACK_TARGET_SHA=PREVIOUS`
    to target the recorded known-good ancestor SHA from local or durable S3 release metadata `last-verified-release.json` / `release-metadata.json`), the driver on `main` asserts
-   that the target commit is an ancestor contained in `origin/main`, prepares an isolated temporary worktree to validate
-   and deploy that target revision, and preserves generated deliverables and release metadata before worktree cleanup.
+   that the target commit is an ancestor contained in `origin/main`, prepares an isolated temporary worktree to build
+   historical application artifacts (Lambdas, web, APK), plans and applies canonical infrastructure from `main` (`CANONICAL_ROOT_DIR/terraform`) to keep table and bucket protection active even when targeting older commits, and preserves generated deliverables and release metadata before worktree cleanup.
 2. `scripts/ci/verify-local-docker --pull` runs the complete D2 validation contract with
    production AWS credentials disabled. A failed gate stops before the AWS identity check
    or any AWS mutation; the working tree is checked again after validation, and `origin/main` currency is re-verified
@@ -107,11 +107,12 @@ The local release has these fail-closed stages:
 3. The wrapper compares `aws sts get-caller-identity` with `AWS_ACCOUNT_ID` and invokes the
    guarded deployment script only after the comparison succeeds.
 4. The deployment script builds Lambda artifacts, creates a saved Terraform plan with
-   `-var="environment=production"`, verifies that the production DynamoDB table (`ExpenseTrackerData`)
-   has deletion protection enabled (`deletion_protection_enabled = true`) in the reviewed plan, and
-   reads the planned endpoint and publication outputs before any AWS mutation. It then
-   builds the web and Android artifacts using those planned endpoints. A plan with deletion
-   protection disabled or a failed artifact build stops before Terraform apply.
+   `-var="environment=dev"`, verifies that the production DynamoDB table (`ExpenseTrackerData`)
+   has deletion protection enabled (`deletion_protection_enabled = true`) in the reviewed plan, verifies
+   that the existing production web bucket (`aws_s3_bucket.web_bucket`) is not scheduled for deletion
+   or destructive replacement, and reads the planned endpoint and publication outputs before any AWS mutation.
+   It then builds the web and Android artifacts using those planned endpoints. A plan with deletion
+   protection disabled, bucket replacement scheduled, or a failed artifact build stops before Terraform apply.
 5. The script applies that exact saved plan, verifies that the applied Terraform outputs
    still equal the values used to build the artifacts, then publishes the web artifact.
    Terraform failure or output drift stops the sequence before publication.

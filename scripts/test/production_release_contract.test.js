@@ -221,9 +221,9 @@ elif [[ "\${1:-}" == s3api && "\${2:-}" == list-buckets ]]; then
   if [[ "\${AET_TEST_LIST_BUCKETS_EMPTY:-0}" == 1 ]]; then
     printf 'None\n'
   elif [[ "\${AET_TEST_LIST_BUCKETS_MULTIPLE:-0}" == 1 ]]; then
-    printf 'expense-tracker-web-production-111111\texpense-tracker-web-production-222222\n'
+    printf 'expense-tracker-web-dev-111111\texpense-tracker-web-dev-222222\n'
   else
-    printf 'expense-tracker-web-production-727118420276\n'
+    printf 'expense-tracker-web-dev-727118420276\n'
   fi
 elif [[ "\${1:-}" == cloudfront && "\${2:-}" == create-invalidation ]]; then
   printf 'invalidation-123\n'
@@ -282,6 +282,14 @@ fi
           cloudfront_web_url: { value: 'https://web.example' },
         },
       },
+      resource_changes: [
+        {
+          address: 'aws_s3_bucket.web_bucket',
+          change: {
+            actions: ['no-op'],
+          },
+        },
+      ],
     }),
   );
 
@@ -357,7 +365,90 @@ test('planning enforces the pinned production environment variable', () => {
     const result = runDeployment(fixture);
     assert.equal(result.status, 0);
     const events = fs.readFileSync(fixture.log, 'utf8');
-    assert.match(events, /terraform .* plan .* -var=environment=production/);
+    assert.match(events, /terraform .* plan .* -var=environment=dev/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('deployment fails closed when the reviewed plan attempts to destroy or replace the production web bucket', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      fixture.planJson,
+      JSON.stringify({
+        planned_values: {
+          root_module: {
+            resources: [
+              {
+                address: 'aws_dynamodb_table.expense_tracker_data',
+                type: 'aws_dynamodb_table',
+                name: 'expense_tracker_data',
+                values: {
+                  deletion_protection_enabled: true,
+                },
+              },
+            ],
+          },
+          outputs: {
+            api_gateway_url: { value: 'https://api.example' },
+            websocket_sync_url: { value: 'wss://websocket.example' },
+            s3_web_bucket_name: { value: 'web-bucket' },
+            cloudfront_distribution_id: { value: 'distribution' },
+            cloudfront_web_url: { value: 'https://web.example' },
+          },
+        },
+        resource_changes: [
+          {
+            address: 'aws_s3_bucket.web_bucket',
+            change: {
+              actions: ['delete', 'create'],
+            },
+          },
+        ],
+      }),
+    );
+    const result = runDeployment(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_bucket/,
+    );
+    const events = fs.readFileSync(fixture.log, 'utf8');
+    assert.doesNotMatch(events, /terraform .* apply/);
+  } finally {
+    removeFixture(fixture);
+  }
+});
+
+test('rollback deployment plans canonical infrastructure from main while building historical application artifacts', () => {
+  const fixture = createFixture();
+  try {
+    const rollbackTargetDir = path.join(fixture.fixture, 'aet-rollback-worktree-test');
+    fs.mkdirSync(path.join(rollbackTargetDir, 'backend', 'lambda'), { recursive: true });
+    fs.mkdirSync(path.join(rollbackTargetDir, 'backend', 'build', 'lambda'), { recursive: true });
+    fs.mkdirSync(path.join(rollbackTargetDir, 'frontend'), { recursive: true });
+    fs.mkdirSync(path.join(rollbackTargetDir, 'scripts'), { recursive: true });
+
+    writeExecutable(
+      path.join(rollbackTargetDir, 'backend', 'lambda', 'build.sh'),
+      '#!/usr/bin/env bash\nprintf "historical-lambda-build\\n" >> "$AET_TEST_LOG"\n',
+    );
+    writeExecutable(
+      path.join(rollbackTargetDir, 'backend', 'gradlew'),
+      '#!/usr/bin/env bash\nprintf "historical-gradle %s\\n" "$*" >> "$AET_TEST_LOG"\n',
+    );
+
+    const result = runDeployment(fixture, {
+      TARGET_DIR: rollbackTargetDir,
+      ROLLBACK_TARGET_SHA: 'historical-commit-sha',
+    });
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const events = fs.readFileSync(fixture.log, 'utf8');
+    assert.match(events, /historical-lambda-build/);
+    assert.match(events, /historical-gradle/);
+    assert.match(events, new RegExp(`terraform -chdir=${fixture.fixture}/terraform plan`));
   } finally {
     removeFixture(fixture);
   }

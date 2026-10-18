@@ -21,7 +21,7 @@ fi
 
 readonly EXPECTED_AWS_REGION="ap-south-2"
 readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
-readonly EXPECTED_TERRAFORM_ENVIRONMENT="production"
+readonly EXPECTED_TERRAFORM_ENVIRONMENT="dev"
 
 if [[ -n "${ROLLBACK_TARGET_SHA:-}" ]]; then
   if [[ "$ROLLBACK_TARGET_SHA" == "PREVIOUS" ]]; then

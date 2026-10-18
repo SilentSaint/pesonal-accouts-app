@@ -93,7 +93,8 @@ test('Terraform enables DynamoDB deletion protection for production environments
 
   assert.match(
     terraform,
-    /deletion_protection_enabled\s*=\s*contains\(\["prod",\s*"production"\],\s*var\.environment\)/,
+    /deletion_protection_enabled\s*=\s*contains\(\["dev",\s*"prod",\s*"production"\],\s*var\.environment\)/,
   );
 });
+
 

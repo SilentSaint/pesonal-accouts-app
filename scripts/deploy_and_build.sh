@@ -3,8 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${TARGET_DIR:-$(dirname "$SCRIPT_DIR")}"
-TERRAFORM_DIR="$ROOT_DIR/terraform"
+CANONICAL_ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="${TARGET_DIR:-$CANONICAL_ROOT_DIR}"
+TERRAFORM_DIR="$CANONICAL_ROOT_DIR/terraform"
 
 if [[ "${AET_GUARDED_RELEASE:-}" != "YES" ]]; then
   echo "Refusing deployment: use scripts/manual_production_deploy.sh after its guards pass." >&2
@@ -41,7 +42,7 @@ test -z "$(git -C "$ROOT_DIR" status --porcelain)" || {
 : "${AWS_ACCOUNT_ID:?Refusing deployment: AWS_ACCOUNT_ID is required.}"
 readonly EXPECTED_AWS_REGION="ap-south-2"
 readonly EXPECTED_AWS_ACCOUNT_ID="727118420276"
-readonly EXPECTED_TERRAFORM_ENVIRONMENT="production"
+readonly EXPECTED_TERRAFORM_ENVIRONMENT="dev"
 
 if [[ "${AWS_REGION:-}" != "$EXPECTED_AWS_REGION" ]]; then
   echo "Refusing deployment: AWS_REGION must be $EXPECTED_AWS_REGION, got '${AWS_REGION:-empty}'." >&2
@@ -78,6 +79,16 @@ echo "=========================================================="
 echo "[1/6] Building reviewed Lambda artifacts..."
 "$ROOT_DIR/backend/lambda/build.sh"
 "$ROOT_DIR/backend/gradlew" -p "$ROOT_DIR/backend" lambdaZip --no-daemon
+if [[ "$ROOT_DIR" != "$CANONICAL_ROOT_DIR" ]]; then
+  mkdir -p "$CANONICAL_ROOT_DIR/backend/lambda" "$CANONICAL_ROOT_DIR/backend/build/lambda"
+  if [[ -f "$ROOT_DIR/backend/lambda/lambda.zip" ]]; then
+    cp "$ROOT_DIR/backend/lambda/lambda.zip" "$CANONICAL_ROOT_DIR/backend/lambda/lambda.zip"
+  fi
+  if [[ -f "$ROOT_DIR/backend/build/lambda/transaction-command-lambda.zip" ]]; then
+    cp "$ROOT_DIR/backend/build/lambda/transaction-command-lambda.zip" "$CANONICAL_ROOT_DIR/backend/build/lambda/transaction-command-lambda.zip"
+  fi
+fi
+
 
 echo "[2/6] Planning reviewed Terraform infrastructure..."
 terraform -chdir="$TERRAFORM_DIR" init -input=false
@@ -101,6 +112,16 @@ if [[ "$planned_table_deletion_protection" != "true" ]]; then
   echo "Refusing deployment: production DynamoDB table ExpenseTrackerData must have deletion protection enabled in the reviewed plan (got '${planned_table_deletion_protection:-empty}')." >&2
   exit 1
 fi
+
+planned_bucket_actions="$(jq -r '
+  (.resource_changes[]? | select(.address == "aws_s3_bucket.web_bucket") | .change.actions[]) // empty
+' "$plan_json")"
+
+if grep -Eq '^(delete)$' <<<"$planned_bucket_actions"; then
+  echo "Refusing deployment: reviewed plan would destroy or replace existing production web bucket aws_s3_bucket.web_bucket." >&2
+  exit 1
+fi
+
 
 planned_output() {
   local output_name="$1"
