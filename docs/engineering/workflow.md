@@ -317,8 +317,14 @@ order, the latest valid request cycle is selected. Contradictory, ambiguous, or
 out-of-order request markers fail closed. Cycle cap enforcement inspects all
 owner-authored request markers across the PR before filtering to the current
 head/base: any attempted cycle beyond 10, or attempt to reset the cap after
-cycle 10 has been requested on an older head, fails closed immediately and persists
-a `cycle-10-exhausted` failure marker to the older head serialized under that head's concurrency lock, scoped with `pr=<number>`, and ignored by other pull requests so reverting to that commit keeps exhaustion latched. A PR-level
+cycle 10 has been requested, fails closed immediately. A cycle 10 request on
+the current head immediately latches a `cycle-10-exhausted` marker upon observation
+so subsequent deletion of the request cannot reset the cap, while still allowing
+that final review cycle to complete on the matching head. Over-limit request markers
+and historical cycle 10 markers are persisted to their historical heads serialized
+under each head's concurrency lock, scoped with `pr=<number>`, and ignored by other
+pull requests so reverting to that commit keeps exhaustion latched. Target selection
+fails closed if comment history cannot be retrieved. A PR-level
 thumbs-up always requires exactly one recorded request marker. An older or previous-base
 request, an edited old review, or a response delivered after a marker but
 originally submitted before it cannot qualify. When trusted history already

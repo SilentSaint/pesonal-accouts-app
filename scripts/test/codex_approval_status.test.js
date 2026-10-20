@@ -3348,5 +3348,272 @@ test('selectPullRequestTargets discovers historical head exhaustion targets with
   assert.equal(targets.exhaustedTargets[0].number, 177);
 });
 
+test('reconcilePullRequest pre-success refresh scopes exhaustion lookup to current PR and does not reject when another PR exhausted that SHA', async () => {
+  const sha = '3'.repeat(40);
+  const base = otherSha;
+  const bot = 'chatgpt-codex-connector[bot]';
+  const comments = [
+    {
+      id: 101,
+      created_at: '2026-10-06T10:00:00Z',
+      updated_at: '2026-10-06T10:00:00Z',
+      user: { login: 'SilentSaint' },
+      body: `@codex review\n<!-- codex-review-request: head=${sha}; base=${base}; cycle=1 -->`,
+    },
+  ];
+  const reviews = [
+    {
+      fullDatabaseId: 201,
+      createdAt: '2026-10-06T10:05:00Z',
+      submittedAt: '2026-10-06T10:05:00Z',
+      author: { login: bot },
+      state: 'APPROVED',
+      commit: { oid: sha },
+      body: `Codex Review: LGTM\nreviewed commit: ${sha}`,
+    },
+  ];
+  const priorStatuses = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'failure',
+      description: `pr=100; cycle-10-exhausted: The automated review cycle limit of ten cycles has been exceeded.`,
+      created_at: '2026-10-06T09:00:00Z',
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/200')) {
+      return responseFor({ number: 200, state: 'open', base: { ref: 'main', sha: base }, head: { sha } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 200, head: { sha } }]);
+    }
+    if (url.endsWith('/commits?per_page=100')) {
+      return responseFor([{ sha }]);
+    }
+    if (url.endsWith('/issues/200/comments?per_page=100')) {
+      return responseFor(comments);
+    }
+    if (url.endsWith('/comments?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/reactions?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: {
+          repository: {
+            pullRequest: {
+              reviews: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: reviews,
+              },
+            },
+          },
+        },
+      });
+    }
+    if (url.includes('/statuses?per_page=100')) {
+      return responseFor(priorStatuses);
+    }
+    if (url.includes('/statuses/')) {
+      published.push({ url, ...JSON.parse(options.body) });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
 
+  await reconcilePullRequest(200, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
 
+  const latest = published[published.length - 1];
+  assert.ok(latest, 'must publish a status');
+  assert.equal(latest.state, 'success', 'PR 200 must be approved and not blocked by PR 100 exhaustion marker during pre-success refresh');
+});
+
+test('selectPullRequestTargets fails closed when issue comment request fails during exhaustion discovery', async () => {
+  const h1 = '1'.repeat(40);
+  const h2 = '2'.repeat(40);
+  const base = otherSha;
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h2 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h2 } }]);
+    }
+    if (url.includes('/statuses?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      throw new Error('GitHub API comments rate limited');
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await assert.rejects(
+    async () => {
+      await selectPullRequestTargets({
+        eventName: 'pull_request_target',
+        payload: { action: 'synchronize', pull_request: { number: 177, head: { sha: h2 } } },
+        repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+        apiBaseUrl: 'https://api.github.com',
+        token: 'test-token',
+        fetchImpl,
+        headSha: h2,
+      });
+    },
+    /GitHub API comments rate limited|Inability to inspect PR comments/,
+    'must fail closed when comment discovery fails',
+  );
+});
+
+test('selectPullRequestTargets schedules exhaustion on historical head for over-limit cycle markers like cycle 11', async () => {
+  const h1 = '4'.repeat(40);
+  const h2 = '5'.repeat(40);
+  const base = otherSha;
+  const comments = [
+    {
+      id: 102,
+      created_at: '2026-10-06T09:00:00Z',
+      updated_at: '2026-10-06T09:00:00Z',
+      user: { login: 'SilentSaint' },
+      body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=11 -->`,
+    },
+  ];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h2 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h2 } }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor(comments);
+    }
+    if (url.includes('/statuses?per_page=100')) {
+      return responseFor([]);
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request_target',
+    payload: { action: 'synchronize', pull_request: { number: 177, head: { sha: h2 } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    headSha: h2,
+  });
+
+  assert.ok(Array.isArray(targets.exhaustedTargets));
+  assert.equal(targets.exhaustedTargets.length, 1);
+  assert.equal(targets.exhaustedTargets[0].head_sha, h1);
+});
+
+test('cycle 10 request on current head immediately latches cycle 10 exhaustion while allowing the final review to complete', async () => {
+  const h1 = '6'.repeat(40);
+  const base = otherSha;
+  const bot = 'chatgpt-codex-connector[bot]';
+  const comments = [
+    {
+      id: 103,
+      created_at: '2026-10-06T10:00:00Z',
+      updated_at: '2026-10-06T10:00:00Z',
+      user: { login: 'SilentSaint' },
+      body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=10 -->`,
+    },
+  ];
+  const published = [];
+  const statuses = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h1 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h1 } }]);
+    }
+    if (url.endsWith('/commits?per_page=100')) {
+      return responseFor([{ sha: h1 }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor(comments);
+    }
+    if (url.endsWith('/comments?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/reactions?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: { repository: { pullRequest: { reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
+      });
+    }
+    if (url.includes('/statuses?per_page=100')) {
+      return responseFor(statuses);
+    }
+    if (url.includes('/statuses/')) {
+      const body = JSON.parse(options.body);
+      const st = {
+        context: STATUS_CONTEXT,
+        state: body.state,
+        description: body.description,
+        created_at: new Date().toISOString(),
+        creator: { login: 'github-actions[bot]' },
+      };
+      statuses.unshift(st);
+      published.push({ url, ...body });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  // Run 1: cycle 10 request observed while review is awaiting
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
+
+  const failureStatus = published.find(s => s.state === 'failure');
+  assert.ok(failureStatus, 'must publish failure status while review is awaiting');
+  assert.match(failureStatus.description, /cycle-10-exhausted/i, 'must latch cycle-10-exhausted marker upon observing cycle 10 request');
+
+  // Run 2: Owner deletes the cycle 10 comment and tries to request cycle 1 to reset cap
+  comments.length = 0;
+  comments.push({
+    id: 104,
+    created_at: '2026-10-06T10:10:00Z',
+    updated_at: '2026-10-06T10:10:00Z',
+    user: { login: 'SilentSaint' },
+    body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=1 -->`,
+  });
+  published.length = 0;
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
+
+  const resetAttemptStatus = published.find(s => s.state === 'failure');
+  assert.ok(resetAttemptStatus, 'must reject attempt to reset cycle cap after cycle 10 latch');
+  assert.match(resetAttemptStatus.description, /The automated review cycle limit of ten cycles has been exceeded/i);
+});

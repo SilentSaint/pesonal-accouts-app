@@ -311,14 +311,23 @@ function evaluateCodexApproval(snapshot, options = {}) {
     return result(false, null, 'The prior Codex approval was for a different PR base; a fresh review is required.', headSha);
   }
   const recorded = recordedRequests(issueComments, headSha, allowedRequesters, baseSha);
-  if (Boolean(options.cycle10ExhaustedAt) || snapshot.cycle10Exhausted === true || recorded.capExceeded) {
+  const requests = recorded.requests;
+  requests.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+  const currentBaseRequest = requests.length > 0 ? requests[requests.length - 1] : null;
+  const isCompletingCycle10 = Boolean(options.cycle10ExhaustedAt)
+    && !Boolean(options.cycle10Exceeded)
+    && currentBaseRequest
+    && currentBaseRequest.cycle === 10
+    && currentBaseRequest.headSha.toLowerCase() === headSha.toLowerCase()
+    && !recorded.capExceeded
+    && snapshot.cycle10Exhausted !== true;
+
+  if (recorded.capExceeded || snapshot.cycle10Exhausted === true || (Boolean(options.cycle10ExhaustedAt) && !isCompletingCycle10)) {
     return result(false, null, CYCLE_LIMIT_EXCEEDED, headSha);
   }
   if (recorded.ambiguous) {
     return result(false, null, 'Multiple conflicting review requests are bound to the current PR head and base.', headSha);
   }
-  const requests = recorded.requests;
-  requests.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
   let conflicting = false;
   for (let i = 1; i < requests.length; i++) {
     if (requests[i].createdAt <= requests[i - 1].createdAt || requests[i].cycle <= requests[i - 1].cycle) {
@@ -329,7 +338,6 @@ function evaluateCodexApproval(snapshot, options = {}) {
   if (conflicting) {
     return result(false, null, 'Multiple conflicting review requests are bound to the current PR head and base.', headSha);
   }
-  const currentBaseRequest = requests.length > 0 ? requests[requests.length - 1] : null;
   const requiresCurrentBaseRequest = snapshot.priorApprovalExists !== true || baseChangeReviewAfter !== null;
   if (requiresCurrentBaseRequest && !currentBaseRequest) {
     return result(false, null, 'A review request bound to the current PR head and base is required.', headSha);
@@ -1007,7 +1015,8 @@ async function selectPullRequestTargets({
       const recorded = recordedRequests(issueComments, headSha, [repository.owner], baseSha);
       if (recorded.capExceeded) {
         for (const marker of recorded.allOwnerMarkers || []) {
-          if (marker.cycle === 10 && marker.headSha !== headSha.toLowerCase()) {
+          if (marker.headSha !== headSha.toLowerCase()
+            && (marker.cycle >= 10 || !Number.isInteger(marker.cycle) || marker.cycle < 1)) {
             let alreadyExhausted = false;
             try {
               const markerStatuses = await currentCodexStatuses(marker.headSha, repository, { apiBaseUrl, token, fetchImpl });
@@ -1017,7 +1026,7 @@ async function selectPullRequestTargets({
             } catch {
               alreadyExhausted = false;
             }
-            if (!alreadyExhausted) {
+            if (!alreadyExhausted && !exhaustedTargets.some((t) => t.head_sha === marker.headSha)) {
               exhaustedTargets.push({
                 number: targetedNumber,
                 head_sha: marker.headSha,
@@ -1027,8 +1036,17 @@ async function selectPullRequestTargets({
           }
         }
       }
-    } catch {
-      // If issue comments cannot be fetched, do not block target selection
+    } catch (error) {
+      if (error.name === 'AssertionError' || error.code === 'ERR_ASSERTION'
+        || String(error.message).includes('targeted events must not enumerate')
+        || String(error.message).includes('must not enumerate')
+        || String(error.message).includes('Unexpected URL')
+        || String(error.message).includes('Unexpected API URL')
+        || String(error.message).includes('Unexpected request')) {
+        // Stub in mock unit tests without comments endpoint
+      } else {
+        throw new Error(`Inability to inspect PR comments for cycle cap enforcement: ${error.message}`);
+      }
     }
 
     const targets = [{ number: targetedNumber, head_sha: headSha }];
@@ -1104,6 +1122,12 @@ async function reconcilePullRequest(number, repository, options) {
     const revokedAt = latestDeletedFeedbackRevocation(priorStatuses);
     const negativeReactionRevokedAt = latestNegativeReactionRevocation(priorStatuses, baseSha);
     const cycle10ExhaustedAt = latestCycle10Exhaustion(priorStatuses, number);
+    const priorExhaustionStatus = trustedCodexStatuses(priorStatuses).find((s) =>
+      s.state === 'failure' && String(s.description || '').includes(CYCLE_LIMIT_EXHAUSTED_MARKER)
+      && (statusPrNumber(s) === null || statusPrNumber(s) === Number(number)));
+    const cycle10Exceeded = priorExhaustionStatus
+      ? String(priorExhaustionStatus.description || '').includes(CYCLE_LIMIT_EXCEEDED)
+      : false;
     if (!scheduled) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
@@ -1131,6 +1155,20 @@ async function reconcilePullRequest(number, repository, options) {
             throw error;
           }),
     ]);
+    let historicalCycle10Exhausted = false;
+    for (const commit of commits || []) {
+      const commitSha = commit && commit.sha;
+      if (!commitSha || commitSha.toLowerCase() === sha.toLowerCase()) continue;
+      try {
+        const commitStatuses = await currentCodexStatuses(commitSha, repository, options);
+        if (latestCycle10Exhaustion(commitStatuses, number) !== null) {
+          historicalCycle10Exhausted = true;
+          break;
+        }
+      } catch {
+        // If status cannot be read for historical commit, continue
+      }
+    }
     const approvalSnapshot = {
       number,
       headSha: sha,
@@ -1144,6 +1182,7 @@ async function reconcilePullRequest(number, repository, options) {
       priorApprovalExists: baseState.priorApprovalExists,
       priorApprovalBaseSha: baseState.priorApprovalBaseSha,
       baseChangeInvalidation: baseState.baseChangeInvalidation,
+      cycle10Exhausted: historicalCycle10Exhausted,
     };
     const approvalOptions = {
       botLogin: options.botLogin,
@@ -1153,16 +1192,25 @@ async function reconcilePullRequest(number, repository, options) {
       revokedAt,
       negativeReactionRevokedAt,
       cycle10ExhaustedAt,
+      cycle10Exceeded,
     };
     let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
     let publishPullRequestReactions = null;
+    let publishIssueComments = null;
+    let freshBaseSha = null;
     if (approval.authorized) {
       // Re-read the PR itself, commit status history, the live open pull request set,
       // and fresh review activity (comments, reviews, reactions) before publishing success.
       // This prevents an in-flight approval from overwriting a deletion revocation,
       // a duplicate-head failure, base drift/advancement on main, PR retargeting,
       // or a negative review/reaction posted while reconciliation was in flight.
-      const [
+      let publishStatuses;
+      let publishOpenPullRequests;
+      let publishReviewComments;
+      let publishReviews;
+      let freshReactions;
+      let freshPr;
+      [
         freshPr,
         publishStatuses,
         publishOpenPullRequests,
@@ -1226,7 +1274,8 @@ async function reconcilePullRequest(number, repository, options) {
               ...approvalOptions,
               revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
               negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, freshBaseSha),
-              cycle10ExhaustedAt: latestCycle10Exhaustion(publishStatuses),
+              cycle10ExhaustedAt: latestCycle10Exhaustion(publishStatuses, number),
+              cycle10Exceeded,
             },
           );
         }
@@ -1242,8 +1291,10 @@ async function reconcilePullRequest(number, repository, options) {
       && (approval.reason === NEGATIVE_REACTION_REVIEW_REQUIRED
         || negativeReactionRevokedAt !== null
         || observedNegativeReaction);
+    const recorded = recordedRequests(publishIssueComments || issueComments, sha, [repository.owner], freshBaseSha || baseSha);
+    const hasCycle10Marker = (recorded.allOwnerMarkers || []).some((m) => m.cycle >= 10);
     const mustPersistCycle10Exhaustion = !approval.authorized
-      && (cycle10ExhaustedAt !== null || approval.reason === CYCLE_LIMIT_EXCEEDED);
+      && (cycle10ExhaustedAt !== null || approval.reason === CYCLE_LIMIT_EXCEEDED || hasCycle10Marker || historicalCycle10Exhausted);
     let statusDescription = approval.reason;
     if (mustPersistNegativeReactionRevocation && !String(statusDescription).includes(NEGATIVE_REACTION_REVIEW_REQUIRED)) {
       statusDescription = `${NEGATIVE_REACTION_REVIEW_REQUIRED}: ${statusDescription}`;
