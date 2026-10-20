@@ -616,11 +616,15 @@ test('a deleted or negative Codex feedback event preempts a saturated event queu
   assert.doesNotMatch(selectorJob, /queue:\s*max/);
   assert.match(
     selectorJob,
-    /cancel-in-progress:\s*\$\{\{\s*needs\.resolve-target-head\.outputs\.head_sha\s*!=\s*''[\s\S]*startsWith\(github\.event\.comment\.user\.login,\s*'chatgpt-codex-connector'\)/,
+    /cancel-in-progress:\s*\$\{\{\s*needs\.resolve-target-head\.outputs\.head_sha\s*!=\s*''[\s\S]*github\.event\.comment\.user\.login\s*==\s*'chatgpt-codex-connector\[bot\]'/,
   );
+  assert.doesNotMatch(selectorJob, /startsWith\(github\.event\.comment\.user\.login/);
+  assert.doesNotMatch(selectorJob, /github\.event_name\s*==\s*'pull_request'/);
   assert.match(reconcileJob, /group:\s*codex-approval-\$\{\{\s*github\.repository\s*\}\}-\$\{\{\s*matrix\.target\.head_sha\s*\}\}/);
   assert.match(reconcileJob, /queue:\s*max/);
   assert.match(reconcileJob, /cancel-in-progress:\s*false/);
+  assert.match(action, /duplicate-head-status:/);
+  assert.match(action, /--publish-duplicate-head/);
   assert.match(action, /needs\.resolve-target-head\.outputs\.head_sha/);
   assert.doesNotMatch(action, /format\('codex-approval-\{0\}-\{1\}'[\s\S]*github\.event\.issue\.number/);
 });
@@ -639,5 +643,18 @@ test('authorization requires head SHA uniqueness across open pull requests to pr
     workflow,
     /multiple open pull requests share the same head commit[\s\S]*fails\s+closed/i,
   );
+  assert.match(
+    workflow,
+    /chatgpt-codex-connector\[bot\]/i,
+  );
+  assert.match(
+    workflow,
+    /originating PR number|pr=<number>/i,
+  );
+  assert.match(
+    workflow,
+    /reject successes belonging to another PR|belong(?:s|ing)?\s+to\s+another\s+pull\s+request/i,
+  );
 });
+
 

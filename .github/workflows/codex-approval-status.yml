@@ -58,8 +58,8 @@ jobs:
     # events run in isolated per-run groups so they cannot displace a pending
     # deletion revocation while reconciliation cancels.
     concurrency:
-      group: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && startsWith(github.event.comment.user.login, 'chatgpt-codex-connector')) || (github.event.action == 'dismissed' && startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector') || github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
-      cancel-in-progress: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && startsWith(github.event.comment.user.login, 'chatgpt-codex-connector')) || (github.event.action == 'dismissed' && startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) || startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') || startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) }}
+      group: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && github.event.comment.user.login == 'chatgpt-codex-connector[bot]') || (github.event.action == 'dismissed' && github.event.review.user.login == 'chatgpt-codex-connector[bot]') || github.event.comment.user.login == 'chatgpt-codex-connector[bot]' || github.event.review.user.login == 'chatgpt-codex-connector[bot]') && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
+      cancel-in-progress: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && github.event.comment.user.login == 'chatgpt-codex-connector[bot]') || (github.event.action == 'dismissed' && github.event.review.user.login == 'chatgpt-codex-connector[bot]') || github.event.comment.user.login == 'chatgpt-codex-connector[bot]' || github.event.review.user.login == 'chatgpt-codex-connector[bot]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -68,6 +68,8 @@ jobs:
       statuses: write
     outputs:
       pr_targets: ${{ steps.select.outputs.pr_targets }}
+      has_duplicate_head: ${{ steps.select.outputs.has_duplicate_head }}
+      duplicate_head_reason: ${{ steps.select.outputs.duplicate_head_reason }}
     steps:
       - name: Check out trusted main policy code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,3 +135,35 @@ jobs:
           CODEX_REVIEW_BOT_LOGIN: chatgpt-codex-connector[bot]
           CODEX_PR_NUMBER: ${{ matrix.target.number }}
           CODEX_PR_HEAD_SHA: ${{ matrix.target.head_sha }}
+
+  duplicate-head-status:
+    needs: [resolve-target-head, select-pull-requests]
+    if: ${{ always() && needs.resolve-target-head.outputs.head_sha != '' && (needs.select-pull-requests.result == 'failure' || needs.select-pull-requests.outputs.has_duplicate_head == 'true') }}
+    concurrency:
+      group: codex-approval-${{ github.repository }}-${{ needs.resolve-target-head.outputs.head_sha }}
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Check out trusted main policy code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Publish duplicate head failure under head lock
+        run: |
+          if [ -f scripts/ci/codex-approval-status.js ]; then
+            node scripts/ci/codex-approval-status.js --publish-duplicate-head
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CODEX_PR_HEAD_SHA: ${{ needs.resolve-target-head.outputs.head_sha }}
+          CODEX_DUPLICATE_HEAD_REASON: ${{ needs.select-pull-requests.outputs.duplicate_head_reason }}

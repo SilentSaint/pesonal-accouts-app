@@ -7,6 +7,7 @@ const STATUS_CONTEXT = 'codex-approval';
 const DEFAULT_BOT_LOGIN = 'chatgpt-codex-connector[bot]';
 const DELETED_FEEDBACK_DESCRIPTION = 'Codex review feedback was deleted; a fresh review is required.';
 const DUPLICATE_HEAD_SHA_BLOCKED = 'Multiple open pull requests share this head commit; authorization cannot be isolated.';
+const CROSS_PR_APPROVAL_BLOCKED = 'Codex approval belongs to another pull request; a fresh review is required.';
 const BASE_CHANGE_REVIEW_REQUIRED = 'base-change-review-required';
 const NEGATIVE_REACTION_REVIEW_REQUIRED = 'negative-reaction-review-required';
 const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*base=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
@@ -220,6 +221,11 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
   return { ambiguous, requests, capExceeded };
 }
 
+
+function statusPrNumber(status) {
+  const match = String(status && status.description || '').match(/(?:^|[;\s])pr=(\d+)(?=$|[;\s])/i);
+  return match ? Number(match[1]) : null;
+}
 
 function statusBaseSha(status) {
   const match = String(status && status.description || '').match(/(?:^|[;\s])base-sha=([a-f0-9]{40})(?=$|[;\s])/i);
@@ -664,17 +670,35 @@ function trustedCodexStatuses(statuses) {
     .sort((left, right) => (timestamp(right.created_at) ?? -1) - (timestamp(left.created_at) ?? -1));
 }
 
-function priorApprovalBaseState(statuses, baseSha) {
+function priorApprovalBaseState(statuses, baseSha, prNumber) {
   const trusted = trustedCodexStatuses(statuses);
-  const latestSuccess = trusted.find((status) => status.state === 'success') || null;
+  const latestSuccess = trusted.find((status) => {
+    if (status.state !== 'success') return false;
+    const statusPr = statusPrNumber(status);
+    if (prNumber !== undefined && prNumber !== null) {
+      if (statusPr !== null && statusPr !== Number(prNumber)) {
+        return false;
+      }
+    }
+    return true;
+  }) || null;
   const latestSuccessTime = latestSuccess ? timestamp(latestSuccess.created_at) : null;
-  const latestObservedBaseStatus = trusted.find((status) =>
-    ['success', 'failure', 'error'].includes(status.state)
-    && statusBaseSha(status) !== null) || null;
+  const latestObservedBaseStatus = trusted.find((status) => {
+    if (!['success', 'failure', 'error'].includes(status.state) || statusBaseSha(status) === null) return false;
+    const statusPr = statusPrNumber(status);
+    if (prNumber !== undefined && prNumber !== null && statusPr !== null && statusPr !== Number(prNumber)) {
+      return false;
+    }
+    return true;
+  }) || null;
   const activeInvalidation = trusted.find((status) => {
     if (status.state !== 'failure'
       || !String(status.description || '').includes(BASE_CHANGE_REVIEW_REQUIRED)
       || statusBaseSha(status) !== String(baseSha || '').toLowerCase()) return false;
+    const statusPr = statusPrNumber(status);
+    if (prNumber !== undefined && prNumber !== null && statusPr !== null && statusPr !== Number(prNumber)) {
+      return false;
+    }
     const invalidationTime = timestamp(status.created_at);
     return !latestSuccess || latestSuccessTime === null || invalidationTime === null
       || invalidationTime >= latestSuccessTime;
@@ -706,10 +730,16 @@ function priorApprovalBaseState(statuses, baseSha) {
   return { priorApprovalExists: true, priorApprovalBaseSha };
 }
 
-function baseTaggedDescription(description, baseSha) {
-  if (!/^[a-f0-9]{40}$/i.test(baseSha || '')) return String(description || '').slice(0, 140);
-  const marker = `base-sha=${baseSha}; `;
-  return `${marker}${String(description || '').slice(0, 140 - marker.length)}`;
+function baseTaggedDescription(description, baseSha, prNumber) {
+  let prefix = '';
+  if (Number.isInteger(Number(prNumber)) && Number(prNumber) > 0) {
+    prefix += `pr=${Number(prNumber)}; `;
+  }
+  if (!String(description || '').includes(DUPLICATE_HEAD_SHA_BLOCKED) && /^[a-f0-9]{40}$/i.test(baseSha || '')) {
+    prefix += `base-sha=${baseSha}; `;
+  }
+  if (!prefix) return String(description || '').slice(0, 140);
+  return `${prefix}${String(description || '').slice(0, 140 - prefix.length)}`;
 }
 
 function latestDeletedFeedbackRevocation(statuses) {
@@ -905,6 +935,8 @@ async function selectPullRequestTargets({
       }
     }
     const headSha = liveHeadSha;
+    let hasDuplicateHead = false;
+    let duplicateHeadReason = '';
     if (['pull_request', 'pull_request_target'].includes(eventName)) {
       let openPulls;
       try {
@@ -928,6 +960,8 @@ async function selectPullRequestTargets({
       const duplicateHeadPulls = openPulls.filter((pr) =>
         pr.head && pr.head.sha && pr.head.sha.toLowerCase() === headSha.toLowerCase());
       if (duplicateHeadPulls.length > 1) {
+        hasDuplicateHead = true;
+        duplicateHeadReason = DUPLICATE_HEAD_SHA_BLOCKED;
         await publishCommitStatus({
           apiBaseUrl,
           owner: repository.owner,
@@ -938,9 +972,48 @@ async function selectPullRequestTargets({
           token,
           fetchImpl,
         });
+      } else if (['opened', 'reopened', 'synchronize'].includes(payload.action)) {
+        let priorStatuses = [];
+        try {
+          priorStatuses = await currentCodexStatuses(headSha, repository, { apiBaseUrl, token, fetchImpl });
+        } catch (error) {
+          await publishCommitStatus({
+            apiBaseUrl,
+            owner: repository.owner,
+            repo: repository.repo,
+            sha: headSha,
+            state: 'failure',
+            description: DUPLICATE_HEAD_SHA_BLOCKED,
+            token,
+            fetchImpl,
+          });
+          throw new Error(`Inability to establish head uniqueness: ${error.message}`);
+        }
+        const trusted = trustedCodexStatuses(priorStatuses);
+        const latestSuccess = trusted.find((s) => s.state === 'success');
+        if (latestSuccess) {
+          const statusPr = statusPrNumber(latestSuccess);
+          if (statusPr !== null && statusPr !== Number(targetedNumber)) {
+            hasDuplicateHead = true;
+            duplicateHeadReason = CROSS_PR_APPROVAL_BLOCKED;
+            await publishCommitStatus({
+              apiBaseUrl,
+              owner: repository.owner,
+              repo: repository.repo,
+              sha: headSha,
+              state: 'failure',
+              description: baseTaggedDescription(CROSS_PR_APPROVAL_BLOCKED, null, targetedNumber),
+              token,
+              fetchImpl,
+            });
+          }
+        }
       }
     }
-    return [{ number: targetedNumber, head_sha: headSha }];
+    const targets = [{ number: targetedNumber, head_sha: headSha }];
+    Object.defineProperty(targets, 'hasDuplicateHead', { value: hasDuplicateHead, enumerable: false });
+    Object.defineProperty(targets, 'duplicateHeadReason', { value: duplicateHeadReason, enumerable: false });
+    return targets;
   }
   if (eventName === 'issue_comment') return [];
   if (!['schedule', 'workflow_dispatch'].includes(eventName)) return [];
@@ -972,7 +1045,7 @@ async function reconcilePullRequest(number, repository, options) {
     repo: repository.repo,
     sha,
     state,
-    description: baseTaggedDescription(description, baseSha),
+    description: baseTaggedDescription(description, baseSha, number),
     targetUrl: options.targetUrl,
     token: options.token,
     fetchImpl: options.fetchImpl,
@@ -1012,7 +1085,7 @@ async function reconcilePullRequest(number, repository, options) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
     }
-    const baseState = priorApprovalBaseState(priorStatuses, baseSha);
+    const baseState = priorApprovalBaseState(priorStatuses, baseSha, number);
     if (isPullRequestBaseEdit(options.eventName, options.eventPayload || {}) || baseState.needsInvalidation) {
       await publish(
         'failure',
@@ -1194,6 +1267,7 @@ async function run(env = process.env, fetchImpl = globalThis.fetch) {
 if (require.main === module) {
   const resolveHead = process.argv.includes('--resolve-target-head');
   const selectTargets = process.argv.includes('--select-pr-targets');
+  const publishDuplicateHead = process.argv.includes('--publish-duplicate-head');
   const operation = resolveHead
     ? (async () => {
       let repository = null;
@@ -1229,9 +1303,27 @@ if (require.main === module) {
         botLogin: process.env.CODEX_REVIEW_BOT_LOGIN || DEFAULT_BOT_LOGIN,
         headSha: process.env.CODEX_PR_HEAD_SHA,
       });
-      const output = `pr_targets=${JSON.stringify(targets)}\n`;
+      const hasDuplicateHead = Boolean(targets && targets.hasDuplicateHead);
+      const duplicateHeadReason = (targets && targets.duplicateHeadReason) || '';
+      const output = `pr_targets=${JSON.stringify(targets)}\nhas_duplicate_head=${hasDuplicateHead ? 'true' : 'false'}\nduplicate_head_reason=${duplicateHeadReason}\n`;
       if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
       else process.stdout.write(output);
+    })()
+    : publishDuplicateHead
+    ? (async () => {
+      const repository = parseRepository(process.env.GITHUB_REPOSITORY);
+      const headSha = process.env.CODEX_PR_HEAD_SHA;
+      if (!headSha) throw new Error('CODEX_PR_HEAD_SHA is required.');
+      const description = process.env.CODEX_DUPLICATE_HEAD_REASON || DUPLICATE_HEAD_SHA_BLOCKED;
+      await publishCommitStatus({
+        apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+        owner: repository.owner,
+        repo: repository.repo,
+        sha: headSha,
+        state: 'failure',
+        description,
+        token: process.env.GITHUB_TOKEN,
+      });
     })()
     : run();
   operation.catch((error) => {
@@ -1239,6 +1331,8 @@ if (require.main === module) {
       ? 'Codex PR head resolution'
       : selectTargets
       ? 'Codex PR target selection'
+      : publishDuplicateHead
+      ? 'Codex duplicate head status publication'
       : 'Codex approval status reconciliation';
     process.stderr.write(`${description} failed: ${error.message}\n`);
     process.exitCode = 1;
@@ -1248,6 +1342,7 @@ if (require.main === module) {
 module.exports = {
   STATUS_CONTEXT,
   DUPLICATE_HEAD_SHA_BLOCKED,
+  CROSS_PR_APPROVAL_BLOCKED,
   decideAgentMerge,
   evaluateCodexApproval,
   isUnambiguousApproval,
@@ -1257,3 +1352,4 @@ module.exports = {
   reviewedHead,
   selectPullRequestTargets,
 };
+

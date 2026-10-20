@@ -2900,3 +2900,171 @@ test('reconcilePullRequest aborts and publishes no statuses when live PR head di
 
   assert.equal(published.length, 0, 'must not write statuses when live head differs from locked matrix head');
 });
+
+test('reconcilePullRequest tags both PR number and base-sha in published status descriptions', async () => {
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([]);
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        requestForBase(otherSha, headSha, '2026-10-06T10:00:00Z'),
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: headSha }, base: { ref: 'main', sha: otherSha } }]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha,
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(published.length, 2);
+  assert.equal(published[1].state, 'success');
+  assert.match(published[1].description, new RegExp(`^pr=177; base-sha=${otherSha};`));
+});
+
+test('reconciliation rejects a prior success that belongs to another pull request', async () => {
+  const published = [];
+  const foreignPrStatus = {
+    context: STATUS_CONTEXT,
+    state: 'success',
+    created_at: '2026-10-06T10:03:00Z',
+    description: `pr=176; base-sha=${otherSha}; prior approval from another PR`,
+    creator: { login: 'github-actions[bot]' },
+  };
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: otherSha }, head: { sha: headSha } });
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) return responseFor([foreignPrStatus]);
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) return responseFor([{ sha: headSha }]);
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      // Unmarked automatic review on PR 177 without request marker
+      return responseFor([
+        review("Codex Review: Didn't find any major issues.", headSha, bot, 1),
+      ]);
+    }
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/graphql')) return responseFor({ data: { repository: { pullRequest: { reviews: {
+      nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+    } } } } });
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: headSha }, base: { ref: 'main', sha: otherSha } }]);
+    }
+    throw new Error(`Unexpected API URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha,
+    fetchImpl,
+    eventName: 'pull_request_review',
+    botLogin: bot,
+  });
+
+  assert.equal(published.length, 2);
+  assert.equal(published[1].state, 'failure', 'foreign PR approval must not authorize unmarked review');
+  assert.match(published[1].description, /A review request bound to the current PR head and base is required/i);
+});
+
+test('selectPullRequestTargets immediately revokes inherited green status when a new PR opens on a commit whose latest trusted success belongs to another PR', async () => {
+  const published = [];
+  const foreignSuccess = {
+    context: STATUS_CONTEXT,
+    state: 'success',
+    created_at: '2026-10-06T10:03:00Z',
+    description: `pr=176; base-sha=${otherSha}; prior approval from another PR`,
+    creator: { login: 'github-actions[bot]' },
+  };
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/180')) {
+      return { ok: true, json: async () => ({ head: { sha: headSha } }), headers: { get: () => null } };
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      // Only PR 180 is open; PR 176 is closed
+      return {
+        ok: true,
+        json: async () => [
+          { number: 180, head: { sha: headSha }, base: { ref: 'main' } },
+        ],
+        headers: { get: () => null },
+      };
+    }
+    if (url.endsWith(`/commits/${headSha}/statuses?per_page=100`)) {
+      return { ok: true, json: async () => [foreignSuccess], headers: { get: () => null } };
+    }
+    if (url.includes('/statuses/')) {
+      published.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}), headers: { get: () => null } };
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request',
+    payload: { action: 'opened', pull_request: { number: 180, head: { sha: headSha } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    headSha,
+    fetchImpl,
+  });
+
+  assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.match(published[0].description, /another pull request/i);
+  assert.equal(targets.hasDuplicateHead, true);
+});
+
+test('--publish-duplicate-head publishes failure status under head SHA', async () => {
+  const published = [];
+  const fetchImpl = async (url, options = {}) => {
+    published.push(JSON.parse(options.body));
+    return { ok: true, json: async () => ({}) };
+  };
+  await publishCommitStatus({
+    apiBaseUrl: 'https://api.github.com',
+    owner: 'SilentSaint',
+    repo: 'pesonal-accouts-app',
+    sha: headSha,
+    state: 'failure',
+    description: DUPLICATE_HEAD_SHA_BLOCKED,
+    token: 'test-token',
+    fetchImpl,
+  });
+  assert.equal(published.length, 1);
+  assert.equal(published[0].state, 'failure');
+  assert.equal(published[0].description, DUPLICATE_HEAD_SHA_BLOCKED);
+});
+
+
