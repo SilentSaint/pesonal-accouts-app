@@ -26,6 +26,7 @@ jobs:
       pull-requests: read
     outputs:
       head_sha: ${{ steps.resolve.outputs.head_sha }}
+      is_negative_feedback: ${{ steps.resolve.outputs.is_negative_feedback }}
     steps:
       - name: Check out trusted main policy code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,8 +59,8 @@ jobs:
     # events run in isolated per-run groups so they cannot displace a pending
     # deletion revocation while reconciliation cancels.
     concurrency:
-      group: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && github.event.comment.user.login == 'chatgpt-codex-connector[bot]') || (github.event.action == 'dismissed' && github.event.review.user.login == 'chatgpt-codex-connector[bot]') || github.event.comment.user.login == 'chatgpt-codex-connector[bot]' || github.event.review.user.login == 'chatgpt-codex-connector[bot]') && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
-      cancel-in-progress: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && github.event.comment.user.login == 'chatgpt-codex-connector[bot]') || (github.event.action == 'dismissed' && github.event.review.user.login == 'chatgpt-codex-connector[bot]') || github.event.comment.user.login == 'chatgpt-codex-connector[bot]' || github.event.review.user.login == 'chatgpt-codex-connector[bot]') }}
+      group: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && github.event.comment.user.login == 'chatgpt-codex-connector[bot]') || (github.event.action == 'dismissed' && github.event.review.user.login == 'chatgpt-codex-connector[bot]') || needs.resolve-target-head.outputs.is_negative_feedback == 'true') && format('codex-approval-{0}-{1}', github.repository, needs.resolve-target-head.outputs.head_sha) || format('codex-approval-select-{0}-{1}', github.repository, github.run_id) }}
+      cancel-in-progress: ${{ needs.resolve-target-head.outputs.head_sha != '' && ((github.event.action == 'deleted' && github.event.comment.user.login == 'chatgpt-codex-connector[bot]') || (github.event.action == 'dismissed' && github.event.review.user.login == 'chatgpt-codex-connector[bot]') || needs.resolve-target-head.outputs.is_negative_feedback == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

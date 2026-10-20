@@ -142,8 +142,9 @@ must:
    unchanged, do not start cycle 11, and notify the owner with the cycle count
    and blocker. The owner decides whether to continue manually. A clean cycle 10
    may proceed to the merge gate. If the head changes after cycle 10, do not reset
-   the cap or start another automated cycle: invalidate the prior approval, leave
-   the PR unchanged, and hand it to the owner for a fresh manual decision.
+   the cap or start another automated cycle: invalidate the prior approval, persist
+   the cycle-10 exhaustion failure onto the previous head to keep exhaustion latched
+   even if reverted, leave the PR unchanged, and hand it to the owner for a fresh manual decision.
 5. For a review comment, verify the author is the configured Codex review bot,
    then classify the complete Codex review comment by meaning, not exact wording.
    It must explicitly state no major issues or an equivalent unambiguous
@@ -287,17 +288,18 @@ closed to prevent status cross-contamination. Trusted status markers record the
 originating PR number (`pr=<number>; `) alongside the base SHA (`base-sha=<sha>; `).
 Prior successes belonging to another PR are rejected in `priorApprovalBaseState`,
 preventing a new pull request sharing a head commit from inheriting green status or
-authorizing on unmarked reviews. Target selection immediately revokes an inherited
-green status when a new PR opens on a commit whose latest trusted success belongs to another
-pull request. Duplicate-head failure writes and reconcile jobs are serialized under the
-target PR head commit SHA queue with `queue: max`, while ordinary pull request events run in
+authorizing on unmarked reviews. Target selection flags inherited green status for
+locked revocation when a new PR opens on a commit whose latest trusted success belongs to another
+pull request. Duplicate-head failure writes are deferred to the head-locked `duplicate-head-status` job
+with `queue: max` rather than written by the unlocked selector, ensuring all duplicate-head failure writes
+and reconcile jobs are serialized under the target PR head commit SHA queue, while ordinary pull request events run in
 isolated per-run selector groups so they do not enter the selector queue or displace pending
 revocations. Before publishing a success status, the reconciler re-validates the live pull
 request, base SHA, open pull request set, status history, and fresh review activity (comments,
 reviews, and reactions) to prevent in-flight base changes, negative feedback, duplicate PR
-heads, or deletion revocations from being overwritten. Revocation preemption is restricted to
-genuine `chatgpt-codex-connector[bot]` feedback, matching the exact bot login rather than a
-prefix, preventing other participants from displacing or cancelling a pending revocation. If the
+heads, or deletion revocations from being overwritten. Revocation preemption is restricted strictly to
+deletions, dismissals, and feedback classified as negative by `chatgpt-codex-connector[bot]`, matching the exact bot login rather than a
+prefix, preventing other participants or delayed positive activity from displacing or cancelling a pending revocation. If the
 live pull request head advances from the locked matrix head before reconciliation reads it, the
 job aborts rather than writing statuses outside the acquired head lock. Fallback revocations
 without an acquired head lock delegate to locked reconciliation rather than writing statuses
@@ -315,7 +317,8 @@ order, the latest valid request cycle is selected. Contradictory, ambiguous, or
 out-of-order request markers fail closed. Cycle cap enforcement inspects all
 owner-authored request markers across the PR before filtering to the current
 head/base: any attempted cycle beyond 10, or attempt to reset the cap after
-cycle 10 has been requested on an older head, fails closed immediately. A PR-level
+cycle 10 has been requested on an older head, fails closed immediately and persists
+a `cycle-10-exhausted` failure marker to the older head so reverting to that commit keeps exhaustion latched. A PR-level
 thumbs-up always requires exactly one recorded request marker. An older or previous-base
 request, an edited old review, or a response delivered after a marker but
 originally submitted before it cannot qualify. When trusted history already

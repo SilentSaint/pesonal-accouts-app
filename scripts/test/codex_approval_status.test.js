@@ -2334,12 +2334,12 @@ test('selectPullRequestTargets includes non-main PRs when checking for duplicate
   });
 
   assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
-  assert.equal(published.length, 1);
-  assert.equal(published[0].state, 'failure');
-  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+  assert.equal(published.length, 0, 'must not publish duplicate-head failure outside head lock in selector');
+  assert.equal(targets.hasDuplicateHead, true);
+  assert.equal(targets.duplicateHeadReason, DUPLICATE_HEAD_SHA_BLOCKED);
 });
 
-test('selectPullRequestTargets fails closed and publishes failure when duplicate-head discovery fails', async () => {
+test('selectPullRequestTargets fails closed and defers failure write when duplicate-head discovery fails', async () => {
   const published = [];
   const fetchImpl = async (url, options = {}) => {
     if (url.endsWith('/pulls/180')) {
@@ -2368,9 +2368,7 @@ test('selectPullRequestTargets fails closed and publishes failure when duplicate
     /Inability to establish head uniqueness/i,
   );
 
-  assert.equal(published.length, 1);
-  assert.equal(published[0].state, 'failure');
-  assert.ok(published[0].description.includes(DUPLICATE_HEAD_SHA_BLOCKED));
+  assert.equal(published.length, 0, 'must not publish failure outside head lock when discovery fails');
 });
 
 test('reconciliation publishes duplicate-head failure when multiple open PRs share head commit including non-main PRs', async () => {
@@ -3040,10 +3038,9 @@ test('selectPullRequestTargets immediately revokes inherited green status when a
   });
 
   assert.deepEqual(targets, [{ number: 180, head_sha: headSha }]);
-  assert.equal(published.length, 1);
-  assert.equal(published[0].state, 'failure');
-  assert.match(published[0].description, /another pull request/i);
+  assert.equal(published.length, 0, 'must defer cross-PR failure write to locked job');
   assert.equal(targets.hasDuplicateHead, true);
+  assert.match(targets.duplicateHeadReason, /another pull request/i);
 });
 
 test('--publish-duplicate-head publishes failure status under head SHA', async () => {
@@ -3065,6 +3062,148 @@ test('--publish-duplicate-head publishes failure status under head SHA', async (
   assert.equal(published.length, 1);
   assert.equal(published[0].state, 'failure');
   assert.equal(published[0].description, DUPLICATE_HEAD_SHA_BLOCKED);
+});
+
+test('evaluateCodexApproval rejects authorization when cycle-10 exhaustion is latched', () => {
+  const req = (c) => `<!-- codex-review-request: head=${headSha}; base=${otherSha}; cycle=${c} -->`;
+  const result = evaluateCodexApproval(
+    snapshot({
+      issueComments: [
+        {
+          id: 1,
+          created_at: '2026-10-06T10:00:00Z',
+          updated_at: '2026-10-06T10:00:00Z',
+          user: { login: 'SilentSaint' },
+          body: `@codex review\n${req(10)}`,
+        },
+      ],
+      reviews: [
+        {
+          fullDatabaseId: 2,
+          created_at: '2026-10-06T10:05:00Z',
+          submitted_at: '2026-10-06T10:05:00Z',
+          author: { login: bot },
+          state: 'APPROVED',
+          body: 'Codex Review: LGTM\nreviewed commit: ' + headSha,
+        },
+      ],
+      cycle10Exhausted: true,
+    }),
+    { botLogin: bot },
+  );
+  assert.equal(result.authorized, false);
+  assert.equal(result.reason, 'The automated review cycle limit of ten cycles has been exceeded.');
+});
+
+test('reconciliation persists cycle-10 exhaustion to older head and keeps exhaustion latched when PR is reverted to older head', async () => {
+  const h1 = '1'.repeat(40);
+  const h2 = '2'.repeat(40);
+  const base = otherSha;
+  const published = [];
+  const h1Statuses = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'success',
+      description: `pr=177; base-sha=${base}; The Codex review explicitly found no major issues.`,
+      created_at: '2026-10-06T09:00:00Z',
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+  const h2Statuses = [];
+  const comments = [
+    {
+      id: 100,
+      created_at: '2026-10-06T09:00:00Z',
+      updated_at: '2026-10-06T09:00:00Z',
+      user: { login: 'SilentSaint' },
+      body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=10 -->`,
+    },
+  ];
+  const reviews = [
+    {
+      fullDatabaseId: 200,
+      created_at: '2026-10-06T09:05:00Z',
+      submitted_at: '2026-10-06T09:05:00Z',
+      author: { login: bot },
+      state: 'APPROVED',
+      body: `Codex Review: LGTM\nreviewed commit: ${h1}`,
+    },
+  ];
+
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  let currentHead = h2;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ state: 'open', base: { ref: 'main', sha: base }, head: { sha: currentHead } });
+    }
+    if (url.endsWith(`/commits/${h1}/statuses?per_page=100`)) return responseFor([...h1Statuses]);
+    if (url.endsWith(`/commits/${h2}/statuses?per_page=100`)) return responseFor([...h2Statuses]);
+    if (url.includes(`/statuses/${h1}`)) {
+      const payload = JSON.parse(options.body);
+      published.push({ sha: h1, ...payload });
+      h1Statuses.unshift({ context: STATUS_CONTEXT, creator: { login: 'github-actions[bot]' }, created_at: new Date().toISOString(), ...payload });
+      return responseFor({});
+    }
+    if (url.includes(`/statuses/${h2}`)) {
+      const payload = JSON.parse(options.body);
+      published.push({ sha: h2, ...payload });
+      h2Statuses.unshift({ context: STATUS_CONTEXT, creator: { login: 'github-actions[bot]' }, created_at: new Date().toISOString(), ...payload });
+      return responseFor({});
+    }
+    if (url.endsWith('/pulls/177/commits?per_page=100')) {
+      return responseFor([{ sha: currentHead }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) return responseFor(comments);
+    if (url.endsWith('/pulls/177/comments?per_page=100')) return responseFor([]);
+    if (url.endsWith('/issues/177/reactions?per_page=100')) return responseFor([]);
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: currentHead } }]);
+    }
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: {
+          repository: {
+            pullRequest: {
+              reviews: {
+                nodes: reviews,
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        },
+      });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  // Reconcile H2: post-cycle-10 head transition must mark H2 failed AND persist exhaustion to H1
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_target',
+    botLogin: bot,
+  });
+
+  const h1ExhaustionStatus = published.find(s => s.sha === h1 && s.state === 'failure');
+  assert.ok(h1ExhaustionStatus, 'must persist failure status to older head H1 when PR moves to H2 after cycle 10');
+  assert.match(h1ExhaustionStatus.description, /cycle-10-exhausted/i);
+
+  // Revert PR back to H1
+  currentHead = h1;
+  published.length = 0;
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'pull_request_target',
+    botLogin: bot,
+  });
+
+  const h1FinalStatus = published[published.length - 1];
+  assert.equal(h1FinalStatus.state, 'failure', 'reverting to H1 must remain latched as failure');
+  assert.match(h1FinalStatus.description, /cycle limit of ten cycles has been exceeded/i);
 });
 
 

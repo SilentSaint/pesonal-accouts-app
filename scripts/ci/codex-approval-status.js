@@ -10,6 +10,8 @@ const DUPLICATE_HEAD_SHA_BLOCKED = 'Multiple open pull requests share this head 
 const CROSS_PR_APPROVAL_BLOCKED = 'Codex approval belongs to another pull request; a fresh review is required.';
 const BASE_CHANGE_REVIEW_REQUIRED = 'base-change-review-required';
 const NEGATIVE_REACTION_REVIEW_REQUIRED = 'negative-reaction-review-required';
+const CYCLE_LIMIT_EXHAUSTED_MARKER = 'cycle-10-exhausted';
+const CYCLE_LIMIT_EXCEEDED = 'The automated review cycle limit of ten cycles has been exceeded.';
 const REVIEW_REQUEST_MARKER = /<!--\s*codex-review-request:\s*head=([a-f0-9]{40});\s*base=([a-f0-9]{40});\s*cycle=(\d+)\s*-->/gi;
 const REVIEWED_SHA = /reviewed\s+(?:head|commit)(?:\s+sha)?\s*:\s*\*{0,2}\s*`?([a-f0-9]{7,40})`?/gi;
 const PULL_REQUEST_REVIEWS_QUERY = `
@@ -180,15 +182,6 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
       const requestUpdatedAt = timestamp(comment.updated_at);
       const isUnedited = requestTime !== null && requestUpdatedAt !== null && requestUpdatedAt === requestTime;
 
-      // Inspect owner-authored cycle markers for cap violations before filtering to current head/base.
-      if (!Number.isInteger(cycle) || cycle < 1 || cycle > 10) {
-        capExceeded = true;
-        continue;
-      }
-      if (cycle === 10 && markerHeadSha !== headSha.toLowerCase()) {
-        capExceeded = true;
-        continue;
-      }
       if (isUnedited) {
         allOwnerMarkers.push({
           id: comment.id,
@@ -197,6 +190,16 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
           cycle,
           createdAt: requestTime,
         });
+      }
+
+      // Inspect owner-authored cycle markers for cap violations before filtering to current head/base.
+      if (!Number.isInteger(cycle) || cycle < 1 || cycle > 10) {
+        capExceeded = true;
+        continue;
+      }
+      if (cycle === 10 && markerHeadSha !== headSha.toLowerCase()) {
+        capExceeded = true;
+        continue;
       }
 
       if (markerHeadSha !== headSha.toLowerCase()) continue;
@@ -218,7 +221,7 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
     }
   }
 
-  return { ambiguous, requests, capExceeded };
+  return { ambiguous, requests, capExceeded, allOwnerMarkers };
 }
 
 
@@ -308,8 +311,8 @@ function evaluateCodexApproval(snapshot, options = {}) {
     return result(false, null, 'The prior Codex approval was for a different PR base; a fresh review is required.', headSha);
   }
   const recorded = recordedRequests(issueComments, headSha, allowedRequesters, baseSha);
-  if (recorded.capExceeded) {
-    return result(false, null, 'The automated review cycle limit of ten cycles has been exceeded.', headSha);
+  if (Boolean(options.cycle10ExhaustedAt) || snapshot.cycle10Exhausted === true || recorded.capExceeded) {
+    return result(false, null, CYCLE_LIMIT_EXCEEDED, headSha);
   }
   if (recorded.ambiguous) {
     return result(false, null, 'Multiple conflicting review requests are bound to the current PR head and base.', headSha);
@@ -671,6 +674,9 @@ function trustedCodexStatuses(statuses) {
 }
 
 function priorApprovalBaseState(statuses, baseSha, prNumber) {
+  if (latestCycle10Exhaustion(statuses) !== null) {
+    return { priorApprovalExists: false, priorApprovalBaseSha: null };
+  }
   const trusted = trustedCodexStatuses(statuses);
   const latestSuccess = trusted.find((status) => {
     if (status.state !== 'success') return false;
@@ -735,11 +741,21 @@ function baseTaggedDescription(description, baseSha, prNumber) {
   if (Number.isInteger(Number(prNumber)) && Number(prNumber) > 0) {
     prefix += `pr=${Number(prNumber)}; `;
   }
-  if (!String(description || '').includes(DUPLICATE_HEAD_SHA_BLOCKED) && /^[a-f0-9]{40}$/i.test(baseSha || '')) {
+  if (!String(description || '').includes(DUPLICATE_HEAD_SHA_BLOCKED)
+    && !String(description || '').includes(CYCLE_LIMIT_EXHAUSTED_MARKER)
+    && /^[a-f0-9]{40}$/i.test(baseSha || '')) {
     prefix += `base-sha=${baseSha}; `;
   }
   if (!prefix) return String(description || '').slice(0, 140);
   return `${prefix}${String(description || '').slice(0, 140 - prefix.length)}`;
+}
+
+function latestCycle10Exhaustion(statuses) {
+  const marker = trustedCodexStatuses(statuses)
+    .find((status) => status.state === 'failure'
+      && String(status.description || '').includes(CYCLE_LIMIT_EXHAUSTED_MARKER)
+      && timestamp(status.created_at) !== null);
+  return marker ? marker.created_at : null;
 }
 
 function latestDeletedFeedbackRevocation(statuses) {
@@ -945,16 +961,6 @@ async function selectPullRequestTargets({
           { apiBaseUrl, token, fetchImpl },
         );
       } catch (error) {
-        await publishCommitStatus({
-          apiBaseUrl,
-          owner: repository.owner,
-          repo: repository.repo,
-          sha: headSha,
-          state: 'failure',
-          description: DUPLICATE_HEAD_SHA_BLOCKED,
-          token,
-          fetchImpl,
-        });
         throw new Error(`Inability to establish head uniqueness: ${error.message}`);
       }
       const duplicateHeadPulls = openPulls.filter((pr) =>
@@ -962,31 +968,11 @@ async function selectPullRequestTargets({
       if (duplicateHeadPulls.length > 1) {
         hasDuplicateHead = true;
         duplicateHeadReason = DUPLICATE_HEAD_SHA_BLOCKED;
-        await publishCommitStatus({
-          apiBaseUrl,
-          owner: repository.owner,
-          repo: repository.repo,
-          sha: headSha,
-          state: 'failure',
-          description: DUPLICATE_HEAD_SHA_BLOCKED,
-          token,
-          fetchImpl,
-        });
       } else if (['opened', 'reopened', 'synchronize'].includes(payload.action)) {
         let priorStatuses = [];
         try {
           priorStatuses = await currentCodexStatuses(headSha, repository, { apiBaseUrl, token, fetchImpl });
         } catch (error) {
-          await publishCommitStatus({
-            apiBaseUrl,
-            owner: repository.owner,
-            repo: repository.repo,
-            sha: headSha,
-            state: 'failure',
-            description: DUPLICATE_HEAD_SHA_BLOCKED,
-            token,
-            fetchImpl,
-          });
           throw new Error(`Inability to establish head uniqueness: ${error.message}`);
         }
         const trusted = trustedCodexStatuses(priorStatuses);
@@ -995,17 +981,7 @@ async function selectPullRequestTargets({
           const statusPr = statusPrNumber(latestSuccess);
           if (statusPr !== null && statusPr !== Number(targetedNumber)) {
             hasDuplicateHead = true;
-            duplicateHeadReason = CROSS_PR_APPROVAL_BLOCKED;
-            await publishCommitStatus({
-              apiBaseUrl,
-              owner: repository.owner,
-              repo: repository.repo,
-              sha: headSha,
-              state: 'failure',
-              description: baseTaggedDescription(CROSS_PR_APPROVAL_BLOCKED, null, targetedNumber),
-              token,
-              fetchImpl,
-            });
+            duplicateHeadReason = baseTaggedDescription(CROSS_PR_APPROVAL_BLOCKED, null, targetedNumber);
           }
         }
       }
@@ -1081,6 +1057,7 @@ async function reconcilePullRequest(number, repository, options) {
     const latestStatus = trustedCodexStatuses(priorStatuses)[0] || null;
     const revokedAt = latestDeletedFeedbackRevocation(priorStatuses);
     const negativeReactionRevokedAt = latestNegativeReactionRevocation(priorStatuses, baseSha);
+    const cycle10ExhaustedAt = latestCycle10Exhaustion(priorStatuses);
     if (!scheduled) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
@@ -1129,8 +1106,30 @@ async function reconcilePullRequest(number, repository, options) {
       eventPayload: options.eventPayload,
       revokedAt,
       negativeReactionRevokedAt,
+      cycle10ExhaustedAt,
     };
     let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
+    const recorded = recordedRequests(issueComments, sha, [repository.owner], baseSha);
+    if (recorded.capExceeded) {
+      for (const marker of recorded.allOwnerMarkers || []) {
+        if (marker.cycle === 10 && marker.headSha !== sha.toLowerCase()) {
+          await publishCommitStatus({
+            apiBaseUrl: options.apiBaseUrl,
+            owner: repository.owner,
+            repo: repository.repo,
+            sha: marker.headSha,
+            state: 'failure',
+            description: baseTaggedDescription(
+              `${CYCLE_LIMIT_EXHAUSTED_MARKER}: ${CYCLE_LIMIT_EXCEEDED}`,
+              baseSha,
+              number,
+            ),
+            token: options.token,
+            fetchImpl: options.fetchImpl,
+          });
+        }
+      }
+    }
     let publishPullRequestReactions = null;
     if (approval.authorized) {
       // Re-read the PR itself, commit status history, the live open pull request set,
@@ -1202,6 +1201,7 @@ async function reconcilePullRequest(number, repository, options) {
               ...approvalOptions,
               revokedAt: latestDeletedFeedbackRevocation(publishStatuses),
               negativeReactionRevokedAt: latestNegativeReactionRevocation(publishStatuses, freshBaseSha),
+              cycle10ExhaustedAt: latestCycle10Exhaustion(publishStatuses),
             },
           );
         }
@@ -1217,13 +1217,20 @@ async function reconcilePullRequest(number, repository, options) {
       && (approval.reason === NEGATIVE_REACTION_REVIEW_REQUIRED
         || negativeReactionRevokedAt !== null
         || observedNegativeReaction);
-    const statusDescription = mustPersistNegativeReactionRevocation
-      && !String(approval.reason).includes(NEGATIVE_REACTION_REVIEW_REQUIRED)
-      ? `${NEGATIVE_REACTION_REVIEW_REQUIRED}: ${approval.reason}`
-      : approval.reason;
+    const mustPersistCycle10Exhaustion = !approval.authorized
+      && (cycle10ExhaustedAt !== null || approval.reason === CYCLE_LIMIT_EXCEEDED);
+    let statusDescription = approval.reason;
+    if (mustPersistNegativeReactionRevocation && !String(statusDescription).includes(NEGATIVE_REACTION_REVIEW_REQUIRED)) {
+      statusDescription = `${NEGATIVE_REACTION_REVIEW_REQUIRED}: ${statusDescription}`;
+    }
+    if (mustPersistCycle10Exhaustion && !String(statusDescription).includes(CYCLE_LIMIT_EXHAUSTED_MARKER)) {
+      statusDescription = `${CYCLE_LIMIT_EXHAUSTED_MARKER}: ${statusDescription}`;
+    }
     if (!scheduled || !latestStatus || latestStatus.state !== finalState
       || (mustPersistNegativeReactionRevocation
-        && !String(latestStatus.description || '').includes(NEGATIVE_REACTION_REVIEW_REQUIRED))) {
+        && !String(latestStatus.description || '').includes(NEGATIVE_REACTION_REVIEW_REQUIRED))
+      || (mustPersistCycle10Exhaustion
+        && !String(latestStatus.description || '').includes(CYCLE_LIMIT_EXHAUSTED_MARKER))) {
       await publish(finalState, statusDescription);
     }
   } catch (error) {
@@ -1285,7 +1292,12 @@ if (require.main === module) {
         apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
         token: process.env.GITHUB_TOKEN,
       });
-      const output = `head_sha=${headSha}\n`;
+      const isNegative = isNegativeCodexFeedback(
+        process.env.GITHUB_EVENT_NAME || '',
+        payload,
+        process.env.CODEX_REVIEW_BOT_LOGIN || DEFAULT_BOT_LOGIN,
+      );
+      const output = `head_sha=${headSha}\nis_negative_feedback=${isNegative ? 'true' : 'false'}\n`;
       if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
       else process.stdout.write(output);
     })()
@@ -1343,8 +1355,11 @@ module.exports = {
   STATUS_CONTEXT,
   DUPLICATE_HEAD_SHA_BLOCKED,
   CROSS_PR_APPROVAL_BLOCKED,
+  CYCLE_LIMIT_EXHAUSTED_MARKER,
+  CYCLE_LIMIT_EXCEEDED,
   decideAgentMerge,
   evaluateCodexApproval,
+  isNegativeCodexFeedback,
   isUnambiguousApproval,
   publishCommitStatus,
   reconcilePullRequest,
