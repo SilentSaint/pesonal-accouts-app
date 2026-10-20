@@ -172,7 +172,6 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
     const matches = [...body.matchAll(REVIEW_REQUEST_MARKER)];
     if (matches.length > 1) {
       ambiguous = true;
-      continue;
     }
     for (const match of matches) {
       const markerHeadSha = match[1].toLowerCase();
@@ -202,6 +201,7 @@ function recordedRequests(issueComments, headSha, allowedRequesters, baseSha) {
         continue;
       }
 
+      if (matches.length > 1) continue;
       if (markerHeadSha !== headSha.toLowerCase()) continue;
       if (markerBaseSha !== baseSha.toLowerCase()) continue;
       if (!isUnedited) continue;
@@ -674,7 +674,7 @@ function trustedCodexStatuses(statuses) {
 }
 
 function priorApprovalBaseState(statuses, baseSha, prNumber) {
-  if (latestCycle10Exhaustion(statuses) !== null) {
+  if (latestCycle10Exhaustion(statuses, prNumber) !== null) {
     return { priorApprovalExists: false, priorApprovalBaseSha: null };
   }
   const trusted = trustedCodexStatuses(statuses);
@@ -750,11 +750,22 @@ function baseTaggedDescription(description, baseSha, prNumber) {
   return `${prefix}${String(description || '').slice(0, 140 - prefix.length)}`;
 }
 
-function latestCycle10Exhaustion(statuses) {
+function latestCycle10Exhaustion(statuses, prNumber) {
   const marker = trustedCodexStatuses(statuses)
-    .find((status) => status.state === 'failure'
-      && String(status.description || '').includes(CYCLE_LIMIT_EXHAUSTED_MARKER)
-      && timestamp(status.created_at) !== null);
+    .find((status) => {
+      if (status.state !== 'failure'
+        || !String(status.description || '').includes(CYCLE_LIMIT_EXHAUSTED_MARKER)
+        || timestamp(status.created_at) === null) {
+        return false;
+      }
+      const statusPr = statusPrNumber(status);
+      if (prNumber !== undefined && prNumber !== null) {
+        if (statusPr !== null && statusPr !== Number(prNumber)) {
+          return false;
+        }
+      }
+      return true;
+    });
   return marker ? marker.created_at : null;
 }
 
@@ -986,9 +997,44 @@ async function selectPullRequestTargets({
         }
       }
     }
+    const exhaustedTargets = [];
+    try {
+      const issueComments = await githubPages(
+        `/repos/${repository.owner}/${repository.repo}/issues/${targetedNumber}/comments?per_page=100`,
+        { apiBaseUrl, token, fetchImpl },
+      );
+      const baseSha = pullRequest && pullRequest.base && pullRequest.base.sha;
+      const recorded = recordedRequests(issueComments, headSha, [repository.owner], baseSha);
+      if (recorded.capExceeded) {
+        for (const marker of recorded.allOwnerMarkers || []) {
+          if (marker.cycle === 10 && marker.headSha !== headSha.toLowerCase()) {
+            let alreadyExhausted = false;
+            try {
+              const markerStatuses = await currentCodexStatuses(marker.headSha, repository, { apiBaseUrl, token, fetchImpl });
+              if (latestCycle10Exhaustion(markerStatuses, targetedNumber) !== null) {
+                alreadyExhausted = true;
+              }
+            } catch {
+              alreadyExhausted = false;
+            }
+            if (!alreadyExhausted) {
+              exhaustedTargets.push({
+                number: targetedNumber,
+                head_sha: marker.headSha,
+                base_sha: marker.baseSha,
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // If issue comments cannot be fetched, do not block target selection
+    }
+
     const targets = [{ number: targetedNumber, head_sha: headSha }];
     Object.defineProperty(targets, 'hasDuplicateHead', { value: hasDuplicateHead, enumerable: false });
     Object.defineProperty(targets, 'duplicateHeadReason', { value: duplicateHeadReason, enumerable: false });
+    Object.defineProperty(targets, 'exhaustedTargets', { value: exhaustedTargets, enumerable: false });
     return targets;
   }
   if (eventName === 'issue_comment') return [];
@@ -1057,7 +1103,7 @@ async function reconcilePullRequest(number, repository, options) {
     const latestStatus = trustedCodexStatuses(priorStatuses)[0] || null;
     const revokedAt = latestDeletedFeedbackRevocation(priorStatuses);
     const negativeReactionRevokedAt = latestNegativeReactionRevocation(priorStatuses, baseSha);
-    const cycle10ExhaustedAt = latestCycle10Exhaustion(priorStatuses);
+    const cycle10ExhaustedAt = latestCycle10Exhaustion(priorStatuses, number);
     if (!scheduled) {
       pendingAttempted = true;
       await publish('pending', 'Rechecking the current Codex approval signal.');
@@ -1109,27 +1155,6 @@ async function reconcilePullRequest(number, repository, options) {
       cycle10ExhaustedAt,
     };
     let approval = evaluateCodexApproval(approvalSnapshot, approvalOptions);
-    const recorded = recordedRequests(issueComments, sha, [repository.owner], baseSha);
-    if (recorded.capExceeded) {
-      for (const marker of recorded.allOwnerMarkers || []) {
-        if (marker.cycle === 10 && marker.headSha !== sha.toLowerCase()) {
-          await publishCommitStatus({
-            apiBaseUrl: options.apiBaseUrl,
-            owner: repository.owner,
-            repo: repository.repo,
-            sha: marker.headSha,
-            state: 'failure',
-            description: baseTaggedDescription(
-              `${CYCLE_LIMIT_EXHAUSTED_MARKER}: ${CYCLE_LIMIT_EXCEEDED}`,
-              baseSha,
-              number,
-            ),
-            token: options.token,
-            fetchImpl: options.fetchImpl,
-          });
-        }
-      }
-    }
     let publishPullRequestReactions = null;
     if (approval.authorized) {
       // Re-read the PR itself, commit status history, the live open pull request set,
@@ -1275,6 +1300,7 @@ if (require.main === module) {
   const resolveHead = process.argv.includes('--resolve-target-head');
   const selectTargets = process.argv.includes('--select-pr-targets');
   const publishDuplicateHead = process.argv.includes('--publish-duplicate-head');
+  const publishExhaustionStatus = process.argv.includes('--publish-exhaustion-status');
   const operation = resolveHead
     ? (async () => {
       let repository = null;
@@ -1317,7 +1343,8 @@ if (require.main === module) {
       });
       const hasDuplicateHead = Boolean(targets && targets.hasDuplicateHead);
       const duplicateHeadReason = (targets && targets.duplicateHeadReason) || '';
-      const output = `pr_targets=${JSON.stringify(targets)}\nhas_duplicate_head=${hasDuplicateHead ? 'true' : 'false'}\nduplicate_head_reason=${duplicateHeadReason}\n`;
+      const exhaustedTargets = (targets && targets.exhaustedTargets) || [];
+      const output = `pr_targets=${JSON.stringify(targets)}\nhas_duplicate_head=${hasDuplicateHead ? 'true' : 'false'}\nduplicate_head_reason=${duplicateHeadReason}\nexhausted_targets=${JSON.stringify(exhaustedTargets)}\n`;
       if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
       else process.stdout.write(output);
     })()
@@ -1337,6 +1364,28 @@ if (require.main === module) {
         token: process.env.GITHUB_TOKEN,
       });
     })()
+    : publishExhaustionStatus
+    ? (async () => {
+      const repository = parseRepository(process.env.GITHUB_REPOSITORY);
+      const headSha = process.env.CODEX_PR_HEAD_SHA;
+      if (!headSha) throw new Error('CODEX_PR_HEAD_SHA is required.');
+      const number = process.env.CODEX_PR_NUMBER;
+      const baseSha = process.env.CODEX_PR_BASE_SHA;
+      const description = baseTaggedDescription(
+        `${CYCLE_LIMIT_EXHAUSTED_MARKER}: ${CYCLE_LIMIT_EXCEEDED}`,
+        baseSha,
+        number,
+      );
+      await publishCommitStatus({
+        apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+        owner: repository.owner,
+        repo: repository.repo,
+        sha: headSha,
+        state: 'failure',
+        description,
+        token: process.env.GITHUB_TOKEN,
+      });
+    })()
     : run();
   operation.catch((error) => {
     const description = resolveHead
@@ -1345,6 +1394,8 @@ if (require.main === module) {
       ? 'Codex PR target selection'
       : publishDuplicateHead
       ? 'Codex duplicate head status publication'
+      : publishExhaustionStatus
+      ? 'Codex exhaustion status publication'
       : 'Codex approval status reconciliation';
     process.stderr.write(`${description} failed: ${error.message}\n`);
     process.exitCode = 1;
@@ -1361,6 +1412,8 @@ module.exports = {
   evaluateCodexApproval,
   isNegativeCodexFeedback,
   isUnambiguousApproval,
+  latestCycle10Exhaustion,
+  priorApprovalBaseState,
   publishCommitStatus,
   reconcilePullRequest,
   resolveTargetHead,

@@ -6,6 +6,8 @@ const {
   DUPLICATE_HEAD_SHA_BLOCKED,
   evaluateCodexApproval,
   decideAgentMerge,
+  latestCycle10Exhaustion,
+  priorApprovalBaseState,
   publishCommitStatus,
   reconcilePullRequest,
   resolveTargetHead,
@@ -3176,17 +3178,45 @@ test('reconciliation persists cycle-10 exhaustion to older head and keeps exhaus
     throw new Error(`Unexpected URL: ${url}`);
   };
 
-  // Reconcile H2: post-cycle-10 head transition must mark H2 failed AND persist exhaustion to H1
+  // Select targets on H2: discovers H1 as exhaustedTarget without cross-head write
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request_target',
+    payload: { action: 'synchronize', pull_request: { number: 177, head: { sha: h2 } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    headSha: h2,
+  });
+  assert.equal(published.filter(s => s.sha === h1).length, 0, 'must not write H1 failure across head locks during selection');
+  assert.equal(targets.exhaustedTargets.length, 1);
+  assert.equal(targets.exhaustedTargets[0].head_sha, h1);
+
+  // Reconcile H2: marks H2 failed and never writes across to H1
   await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
     apiBaseUrl: 'https://api.github.com',
     token: 'test-token',
     fetchImpl,
     eventName: 'pull_request_target',
     botLogin: bot,
+    headSha: h2,
+  });
+  assert.equal(published.filter(s => s.sha === h1).length, 0, 'must not write H1 failure across head locks during H2 reconciliation');
+
+  // Publish historical exhaustion under H1 lock (as done by exhaustion-status job)
+  await publishCommitStatus({
+    apiBaseUrl: 'https://api.github.com',
+    owner: 'SilentSaint',
+    repo: 'pesonal-accouts-app',
+    sha: targets.exhaustedTargets[0].head_sha,
+    state: 'failure',
+    description: `pr=177; cycle-10-exhausted: The automated review cycle limit of ten cycles has been exceeded.`,
+    token: 'test-token',
+    fetchImpl,
   });
 
   const h1ExhaustionStatus = published.find(s => s.sha === h1 && s.state === 'failure');
-  assert.ok(h1ExhaustionStatus, 'must persist failure status to older head H1 when PR moves to H2 after cycle 10');
+  assert.ok(h1ExhaustionStatus, 'must persist failure status to older head H1 via serialized exhaustion job');
   assert.match(h1ExhaustionStatus.description, /cycle-10-exhausted/i);
 
   // Revert PR back to H1
@@ -3205,5 +3235,118 @@ test('reconciliation persists cycle-10 exhaustion to older head and keeps exhaus
   assert.equal(h1FinalStatus.state, 'failure', 'reverting to H1 must remain latched as failure');
   assert.match(h1FinalStatus.description, /cycle limit of ten cycles has been exceeded/i);
 });
+
+test('recordedRequests inspects every marker in multi-marker comments for cycle cap exhaustion', () => {
+  const req1 = `<!-- codex-review-request: head=${headSha}; base=${otherSha}; cycle=1 -->`;
+  const req11 = `<!-- codex-review-request: head=${headSha}; base=${otherSha}; cycle=11 -->`;
+  const result = evaluateCodexApproval(
+    snapshot({
+      issueComments: [
+        {
+          id: 1,
+          created_at: '2026-10-06T10:00:00Z',
+          updated_at: '2026-10-06T10:00:00Z',
+          user: { login: 'SilentSaint' },
+          body: `@codex review\n${req1}\n${req11}`,
+        },
+      ],
+      reviews: [
+        {
+          fullDatabaseId: 2,
+          created_at: '2026-10-06T10:05:00Z',
+          submitted_at: '2026-10-06T10:05:00Z',
+          author: { login: bot },
+          state: 'APPROVED',
+          body: 'Codex Review: LGTM\nreviewed commit: ' + headSha,
+        },
+      ],
+    }),
+    { botLogin: bot },
+  );
+  assert.equal(result.authorized, false);
+  assert.equal(result.reason, 'The automated review cycle limit of ten cycles has been exceeded.');
+});
+
+test('priorApprovalBaseState and latestCycle10Exhaustion scope exhaustion markers to their originating PR', () => {
+  const base = otherSha;
+  const statuses = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'failure',
+      description: `pr=100; cycle-10-exhausted: The automated review cycle limit of ten cycles has been exceeded.`,
+      created_at: '2026-10-06T09:00:00Z',
+      creator: { login: 'github-actions[bot]' },
+    },
+    {
+      context: STATUS_CONTEXT,
+      state: 'success',
+      description: `pr=200; base-sha=${base}; The Codex review explicitly found no major issues.`,
+      created_at: '2026-10-06T09:05:00Z',
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+
+  assert.equal(latestCycle10Exhaustion(statuses, 200), null, 'PR 200 must ignore PR 100 exhaustion marker');
+  assert.notEqual(latestCycle10Exhaustion(statuses, 100), null, 'PR 100 must detect its own exhaustion marker');
+
+  const baseState200 = priorApprovalBaseState(statuses, base, 200);
+  assert.equal(baseState200.priorApprovalExists, true, 'PR 200 prior approval must exist and not be blocked by PR 100 exhaustion');
+
+  const baseState100 = priorApprovalBaseState(statuses, base, 100);
+  assert.equal(baseState100.priorApprovalExists, false, 'PR 100 prior approval must be rejected by PR 100 exhaustion');
+});
+
+test('selectPullRequestTargets discovers historical head exhaustion targets without writing across head locks', async () => {
+  const h1 = '1'.repeat(40);
+  const h2 = '2'.repeat(40);
+  const base = otherSha;
+  const comments = [
+    {
+      id: 100,
+      created_at: '2026-10-06T09:00:00Z',
+      updated_at: '2026-10-06T09:00:00Z',
+      user: { login: 'SilentSaint' },
+      body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=10 -->`,
+    },
+  ];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const published = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h2 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h2 } }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor(comments);
+    }
+    if (url.includes('/statuses?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.includes('/statuses/')) {
+      published.push({ url, ...JSON.parse(options.body) });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const targets = await selectPullRequestTargets({
+    eventName: 'pull_request_target',
+    payload: { action: 'synchronize', pull_request: { number: 177, head: { sha: h2 } } },
+    repository: { owner: 'SilentSaint', repo: 'pesonal-accouts-app' },
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    headSha: h2,
+  });
+
+  assert.equal(published.length, 0, 'must not write statuses across head locks during target selection');
+  assert.ok(Array.isArray(targets.exhaustedTargets), 'targets must provide exhaustedTargets');
+  assert.equal(targets.exhaustedTargets.length, 1);
+  assert.equal(targets.exhaustedTargets[0].head_sha, h1);
+  assert.equal(targets.exhaustedTargets[0].number, 177);
+});
+
 
 

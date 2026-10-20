@@ -71,6 +71,7 @@ jobs:
       pr_targets: ${{ steps.select.outputs.pr_targets }}
       has_duplicate_head: ${{ steps.select.outputs.has_duplicate_head }}
       duplicate_head_reason: ${{ steps.select.outputs.duplicate_head_reason }}
+      exhausted_targets: ${{ steps.select.outputs.exhausted_targets }}
     steps:
       - name: Check out trusted main policy code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,3 +169,41 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           CODEX_PR_HEAD_SHA: ${{ needs.resolve-target-head.outputs.head_sha }}
           CODEX_DUPLICATE_HEAD_REASON: ${{ needs.select-pull-requests.outputs.duplicate_head_reason }}
+
+  exhaustion-status:
+    needs: select-pull-requests
+    if: ${{ needs.select-pull-requests.outputs.exhausted_targets != '' && needs.select-pull-requests.outputs.exhausted_targets != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.select-pull-requests.outputs.exhausted_targets) }}
+    concurrency:
+      group: codex-approval-${{ github.repository }}-${{ matrix.target.head_sha }}
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Check out trusted main policy code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Publish historical exhaustion failure under head lock
+        run: |
+          if [ -f scripts/ci/codex-approval-status.js ]; then
+            node scripts/ci/codex-approval-status.js --publish-exhaustion-status
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CODEX_PR_NUMBER: ${{ matrix.target.number }}
+          CODEX_PR_HEAD_SHA: ${{ matrix.target.head_sha }}
+          CODEX_PR_BASE_SHA: ${{ matrix.target.base_sha }}
+

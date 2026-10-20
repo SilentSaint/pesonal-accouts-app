@@ -637,6 +637,9 @@ test('a deleted or negative Codex feedback event preempts a saturated event queu
   assert.match(reconcileJob, /cancel-in-progress:\s*false/);
   assert.match(action, /duplicate-head-status:/);
   assert.match(action, /--publish-duplicate-head/);
+  assert.match(action, /exhaustion-status:/);
+  assert.match(action, /--publish-exhaustion-status/);
+  assert.match(action, /exhausted_targets:\s*\$\{\{\s*steps\.select\.outputs\.exhausted_targets\s*\}\}/);
   assert.match(action, /needs\.resolve-target-head\.outputs\.head_sha/);
   assert.doesNotMatch(action, /format\('codex-approval-\{0\}-\{1\}'[\s\S]*github\.event\.issue\.number/);
 });
