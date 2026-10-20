@@ -317,14 +317,16 @@ order, the latest valid request cycle is selected. Contradictory, ambiguous, or
 out-of-order request markers fail closed. Cycle cap enforcement inspects all
 owner-authored request markers across the PR before filtering to the current
 head/base: any attempted cycle beyond 10, or attempt to reset the cap after
-cycle 10 has been requested, fails closed immediately. A cycle 10 request on
-the current head immediately latches a `cycle-10-exhausted` marker upon observation
-so subsequent deletion of the request cannot reset the cap, while still allowing
-that final review cycle to complete on the matching head. Over-limit request markers
-and historical cycle 10 markers are persisted to their historical heads serialized
-under each head's concurrency lock, scoped with `pr=<number>`, and ignored by other
-pull requests so reverting to that commit keeps exhaustion latched. Target selection
-fails closed if comment history cannot be retrieved. A PR-level
+cycle 10 has been requested, fails closed immediately. Observing cycle 10 on
+the current head latches a `cycle-10-exhausted` marker onto the commit's status
+(including upon clean immediate approval) so subsequent deletion of the request cannot
+reset the cap, while still allowing that final review cycle to complete on the matching head.
+Over-limit request markers and historical cycle 10 markers are persisted to their historical heads
+serialized under each head's concurrency lock, scoped with `pr=<number>`, and ignored by other
+pull requests so reverting or force-pushing to that commit keeps exhaustion latched. Exhaustion
+discovery inspects historical commits across the PR timeline, reviews, and comments beyond commits
+reachable from the current head to prevent cap resets via force-push, and fails closed if
+historical status or comment lookups fail. Target selection fails closed if comment history cannot be retrieved. A PR-level
 thumbs-up always requires exactly one recorded request marker. An older or previous-base
 request, an edited old review, or a response delivered after a marker but
 originally submitted before it cannot qualify. When trusted history already

@@ -3617,3 +3617,287 @@ test('cycle 10 request on current head immediately latches cycle 10 exhaustion w
   assert.ok(resetAttemptStatus, 'must reject attempt to reset cycle cap after cycle 10 latch');
   assert.match(resetAttemptStatus.description, /The automated review cycle limit of ten cycles has been exceeded/i);
 });
+
+test('persists cycle-10-exhausted marker even when review is immediately approved, preventing subsequent cycle reset after comment deletion', async () => {
+  const h1 = '1'.repeat(40);
+  const base = otherSha;
+  const comments = [
+    {
+      id: 101,
+      created_at: '2026-10-06T10:00:00Z',
+      updated_at: '2026-10-06T10:00:00Z',
+      user: { login: 'SilentSaint' },
+      body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=10 -->`,
+    },
+    {
+      id: 102,
+      created_at: '2026-10-06T10:01:00Z',
+      updated_at: '2026-10-06T10:01:00Z',
+      user: { login: bot },
+      body: `Codex Review: I didn't find any major issues.\n\n**Reviewed commit:** \`${h1}\``,
+    },
+  ];
+  const published = [];
+  const statuses = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h1 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h1 } }]);
+    }
+    if (url.endsWith('/commits?per_page=100')) {
+      return responseFor([{ sha: h1 }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor(comments);
+    }
+    if (url.endsWith('/comments?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/reactions?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: { repository: { pullRequest: { reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
+      });
+    }
+    if (url.includes('/statuses?per_page=100')) {
+      return responseFor(statuses);
+    }
+    if (url.includes('/statuses/')) {
+      const body = JSON.parse(options.body);
+      const st = {
+        context: STATUS_CONTEXT,
+        state: body.state,
+        description: body.description,
+        created_at: new Date().toISOString(),
+        creator: { login: 'github-actions[bot]' },
+      };
+      statuses.unshift(st);
+      published.push({ url, ...body });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  // Run 1: cycle 10 request AND clean review both present before first reconciliation
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
+
+  const successStatus = published.find(s => s.state === 'success');
+  assert.ok(successStatus, 'must publish success status when review is clean');
+  assert.match(successStatus.description, /cycle-10-exhausted/i, 'must latch cycle-10-exhausted marker onto success status');
+
+  // Run 2: Owner deletes the cycle 10 request comment and tries to request cycle 1 to reset cap
+  comments.splice(0, 1);
+  comments.push({
+    id: 103,
+    created_at: '2026-10-06T10:10:00Z',
+    updated_at: '2026-10-06T10:10:00Z',
+    user: { login: 'SilentSaint' },
+    body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=1 -->`,
+  });
+  published.length = 0;
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
+
+  const resetAttemptStatus = published.find(s => s.state === 'failure');
+  assert.ok(resetAttemptStatus, 'must reject attempt to reset cycle cap after cycle 10 latch on approval');
+  assert.match(resetAttemptStatus.description, /The automated review cycle limit of ten cycles has been exceeded/i);
+});
+
+test('detects historical cycle 10 exhaustion across force-pushes beyond reachable PR commits even when comments are deleted', async () => {
+  const h1 = '1'.repeat(40);
+  const h2 = '2'.repeat(40);
+  const base = otherSha;
+  const h1Statuses = [
+    {
+      context: STATUS_CONTEXT,
+      state: 'failure',
+      description: `pr=177; cycle-10-exhausted: The automated review cycle limit of ten cycles has been exceeded.`,
+      created_at: '2026-10-06T10:05:00Z',
+      creator: { login: 'github-actions[bot]' },
+    },
+  ];
+  const h2Statuses = [];
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h2 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h2 } }]);
+    }
+    // Only h2 is in reachable commits (unrelated force push removed h1)
+    if (url.endsWith('/commits?per_page=100')) {
+      return responseFor([{ sha: h2 }]);
+    }
+    // Comments were deleted, but a new cycle=1 request exists on h2
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        {
+          id: 201,
+          created_at: '2026-10-06T10:10:00Z',
+          updated_at: '2026-10-06T10:10:00Z',
+          user: { login: 'SilentSaint' },
+          body: `@codex review\n<!-- codex-review-request: head=${h2}; base=${base}; cycle=1 -->`,
+        },
+        {
+          id: 202,
+          created_at: '2026-10-06T10:11:00Z',
+          updated_at: '2026-10-06T10:11:00Z',
+          user: { login: bot },
+          body: `Codex Review: I didn't find any major issues.\n\n**Reviewed commit:** \`${h2}\``,
+        },
+      ]);
+    }
+    if (url.endsWith('/comments?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/reactions?per_page=100')) {
+      return responseFor([]);
+    }
+    // H1 was reviewed prior to the force push, so it exists in pullRequestReviews
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: {
+          repository: {
+            pullRequest: {
+              reviews: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  {
+                    id: 'PRR_501',
+                    fullDatabaseId: 501,
+                    author: { login: bot },
+                    body: `Prior review on H1\n\n**Reviewed commit:** \`${h1}\``,
+                    commit: { oid: h1 },
+                    createdAt: '2026-10-06T10:02:00Z',
+                    submittedAt: '2026-10-06T10:02:00Z',
+                    state: 'COMMENTED',
+                  },
+                ],
+              },
+            },
+          },
+        },
+      });
+    }
+    if (url.includes(`/commits/${h1}/statuses`)) {
+      return responseFor(h1Statuses);
+    }
+    if (url.includes(`/commits/${h2}/statuses`)) {
+      return responseFor(h2Statuses);
+    }
+    if (url.includes('/statuses/')) {
+      published.push({ url, ...JSON.parse(options.body) });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
+
+  const failureStatus = published.find(s => s.state === 'failure');
+  assert.ok(failureStatus, 'must reject authorization on H2 due to historical cycle 10 exhaustion');
+  assert.match(failureStatus.description, /The automated review cycle limit of ten cycles has been exceeded/i);
+  assert.match(failureStatus.description, /cycle-10-exhausted/i, 'must latch exhaustion onto H2');
+});
+
+test('reconcilePullRequest fails closed and blocks authorization when reading historical commit status fails', async () => {
+  const h1 = '1'.repeat(40);
+  const h2 = '2'.repeat(40);
+  const base = otherSha;
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h2 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h2 } }]);
+    }
+    if (url.endsWith('/commits?per_page=100')) {
+      return responseFor([{ sha: h1 }, { sha: h2 }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        {
+          id: 301,
+          created_at: '2026-10-06T10:10:00Z',
+          updated_at: '2026-10-06T10:10:00Z',
+          user: { login: 'SilentSaint' },
+          body: `@codex review\n<!-- codex-review-request: head=${h2}; base=${base}; cycle=1 -->`,
+        },
+        {
+          id: 302,
+          created_at: '2026-10-06T10:11:00Z',
+          updated_at: '2026-10-06T10:11:00Z',
+          user: { login: bot },
+          body: `Codex Review: I didn't find any major issues.\n\n**Reviewed commit:** \`${h2}\``,
+        },
+      ]);
+    }
+    if (url.endsWith('/comments?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/reactions?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: { repository: { pullRequest: { reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
+      });
+    }
+    if (url.includes(`/commits/${h2}/statuses`)) {
+      return responseFor([]);
+    }
+    if (url.includes(`/commits/${h1}/statuses`)) {
+      throw new Error('GitHub API 500 Internal Server Error');
+    }
+    if (url.includes('/statuses/')) {
+      published.push({ url, ...JSON.parse(options.body) });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await assert.rejects(
+    async () => {
+      await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+        apiBaseUrl: 'https://api.github.com',
+        token: 'test-token',
+        fetchImpl,
+        eventName: 'issue_comment',
+        botLogin: bot,
+      });
+    },
+    /GitHub API 500|Inability to inspect commit status/,
+    'must fail closed when historical commit status lookup fails',
+  );
+
+  const errorStatus = published.find(s => s.state === 'error');
+  assert.ok(errorStatus, 'must publish error status to block authorization when historical read fails');
+  assert.match(errorStatus.description, /Codex approval could not be verified/i);
+});
