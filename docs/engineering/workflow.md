@@ -111,10 +111,24 @@ review response rather than reporting completion or handing off. The watcher
 must:
 
 1. On creation, verify that Codex review was triggered. If no review is pending
-   or present, request `@codex review` once; do not create duplicate requests
-   when GitHub already started the automatic review. For each request, record
-   the request timestamp and head SHA; record the reviewed SHA when a response
-   arrives. Track the base branch SHA alongside the reviewed head SHA.
+   or present, request `@codex review` once; do not create a duplicate while
+   GitHub has already started an automatic review. If no trusted successful
+   status establishes the current base (or a base-change invalidation is active),
+   an automatic review without a prior base-bound request cannot authorize the
+   initial status. Wait for that review to finish, then make one fresh,
+   marker-backed request. For each explicit request, record its timestamp and
+   full head SHA; record the reviewed SHA when a response arrives. Include this
+   machine-readable marker in the top-level request comment before triggering
+   each explicit review:
+   `<!-- codex-review-request: head=<40-character-head-sha>; base=<40-character-base-sha>; cycle=<1-10> -->`.
+   Use the GitHub API's comment creation timestamp as the request time; editing
+   an older request must never make it fresh. Only a marker written by the
+   repository owner is eligible. When multiple review requests are recorded for
+   the same head and base (such as after an approval revocation and re-request),
+   requests must have strictly ascending cycle numbers and creation timestamps;
+   the latest valid request cycle supersedes earlier ones. Multiple request
+   markers in a single comment, out-of-order cycles, or conflicting timestamps
+   fail closed. Track the base branch SHA alongside the reviewed head SHA.
 2. Before implementing actionable review feedback, run the local `code-review`
    skill on the PR diff so its Standards and Spec agents review in parallel.
    Use those findings with the bot's feedback to scope the fix. If agents cannot
@@ -128,8 +142,9 @@ must:
    unchanged, do not start cycle 11, and notify the owner with the cycle count
    and blocker. The owner decides whether to continue manually. A clean cycle 10
    may proceed to the merge gate. If the head changes after cycle 10, do not reset
-   the cap or start another automated cycle: invalidate the prior approval, leave
-   the PR unchanged, and hand it to the owner for a fresh manual decision.
+   the cap or start another automated cycle: invalidate the prior approval, persist
+   the cycle-10 exhaustion failure onto the previous head to keep exhaustion latched
+   even if reverted, leave the PR unchanged, and hand it to the owner for a fresh manual decision.
 5. For a review comment, verify the author is the configured Codex review bot,
    then classify the complete Codex review comment by meaning, not exact wording.
    It must explicitly state no major issues or an equivalent unambiguous
@@ -143,7 +158,12 @@ must:
    Bind the approval to the reviewed head SHA: the SHA in the bot comment or a
    review record unambiguously associated with that comment must match the
    current PR head. A missing/ambiguous SHA, or any new commit after that
-   review, invalidates the signal.
+   review, invalidates the signal. Bind it to the reviewed base SHA as well:
+   successful `codex-approval` statuses record the current PR base SHA. A base
+   retarget or base-commit change writes a failure marker and requires a fresh
+   Codex review; a thumbs-up additionally requires a review request recorded
+   after that marker. The workflow reconciles PR edits immediately and its
+   scheduled poll detects base-commit drift.
 
    A Codex `+1`/thumbs-up reaction can also be a technical approval signal only
    when it is on the PR itself and comes from the configured Codex review bot.
@@ -154,10 +174,12 @@ must:
    hand it to the owner. Reactions on review comments, reactions from the
    owner/other actors, and reactions whose reviewed head cannot be established
    do not satisfy this gate.
-   Treat a Codex comment or reaction as evidence only, not merge-time
-   authorization. Before merging, require an active server-side required status
-   check or native approval, bound to the exact verified `expected_head_sha` and
-   enforced for the authenticated merge identity through the merge operation.
+   A Codex comment or reaction by itself is evidence, not merge-time
+   authorization; the active server-side `codex-approval` required status is
+   the merge-time enforcement of the owner's delegated signal. Before merging,
+   require an active server-side required status check or native approval,
+   bound to the exact verified `expected_head_sha` and enforced for the
+   authenticated merge identity through the merge operation.
    That gate must invalidate authorization when a new negative Codex response
    arrives or the qualifying signal is withdrawn; a final signal snapshot or a
    previously successful but no longer current check is insufficient. If the
@@ -227,6 +249,136 @@ must:
    the exact expected result. Never apply infrastructure automatically as a
    post-merge step.
 
+### Required Codex approval status bridge
+
+`.github/workflows/codex-approval-status.yml` publishes the required
+`codex-approval` commit status on the exact PR head SHA. It re-evaluates PR
+comment/review events and the current GitHub API snapshot; the scheduled pass
+also reconciles PR-level reactions. Scheduled and manual runs fan out across
+open PRs, and each open PR is reconciled in its own per-PR concurrency group;
+an event for one PR cannot cancel another PR's status revocation. A newer run
+may replace an older run only for the same PR, then re-reads that PR's current
+GitHub snapshot. Before emitting a reconciliation target, the selector records
+deleted Codex feedback against the live PR head, so replacing or cancelling the
+later matrix job cannot erase that revocation. Its GitHub Actions token is
+limited to reading repository/PR metadata and writing commit statuses. All workflow
+jobs check out trusted `main` policy code only; none checks out or executes PR
+code. This status represents only
+the Codex authorization signal, not the local Docker gate or other merge
+requirements.
+
+Deleting Codex-authored feedback, dismissing a qualifying Codex review, or receiving new negative Codex review activity
+immediately publishes a failure status with a durable deleted-feedback revocation marker
+or negative review failure on the live PR head, even if the PR
+is closed or temporarily targets another base, before the reconcile job enters
+its head-SHA concurrency queue. For all PR events, the workflow first resolves the live target PR head SHA before
+entering the status-writing selector job; if the live head advances before selection executes, selection aborts to avoid writing failure under a stale head lock. Negative Codex review activity, review dismissals, and deletions share
+the target PR head-SHA concurrency queue with `cancel-in-progress: true` to preempt any running
+reconciliation for that commit, while general events do not share this selector queue so they
+cannot displace a pending revocation while reconciliation cancels. This deleted-feedback revocation marker
+persists across scheduled runs; the reconciler reads trusted status history, so an older
+approval that remains visible in GitHub cannot restore authorization.
+Only a current-head Codex approval or reaction recorded after that marker can
+restore the status to success.
+
+Commit statuses are scoped only by commit SHA and context, so authorization
+requires the PR's current head SHA to be unique across open pull requests.
+If multiple open pull requests share the same head commit, authorization fails
+closed to prevent status cross-contamination. Trusted status markers record the
+originating PR number (`pr=<number>; `) alongside the base SHA (`base-sha=<sha>; `).
+Prior successes belonging to another PR are rejected in `priorApprovalBaseState`,
+preventing a new pull request sharing a head commit from inheriting green status or
+authorizing on unmarked reviews. Target selection flags inherited green status for
+locked revocation when a new PR opens on a commit whose latest trusted success belongs to another
+pull request. Duplicate-head failure writes are deferred to the head-locked `duplicate-head-status` job
+with `queue: max` rather than written by the unlocked selector, ensuring all duplicate-head failure writes
+and reconcile jobs are serialized under the target PR head commit SHA queue, while ordinary pull request events run in
+isolated per-run selector groups so they do not enter the selector queue or displace pending
+revocations. Before publishing a success status, the reconciler re-validates the live pull
+request, base SHA, open pull request set, status history, and fresh review activity (comments,
+reviews, and reactions) to prevent in-flight base changes, negative feedback, duplicate PR
+heads, or deletion revocations from being overwritten. Revocation preemption is restricted strictly to
+deletions, dismissals, and feedback classified as negative by `chatgpt-codex-connector[bot]`, matching the exact bot login rather than a
+prefix, preventing other participants or delayed positive activity from displacing or cancelling a pending revocation. If the
+live pull request head advances from the locked matrix head before reconciliation reads it, the
+job aborts rather than writing statuses outside the acquired head lock. Fallback revocations
+without an acquired head lock delegate to locked reconciliation rather than writing statuses
+outside the lock. Once competing pull requests close or retarget such that the head SHA is unique
+across open pull requests, reconciliation can clear the transient failure and publish success if
+all other gates pass. The workflow triggers on PR edits across all target branches without a branch
+filter, and reconciliation immediately revokes approval if a PR is retargeted away from `main`.
+
+The approval evaluator requires a verified current base SHA. If trusted status
+history does not establish a successful approval on that same base, or a
+base-change invalidation is active, the evidence must follow a valid
+request marker bound to the exact PR head and current base SHA. When multiple
+valid request markers exist for the current head and base in strictly ascending
+order, the latest valid request cycle is selected. Contradictory, ambiguous, or
+out-of-order request markers fail closed. Cycle cap enforcement inspects all
+owner-authored request markers across the PR before filtering to the current
+head/base: any attempted cycle beyond 10, or attempt to reset the cap after
+cycle 10 has been requested, fails closed immediately. Observing cycle 10 on
+the current head latches a `cycle-10-exhausted` marker onto the commit's status
+(including upon clean immediate approval) so subsequent deletion of the request cannot
+reset the cap, while still allowing that final review cycle to complete on the matching head.
+Over-limit request markers and historical cycle 10 markers are persisted to their historical heads
+serialized under each head's concurrency lock, scoped with `pr=<number>`, and ignored by other
+pull requests so reverting or force-pushing to that commit keeps exhaustion latched. Exhaustion
+discovery inspects historical commits across the PR timeline, reviews, and comments beyond commits
+reachable from the current head to prevent cap resets via force-push, and fails closed if
+historical status or comment lookups fail. Target selection fails closed if comment history cannot be retrieved. A PR-level
+thumbs-up always requires exactly one recorded request marker. An older or previous-base
+request, an edited old review, or a response delivered after a marker but
+originally submitted before it cannot qualify. When trusted history already
+establishes the same base, a fresh unambiguous exact-head Codex review comment
+can qualify without an additional request marker.
+
+A Codex thumbs-down is also a revocation. Because GitHub does not emit reaction
+removal events, the scheduled reconciler persists a
+`negative-reaction-review-required` failure marker when it observes one. That
+marker remains active if the reaction is later removed and can be cleared only
+by a newer qualifying Codex approval or thumbs-up for the current head and
+live base. A base change still requires a new base-bound request and review.
+Compare a reaction with the review's immutable creation or submission time;
+editing an older approval must not mask a later thumbs-down. Distinct review
+responses are ordered by creation/submission time; editing an older approval
+must not reorder it ahead of a later actionable review.
+
+At merge time, the agent must also verify a completed successful run of this
+workflow for the target PR after its latest Codex review activity, or a
+successful scheduled run that reconciled that PR after the activity. A failed
+target-selection/reconcile job, missing or unassociated workflow run, or run
+that predates the latest relevant activity sets
+`codexReconciliationSucceeded=false` and blocks the merge even if an older
+`codex-approval` status remains green. Target selection can fail before the
+current full head SHA is available, so that run cannot overwrite a prior commit
+status; never infer current authorization from the old status alone.
+
+Before relying on agent merges, the repository owner must configure an active
+`main` ruleset requiring the `codex-approval` status from GitHub Actions, require
+up-to-date branches and resolved review conversations, and ensure the
+authenticated merge identity has no bypass exemption. The workflow must first
+be merged to `main` before GitHub will run its comment/review triggers; this
+initial policy installation therefore needs the owner's normal bootstrap merge.
+Until the required status and its enforcement are verified, agents leave PRs
+unmerged.
+
+Before the policy script exists on trusted `main`, the selector succeeds with an
+empty target list and skips reconciliation. This bootstrap no-op does not publish
+`codex-approval` and does not satisfy `codexReconciliationSucceeded` or any
+merge gate. Only a run that actually reconciles the target PR's current head
+after its latest Codex review activity qualifies.
+
+GitHub's standard Actions and webhook events do not include PR reaction
+creation/removal. The bridge polls reactions every five minutes, so a removed
+thumbs-up can remain reflected by a previously successful status until the next
+poll. A green status by itself is therefore never enough: immediately before
+merge, the agent must fetch the current PR-level reactions and verify that the
+qualifying signal is still present on the exact current head. If that live
+snapshot or the status is unavailable, stale, or ambiguous, leave the PR
+unmerged. Do not enable GitHub auto-merge; the agent's final merge decision must
+also pass every independent gate above.
+
 The watcher stays quiet while the PR and review state are unchanged and reports
 only meaningful review changes, completed fixes, cycle-limit stops, merge or
 verification results, failures, or required owner action.
@@ -269,8 +421,10 @@ and records the resulting production verification.
 
 ## Current baseline dependency
 
-Until repository-baseline reconciliation is complete, workflows must report
-missing prerequisites honestly and must not be made required. In the current
-remote baseline, `backend/lambda/test` and `frontend/e2e_playwright_test.js` are
-absent, so their jobs fail with an explicit reconciliation message. Enable
-required checks only after the reconciled `main` is clean and green.
+Until repository-baseline reconciliation is complete, validation workflows
+must report missing prerequisites honestly and must not be made required. In
+the current remote baseline, `backend/lambda/test` and
+`frontend/e2e_playwright_test.js` are absent, so their jobs fail with an explicit
+reconciliation message. This does not prohibit the separate `codex-approval`
+policy status; it is not a build/test result. Enable required validation checks
+only after the reconciled `main` is clean and green.
