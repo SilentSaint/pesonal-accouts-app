@@ -3901,3 +3901,81 @@ test('reconcilePullRequest fails closed and blocks authorization when reading hi
   assert.ok(errorStatus, 'must publish error status to block authorization when historical read fails');
   assert.match(errorStatus.description, /Codex approval could not be verified/i);
 });
+
+test('ignores arbitrary 40-char hex strings in user comments and does not block approval when unknown reference returns 404', async () => {
+  const h1 = '1'.repeat(40);
+  const foreignHash = 'd'.repeat(40);
+  const base = otherSha;
+  const published = [];
+  const responseFor = (json) => ({ ok: true, json: async () => json, headers: { get: () => null } });
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/pulls/177')) {
+      return responseFor({ number: 177, state: 'open', base: { ref: 'main', sha: base }, head: { sha: h1 } });
+    }
+    if (url.endsWith('/pulls?state=open&per_page=100')) {
+      return responseFor([{ number: 177, head: { sha: h1 } }]);
+    }
+    if (url.endsWith('/commits?per_page=100')) {
+      return responseFor([{ sha: h1 }]);
+    }
+    if (url.endsWith('/issues/177/comments?per_page=100')) {
+      return responseFor([
+        {
+          id: 401,
+          created_at: '2026-10-06T10:10:00Z',
+          updated_at: '2026-10-06T10:10:00Z',
+          user: { login: 'SilentSaint' },
+          body: `@codex review\n<!-- codex-review-request: head=${h1}; base=${base}; cycle=1 -->`,
+        },
+        {
+          id: 402,
+          created_at: '2026-10-06T10:11:00Z',
+          updated_at: '2026-10-06T10:11:00Z',
+          user: { login: bot },
+          body: `Codex Review: I didn't find any major issues.\n\n**Reviewed commit:** \`${h1}\``,
+        },
+        {
+          id: 403,
+          created_at: '2026-10-06T10:12:00Z',
+          updated_at: '2026-10-06T10:12:00Z',
+          user: { login: 'external-contributor' },
+          body: `Referencing upstream fix in foreign repo commit ${foreignHash} which solves similar problem.`,
+        },
+      ]);
+    }
+    if (url.endsWith('/comments?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/reactions?per_page=100')) {
+      return responseFor([]);
+    }
+    if (url.endsWith('/graphql')) {
+      return responseFor({
+        data: { repository: { pullRequest: { reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
+      });
+    }
+    if (url.includes(`/commits/${foreignHash}/statuses`)) {
+      throw new Error(`GitHub API read failed (404) for /repos/SilentSaint/pesonal-accouts-app/commits/${foreignHash}/statuses?per_page=100.`);
+    }
+    if (url.includes(`/commits/${h1}/statuses`)) {
+      return responseFor([]);
+    }
+    if (url.includes('/statuses/')) {
+      published.push({ url, ...JSON.parse(options.body) });
+      return responseFor({});
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await reconcilePullRequest(177, { owner: 'SilentSaint', repo: 'pesonal-accouts-app' }, {
+    apiBaseUrl: 'https://api.github.com',
+    token: 'test-token',
+    fetchImpl,
+    eventName: 'issue_comment',
+    botLogin: bot,
+  });
+
+  const successStatus = published.find(s => s.state === 'success');
+  assert.ok(successStatus, 'must publish success status for H1 despite foreign commit hash in user comment');
+  assert.equal(published.some(s => s.state === 'error'), false, 'must not publish error status for foreign commit hash');
+});

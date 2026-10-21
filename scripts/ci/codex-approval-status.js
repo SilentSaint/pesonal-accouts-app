@@ -1187,9 +1187,17 @@ async function reconcilePullRequest(number, repository, options) {
       if (item && item.commit_id) candidateHistoricalShas.add(item.commit_id.toLowerCase());
     }
     for (const comment of issueComments || []) {
-      const matches = String(comment && comment.body || '').match(/[a-f0-9]{40}/gi);
-      if (matches) {
-        for (const m of matches) candidateHistoricalShas.add(m.toLowerCase());
+      if (comment && comment.user && sameLogin(comment.user.login, repository.owner)) {
+        const reqMatches = String(comment.body || '').matchAll(/<!--\s*codex-review-request:\s*head=([a-f0-9]{40})/gi);
+        for (const match of reqMatches) {
+          if (match[1]) candidateHistoricalShas.add(match[1].toLowerCase());
+        }
+      }
+      if (comment && comment.user && sameLogin(comment.user.login, options.botLogin || DEFAULT_BOT_LOGIN)) {
+        const botMatches = String(comment.body || '').matchAll(/\*\*Reviewed commit:\*\*\s*`([a-f0-9]{40})`/gi);
+        for (const match of botMatches) {
+          if (match[1]) candidateHistoricalShas.add(match[1].toLowerCase());
+        }
       }
     }
     let historicalCycle10Exhausted = false;
@@ -1205,8 +1213,9 @@ async function reconcilePullRequest(number, repository, options) {
         if (error.name === 'AssertionError' || error.code === 'ERR_ASSERTION'
           || String(error.message).includes('Unexpected URL')
           || String(error.message).includes('Unexpected API URL')
-          || String(error.message).includes('Unexpected request')) {
-          // Allow mock unit test stubs that don't provide statuses for older commits
+          || String(error.message).includes('Unexpected request')
+          || String(error.message).includes('(404)')) {
+          // Allow unknown commit reference (404) or mock unit test stubs
         } else {
           throw new Error(`Inability to inspect commit status for historical cycle cap enforcement: ${error.message}`);
         }
